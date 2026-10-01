@@ -27,7 +27,9 @@ done
 echo "==> 同步工作区到 ${REMOTE_HOST}:${REMOTE_DIR}"
 ssh "$REMOTE_HOST" "mkdir -p '$REMOTE_DIR'"
 # 排除依赖、构建产物与运行时数据；config.json 由远程自己维护，不要被本地覆盖。
-rsync -a --delete \
+# --no-owner/--no-group：本机是 macOS uid 501，不加会把远程文件变成未知属主、git 还会报 dubious ownership。
+# --chmod=Fugo+r：本地文件是 600，不加则同机其他用户/Agent 读不到（保留脚本已有的可执行位）。
+rsync -a --delete --no-owner --no-group --chmod=D755,Fugo+r \
     --exclude 'node_modules' \
     --exclude 'dist' \
     --exclude 'data' \
