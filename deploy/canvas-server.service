@@ -1,0 +1,17 @@
+[Unit]
+Description=无限画布本地网关 canvas-server（内网 LLM 与 ComfyUI 统一出口）
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/canvas-plus/canvas-server
+ExecStart=/usr/bin/node src/index.js
+Restart=always
+RestartSec=3
+Environment=NODE_ENV=production
+StandardOutput=append:/var/log/canvas-server.log
+StandardError=append:/var/log/canvas-server.log
+
+[Install]
+WantedBy=multi-user.target

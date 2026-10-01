@@ -1,0 +1,10 @@
+{
+    "version": 1,
+    "stages": [
+        { "id": "script", "title": "小说→剧本", "skill": "01-novel-to-script", "requires": [], "produces": "script" },
+        { "id": "storyboard", "title": "分镜拆解", "skill": "02-storyboard", "requires": ["script"], "produces": "storyboard" },
+        { "id": "design", "title": "服化道", "skill": "03-costume-props", "requires": ["script"], "produces": "design" },
+        { "id": "keyframe", "title": "关键帧", "skill": "04-keyframes", "requires": ["storyboard", "design"], "produces": "keyframes" },
+        { "id": "assembly", "title": "片段合成拼接", "skill": "05-clip-assembly", "requires": ["keyframe"], "produces": "clips" }
+    ]
+}

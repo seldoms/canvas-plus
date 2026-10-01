@@ -1,0 +1,78 @@
+{
+  "1": {
+    "class_type": "LoadImage",
+    "inputs": {"image": "{{PERSON_IMAGE}}"}
+  },
+  "2": {
+    "class_type": "LoadImage",
+    "inputs": {"image": "{{CLOTHING_IMAGE}}"}
+  },
+  "3": {
+    "class_type": "UNETLoader",
+    "inputs": {
+      "unet_name": "boogu_image_edit_int8_convrot.safetensors",
+      "weight_dtype": "default"
+    }
+  },
+  "4": {
+    "class_type": "ModelSamplingAuraFlow",
+    "inputs": {"model": ["3", 0], "shift": 3.16}
+  },
+  "5": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "qwen3vl_8b_fp8_scaled.safetensors",
+      "type": "boogu",
+      "device": "default"
+    }
+  },
+  "6": {
+    "class_type": "VAELoader",
+    "inputs": {"vae_name": "ae.safetensors"}
+  },
+  "7": {
+    "class_type": "TextEncodeBooguEdit",
+    "inputs": {
+      "clip": ["5", 0],
+      "prompt": "{{PROMPT}}",
+      "negative_prompt": "{{NEGATIVE_PROMPT}}",
+      "vae": ["6", 0],
+      "images.image_1": ["1", 0],
+      "images.image_2": ["2", 0]
+    }
+  },
+  "8": {
+    "class_type": "EmptyLatentImage",
+    "inputs": {"width": "{{WIDTH}}", "height": "{{HEIGHT}}", "batch_size": 1}
+  },
+  "9": {
+    "class_type": "KSamplerSelect",
+    "inputs": {"sampler_name": "dpmpp_2m"}
+  },
+  "10": {
+    "class_type": "BasicScheduler",
+    "inputs": {"model": ["4", 0], "scheduler": "simple", "steps": 25, "denoise": 1.0}
+  },
+  "11": {
+    "class_type": "SamplerCustom",
+    "inputs": {
+      "model": ["3", 0],
+      "add_noise": true,
+      "noise_seed": "{{SEED}}",
+      "cfg": 3.5,
+      "positive": ["7", 0],
+      "negative": ["7", 1],
+      "sampler": ["9", 0],
+      "sigmas": ["10", 0],
+      "latent_image": ["8", 0]
+    }
+  },
+  "12": {
+    "class_type": "VAEDecode",
+    "inputs": {"samples": ["11", 0], "vae": ["6", 0]}
+  },
+  "13": {
+    "class_type": "SaveImage",
+    "inputs": {"images": ["12", 0], "filename_prefix": "{{OUTPUT_PREFIX}}"}
+  }
+}

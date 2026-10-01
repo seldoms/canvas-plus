@@ -1,0 +1,101 @@
+---
+title: Local Gateway and Drama Pipeline
+description: Connect on-prem models and ComfyUI through canvas-server to run novel-to-film
+---
+
+# Local Gateway and Drama Pipeline
+
+`canvas-server/` is the **local gateway backend** this fork adds on top of upstream infinite-canvas. It funnels on-prem LLM and ComfyUI image/video generation into one stable API, and orchestrates the five-stage pipeline: novel → script → storyboard → costume & props → keyframes → clip assembly.
+
+Upstream is a pure front-end app whose AI requests go straight from the browser to third-party endpoints. The gateway exists because the browser alone cannot solve four things:
+
+1. **CORS** — on-prem services usually send no cross-origin headers.
+2. **Long jobs** — a ComfyUI video takes 5–15 minutes and must queue and poll server-side instead of tying up a browser tab.
+3. **Cross-machine access** — ComfyUI runs on the GPU host, which the browser's network may not reach.
+4. **Secrets and artifacts** — keys stay server-side, outputs land on disk and come back as URLs.
+
+The backend has zero runtime dependencies and only uses Node built-ins (`node >= 20`).
+
+## 1. Start the gateway
+
+```bash
+cd canvas-server
+cp config.example.json config.json   # edit as needed
+node src/index.js                    # defaults to 127.0.0.1:8788
+```
+
+Every option can be overridden by environment variables such as `CANVAS_SERVER_COMFY_URL`, `CANVAS_SERVER_LLM_URL`, `CANVAS_SERVER_PORT`. See `canvas-server/src/config.js` for the full list.
+
+Check connectivity first:
+
+```bash
+curl -s http://127.0.0.1:8788/api/health
+```
+
+`llm.ok` and `comfy.ok` tell you whether each backend is reachable. `/api/providers` lists on-prem model names, loadable ComfyUI checkpoints / LoRAs / VAEs, and every workflow template.
+
+## 2. Wire it into the canvas
+
+The gateway exposes two surfaces, so a single channel address serves text, image, and video:
+
+| Capability | Path | Notes |
+| --- | --- | --- |
+| Text | `/v1/chat/completions` | Forwarded verbatim to an on-prem OpenAI-compatible service (Ollama / LM Studio / llama.cpp); SSE streamed chunk by chunk |
+| Image | `/api/generate/image` | Submits a ComfyUI workflow, returns a job id |
+| Video | `/api/generate/video` | Same |
+| Job | `/api/jobs/:id` | Poll status and artifacts |
+| Artifact | `/api/artifacts/<jobId>/<file>` | Feed straight into `<img>` / `<video>` |
+
+Create a channel under **Config → Channels** with the address `http://<gateway-host>:8788`, then:
+
+- Use that channel directly for text models.
+- For image/video models, open **Call Script** and insert a built-in template (image: Z-Image fast, FLUX atmospheric; video: H3 image-to-video, MiniMax H3 text-to-video).
+
+> When writing custom scripts: relative paths get `/v1` appended automatically, so calls to the gateway's image/video endpoints must use **absolute URLs** — derive the gateway root from the injected `baseUrl` and append `/api/...`.
+
+## 3. The five-stage pipeline
+
+```
+Novel text
+  └─ script      Script: logline / characters / scenes
+       ├─ storyboard  Storyboard: shot number, size, camera, action, dialogue, duration
+       └─ design      Costume & props: wardrobe, makeup, props, set dressing, lighting
+            └─ keyframe  Keyframes: generate start / end frames per shot
+                 └─ assembly  Assembly: turn keyframes into clips and stitch them
+```
+
+Each stage is defined by `skills/<stage>/SKILL.md`, which carries inputs, the output contract, the prompt template, validation rules, and available tools. Stage order and dependencies live in `skills/registry.json`.
+
+Typical calls:
+
+```bash
+# List stages
+curl -s http://127.0.0.1:8788/api/pipeline/stages
+
+# Create a run (novel holds the source text)
+curl -s -X POST http://127.0.0.1:8788/api/pipeline/runs \
+  -H 'content-type: application/json' \
+  -d '{"novel":"...","title":"Eclipse Crown"}'
+
+# Advance stage by stage
+curl -s -X POST http://127.0.0.1:8788/api/pipeline/runs/<runId>/steps/script/run
+curl -s -X POST http://127.0.0.1:8788/api/pipeline/runs/<runId>/steps/storyboard/run
+```
+
+Run artifacts land in `canvas-server/data/runs/<runId>/`, one JSON per stage. Media from generative stages (keyframes, clips) lands in `canvas-server/data/artifacts/`.
+
+## 4. Queue and concurrency
+
+The ComfyUI host has only 16GB of VRAM and can run one job at a time, so the gateway ships a **single-worker serial queue**: image and video jobs line up together, and `/api/jobs` shows `queued` and `running` states. Do not bypass the queue with concurrent submissions to ComfyUI — it will run out of VRAM.
+
+## 5. Deployment
+
+`scripts/deploy.sh` pushes local changes to the remote environment:
+
+```bash
+./scripts/deploy.sh              # push current branch and deploy remotely
+```
+
+The remote flow lives in `scripts/remote-deploy.sh`: update the working copy → generate `canvas-server/config.json` for that host → build the front-end → run tests → install and restart `deploy/canvas-server.service`.
+
+When `web/dist` exists, the gateway also serves the built front-end, so one port is both the API and the canvas page.

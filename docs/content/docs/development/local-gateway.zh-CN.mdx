@@ -1,0 +1,101 @@
+---
+title: 本地网关与短剧流水线
+description: 用 canvas-server 接入内网模型与 ComfyUI，跑通小说到成片
+---
+
+# 本地网关与短剧流水线
+
+`canvas-server/` 是本仓库相对上游 infinite-canvas 新增的**本地网关后端**。它把内网 LLM 与 ComfyUI 的生图 / 生视频能力收口成一套稳定接口，并在此之上编排「小说 → 剧本 → 分镜 → 服化道 → 关键帧 → 片段合成」五段式流水线。
+
+上游原本是纯前端应用，AI 请求由浏览器直连第三方接口。引入网关是为了解决四件浏览器直连解决不了的事：
+
+1. **CORS**：内网服务通常不返回跨域头。
+2. **长任务**：ComfyUI 一段视频要 5~15 分钟，需要在服务端排队与轮询，而不是挂在浏览器标签页上。
+3. **跨机访问**：ComfyUI 跑在 GPU 主机上，浏览器所在网络未必可达。
+4. **密钥与产物落盘**：密钥留在服务端，产物落地后按 URL 回传。
+
+后端零运行时依赖，只用 Node 内置模块（`node >= 20`）。
+
+## 1. 启动网关
+
+```bash
+cd canvas-server
+cp config.example.json config.json   # 按需修改
+node src/index.js                    # 默认 127.0.0.1:8788
+```
+
+配置项都可以用环境变量覆盖，例如 `CANVAS_SERVER_COMFY_URL`、`CANVAS_SERVER_LLM_URL`、`CANVAS_SERVER_PORT`。完整清单见 `canvas-server/src/config.js`。
+
+启动后先做一次连通性自检：
+
+```bash
+curl -s http://127.0.0.1:8788/api/health
+```
+
+返回里 `llm.ok` 与 `comfy.ok` 反映两个后端是否可用；`/api/providers` 会列出内网模型名、ComfyUI 可加载的 checkpoint / LoRA / VAE，以及全部工作流模板。
+
+## 2. 在画布里接入
+
+网关对上层暴露两类入口，一个渠道地址即可同时承担文本、生图、生视频：
+
+| 能力 | 请求路径 | 说明 |
+| --- | --- | --- |
+| 文本 | `/v1/chat/completions` | 网关原样转发到内网 OpenAI 兼容服务（Ollama / LM Studio / llama.cpp），SSE 逐块透传 |
+| 生图 | `/api/generate/image` | 提交 ComfyUI 工作流，返回任务 id |
+| 生视频 | `/api/generate/video` | 同上 |
+| 任务 | `/api/jobs/:id` | 轮询状态与产物 |
+| 产物 | `/api/artifacts/<jobId>/<file>` | 可直接喂给 `<img>` / `<video>` |
+
+在「配置 → 渠道」里新建一个渠道，地址填 `http://<网关主机>:8788`，然后：
+
+- 文本模型直接用该渠道即可。
+- 生图 / 生视频模型打开「调用脚本」，插入内置模板（生图：Z-Image 快出、FLUX 氛围感；生视频：H3 图生视频、MiniMax H3 文生视频）。
+
+> 写自定义脚本时注意：相对路径会被自动补上 `/v1`，因此调用网关的生图 / 生视频接口必须使用**绝对地址**，即用注入的 `baseUrl` 现算网关根地址再拼接 `/api/...`。
+
+## 3. 五段式流水线
+
+```
+小说正文
+  └─ script      剧本：logline / 人物 / 场次
+       ├─ storyboard  分镜：镜头号、景别、运镜、动作、台词、时长
+       └─ design      服化道：角色服装妆发道具、场景陈设与光位
+            └─ keyframe  关键帧：按镜头生成首帧 / 尾帧图片
+                 └─ assembly  片段合成：关键帧转视频片段并拼接
+```
+
+每个阶段的行为由 `skills/<阶段>/SKILL.md` 定义，包含输入、输出契约、提示词模板、校验规则与可用工具。阶段顺序与依赖关系在 `skills/registry.json` 里声明。
+
+常用接口：
+
+```bash
+# 查看阶段
+curl -s http://127.0.0.1:8788/api/pipeline/stages
+
+# 新建一次流水线（novel 传小说正文）
+curl -s -X POST http://127.0.0.1:8788/api/pipeline/runs \
+  -H 'content-type: application/json' \
+  -d '{"novel":"……","title":"月蚀王冠"}'
+
+# 依次推进
+curl -s -X POST http://127.0.0.1:8788/api/pipeline/runs/<runId>/steps/script/run
+curl -s -X POST http://127.0.0.1:8788/api/pipeline/runs/<runId>/steps/storyboard/run
+```
+
+产物落在 `canvas-server/data/runs/<runId>/`，逐阶段一个 JSON；生成型阶段（关键帧、片段）的媒体产物落在 `canvas-server/data/artifacts/`。
+
+## 4. 队列与并发
+
+ComfyUI 主机只有 16GB 显存，一次只能跑一个任务，因此网关内置**单 worker 串行队列**：图像与视频任务统一排队，`/api/jobs` 可以看到 `queued` 与 `running` 状态。不要绕过队列直接向 ComfyUI 并发提交，否则会显存溢出。
+
+## 5. 部署
+
+`scripts/deploy.sh` 负责把本地改动推到远程环境：
+
+```bash
+./scripts/deploy.sh              # 推送当前分支并远程部署
+```
+
+远程流程见 `scripts/remote-deploy.sh`：更新工作副本 → 按远程环境生成 `canvas-server/config.json` → 构建前端 → 跑测试 → 安装并重启 `deploy/canvas-server.service`。
+
+网关在 `web/dist` 存在时会顺带托管前端构建产物，因此部署完成后一个端口既是 API 也是画布页面。

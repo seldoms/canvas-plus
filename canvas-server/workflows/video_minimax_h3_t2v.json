@@ -1,0 +1,203 @@
+{
+  "1": {
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "01 加载 MiniMax H3 文生视频模型"
+    },
+    "inputs": {
+      "unet_name": "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+      "weight_dtype": "default"
+    }
+  },
+  "2": {
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "02 加载 MiniMax H3 视频 VAE"
+    },
+    "inputs": {
+      "vae_name": "minimax_h3_video_vae_fp16.safetensors"
+    }
+  },
+  "3": {
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "03 加载 MiniMax H3 音频 VAE"
+    },
+    "inputs": {
+      "vae_name": "minimax_h3_audio_vae_fp32.safetensors"
+    }
+  },
+  "4": {
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "04 加载 H3 专用 Qwen3-VL 文本编码器"
+    },
+    "inputs": {
+      "clip_name": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+      "type": "minimax",
+      "device": "default"
+    }
+  },
+  "5": {
+    "class_type": "MiniMaxH3ImageToVideo",
+    "_meta": {
+      "title": "05 仅用提示词创建 H3 音视频条件与联合 latent"
+    },
+    "inputs": {
+      "clip": [
+        "4",
+        0
+      ],
+      "vae": [
+        "2",
+        0
+      ],
+      "prompt": "{{PROMPT}}",
+      "width": "{{WIDTH}}",
+      "height": "{{HEIGHT}}",
+      "length": "{{LENGTH}}"
+    }
+  },
+  "6": {
+    "class_type": "BasicScheduler",
+    "_meta": {
+      "title": "06 生成官方 simple 采样 Sigma 序列"
+    },
+    "inputs": {
+      "model": [
+        "1",
+        0
+      ],
+      "scheduler": "simple",
+      "steps": "{{STEPS}}",
+      "denoise": 1
+    }
+  },
+  "7": {
+    "class_type": "RandomNoise",
+    "_meta": {
+      "title": "07 创建可复现的联合音视频噪声"
+    },
+    "inputs": {
+      "noise_seed": "{{SEED}}"
+    }
+  },
+  "8": {
+    "class_type": "BasicGuider",
+    "_meta": {
+      "title": "08 使用 H3 原生单条件引导"
+    },
+    "inputs": {
+      "model": [
+        "1",
+        0
+      ],
+      "conditioning": [
+        "5",
+        0
+      ]
+    }
+  },
+  "9": {
+    "class_type": "KSamplerSelect",
+    "_meta": {
+      "title": "09 选择官方 res_multistep 采样器"
+    },
+    "inputs": {
+      "sampler_name": "res_multistep"
+    }
+  },
+  "10": {
+    "class_type": "SamplerCustomAdvanced",
+    "_meta": {
+      "title": "10 联合采样视频与原生立体声音频"
+    },
+    "inputs": {
+      "noise": [
+        "7",
+        0
+      ],
+      "guider": [
+        "8",
+        0
+      ],
+      "sampler": [
+        "9",
+        0
+      ],
+      "sigmas": [
+        "6",
+        0
+      ],
+      "latent_image": [
+        "5",
+        1
+      ]
+    }
+  },
+  "11": {
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "11 从联合 latent 解码第一路视频帧"
+    },
+    "inputs": {
+      "samples": [
+        "10",
+        0
+      ],
+      "vae": [
+        "2",
+        0
+      ]
+    }
+  },
+  "12": {
+    "class_type": "VAEDecodeAudio",
+    "_meta": {
+      "title": "12 从联合 latent 解码末路立体声音频"
+    },
+    "inputs": {
+      "samples": [
+        "10",
+        0
+      ],
+      "vae": [
+        "3",
+        0
+      ]
+    }
+  },
+  "13": {
+    "class_type": "CreateVideo",
+    "_meta": {
+      "title": "13 以模型原生 24fps 封装音视频"
+    },
+    "inputs": {
+      "images": [
+        "11",
+        0
+      ],
+      "audio": [
+        "12",
+        0
+      ],
+      "fps": 24,
+      "bit_depth": 8
+    }
+  },
+  "14": {
+    "class_type": "SaveVideo",
+    "_meta": {
+      "title": "14 保存带原生音轨的 MP4 成品"
+    },
+    "inputs": {
+      "video": [
+        "13",
+        0
+      ],
+      "filename_prefix": "{{OUTPUT_PREFIX}}",
+      "format": "mp4",
+      "codec": "auto"
+    }
+  }
+}

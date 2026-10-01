@@ -1,0 +1,34 @@
+{
+    "host": "0.0.0.0",
+    "port": 8788,
+    "publicUrl": "",
+    "dataDir": "data",
+    "workflowsDir": "workflows",
+    "skillsDir": "../skills",
+    "webDir": "../web/dist",
+    "llm": {
+        "baseUrl": "http://127.0.0.1:11434",
+        "apiKey": "",
+        "timeoutMs": 600000,
+        "defaultModel": "qwen2.5:latest",
+        "fallbacks": ["http://127.0.0.1:1234", "http://127.0.0.1:8080"]
+    },
+    "comfy": {
+        "baseUrl": "http://192.168.123.147:8188",
+        "timeoutMs": 7200000,
+        "pollIntervalMs": 3000,
+        "username": "",
+        "password": "",
+        "maxQueue": 16
+    },
+    "pipeline": {
+        "llmModel": "",
+        "imageTemplate": "img_zimage_artistic",
+        "editTemplate": "img_boogu_outfit_edit",
+        "videoTemplate": "video_h3_i2v",
+        "upscaleTemplate": "upscale_4x",
+        "videoSeconds": 5,
+        "videoFps": 24,
+        "maxKeyframesPerShot": 2
+    }
+}
