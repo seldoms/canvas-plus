@@ -58,7 +58,9 @@ JSON
 echo "==> 构建前端"
 cd web
 if [ ! -d node_modules ]; then
-    npm install --no-audit --no-fund
+    # 上游 package.json 存在既有 peer 冲突：@ant-design/pro-components@3.0.0-beta.3 仍声明 peer antd@^5，
+    # 而根依赖是 antd@^6。这是仓库既有状态，不是本次改动引入的，用 --legacy-peer-deps 沿用上游解析结果。
+    npm install --no-audit --no-fund --legacy-peer-deps
 fi
 npm run build
 cd ..
