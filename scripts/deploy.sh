@@ -36,7 +36,7 @@ fi
 echo "==> 推送 $BRANCH 到 canvas-plus"
 git push canvas-plus "HEAD:refs/heads/$BRANCH"
 
-echo "==> 远程部署（$REMOTE_HOST）"
+echo "==> 远程部署（${REMOTE_HOST}）"
 ssh "$REMOTE_HOST" "REMOTE_DIR='${REMOTE_DIR:-/root/canvas-plus}' BRANCH='$BRANCH' bash -s" < scripts/remote-deploy.sh
 
 echo "==> 完成"
