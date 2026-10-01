@@ -170,6 +170,35 @@ createPipeline({ config, skillsDir, jobs, comfy, llm }) => {
 
 每个阶段由 `skills/<skill>/SKILL.md` 定义提示词与输出 JSON 契约；阶段间产物以 JSON 传递，落盘在 `data/runs/<runId>/<stage>.json`。
 
+## 部署与远程调试
+
+远程环境是 ubuntu 主机，部署目录 **`/sobey/canvas-plus`**，由 systemd 单元 `canvas-server.service` 拉起（`WorkingDirectory=/sobey/canvas-plus/canvas-server`，日志在 `/var/log/canvas-server.log`）。
+
+两条部署路径，按需要选：
+
+| 脚本 | 机制 | 适用 |
+| --- | --- | --- |
+| `scripts/deploy.sh` | git 推送裸仓库 → 远程 pull → 构建 → 测试 → 重启 | 正式发布，要求工作区干净 |
+| `scripts/sync-remote.sh` | rsync 直接同步工作区 → 构建 → 重启 | **远程直接部署和调试**，可带未提交改动 |
+
+```bash
+./scripts/sync-remote.sh                # 同步 + 构建前端 + 重启 + 健康检查
+./scripts/sync-remote.sh --no-build     # 只改后端时用，快很多
+./scripts/sync-remote.sh --no-restart   # 只同步，不动服务
+```
+
+同步会排除 `node_modules`、`dist`、`data`、`config.json`，因此远程的依赖、构建产物、生成记录与配置不会被本地覆盖。
+
+远程特有的配置项（`canvas-server/config.json`，不入库）已按环境写死为：LLM 指向本机 `127.0.0.1:11434`，ComfyUI 指向 GPU 主机 `192.168.123.147:8188`。**ComfyUI 与 LLM 分属两台机器**，互不争抢显存。
+
+从本机浏览器访问远程网关：
+
+```bash
+ssh -f -N -L 8788:127.0.0.1:8788 ubuntu   # 然后打开 http://127.0.0.1:8788
+```
+
+排查顺序：`systemctl status canvas-server` → `tail -50 /var/log/canvas-server.log` → `curl -s http://127.0.0.1:8788/api/backends` → `curl -s http://127.0.0.1:8788/api/health`。
+
 ## 与上游项目约定
 
 本目录是无限画布的增强部分，遵循根目录 `AGENTS.md` 的写法约定，并在此显式记录一处有意偏离：
