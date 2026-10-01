@@ -13,6 +13,12 @@
 + [新增] 新增 `scripts/sync-remote.sh`：用 rsync 把本地工作区直接同步到远程并重建、重启，用于在远程直接部署和调试；`scripts/deploy.sh` 的 git 推送流程继续保留。
 + [调整] 远程部署目录由 `/root/canvas-plus` 迁到 `/sobey/canvas-plus`，systemd 单元随之切换。
 + [新增] 新增 `canvas-server/scripts/smoke.mjs` 端到端冒烟脚本，覆盖后端连通性、真实生图（含 LoRA 自动摘除）与流水线剧本阶段。
++ [修复] 流水线关键帧与片段阶段的生成参数补齐模板要求的 token（`WIDTH/HEIGHT/BATCH` 等由 `pipeline.image*/video*` 提供），此前只传 `PROMPT`，渲染阶段直接报「缺少参数」。
++ [修复] 关键帧 `end` 帧不再指向换装模板 `img_boogu_outfit_edit`（它要 `PERSON_IMAGE + CLOTHING_IMAGE`），三种帧角色统一用文生图模板。
++ [修复] 片段生成的 `LENGTH` 按 H3 的 17n+5 帧网格计算，不再直接把「秒数 × 帧率」喂给模型；同时去掉无效的 `FRAME_RATE` 参数。
++ [新增] 新增长期回归测试：用**真实模板**渲染编排器产出的参数，确保二者契约不再漂移。
++ [新增] 新增本地能力盘点 `docs/content/docs/progress/local-capability-audit.md`：11 个模板的依赖模型逐项比对、参数建议、101 个 LoRA 归类、缺口与补齐建议。
++ [新增] 新增模板 `video_h3_talk`（TTS 台词 + 对口型），已真机跑通 480×864 / 56 帧 / H.264 + AAC。
 
 ## v0.19.0 - 2026-09-16
 

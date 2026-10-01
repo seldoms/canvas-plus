@@ -50,6 +50,12 @@ const DEFAULTS = {
         editTemplate: "img_boogu_outfit_edit",
         videoTemplate: "video_h3_i2v",
         upscaleTemplate: "upscale_4x",
+        // 关键帧/片段生成时补进模板的尺寸参数；模板要求的 token 缺一个就会在渲染阶段报错。
+        imageWidth: 768,
+        imageHeight: 1344,
+        imageBatch: 1,
+        videoWidth: 768,
+        videoHeight: 1344,
         videoSeconds: 5,
         videoFps: 24,
         maxKeyframesPerShot: 2,

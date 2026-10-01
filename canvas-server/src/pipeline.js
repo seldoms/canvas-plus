@@ -7,6 +7,16 @@ import { loadRegistry, readSkill } from "./skills.js";
 /** 生成型阶段：只构造生成任务参数并交给任务队列，不等真实产物。 */
 const GENERATIVE_STAGES = new Set(["keyframe", "assembly"]);
 
+/**
+ * H3 系列模板的 LENGTH 走 17n+5 帧网格（5s≈123 帧、10s≈243 帧）。
+ * 取不小于目标时长的最小网格点，避免把非网格帧数喂给模型。
+ */
+function frameCountFor(seconds, fps) {
+    const desired = Math.max(1, Math.round(Number(seconds) * Number(fps)));
+    const steps = Math.max(0, Math.round((desired - 5) / 17));
+    return 17 * steps + 5;
+}
+
 function nowIso() {
     return new Date().toISOString();
 }
@@ -236,6 +246,17 @@ export function createPipeline({ config, skillsDir, jobs, comfy, llm, runJob } =
         const extraParams = (def.id === "keyframe" ? run.options?.image : run.options?.video) || {};
         const fps = Number(pipelineConfig.videoFps) || 24;
         const fallbackSeconds = Number(pipelineConfig.videoSeconds) || 5;
+        // 模板要求的 token 必须全部给到，否则渲染阶段就会报「缺少参数」。尺寸取 config.pipeline 的默认值，
+        // 调用方仍可用 run.options.image / run.options.video 覆盖。
+        const imageDefaults = {
+            WIDTH: Number(pipelineConfig.imageWidth) || 768,
+            HEIGHT: Number(pipelineConfig.imageHeight) || 1344,
+            BATCH: Number(pipelineConfig.imageBatch) || 1,
+        };
+        const videoDefaults = {
+            WIDTH: Number(pipelineConfig.videoWidth) || 768,
+            HEIGHT: Number(pipelineConfig.videoHeight) || 1344,
+        };
         const canEnqueue = typeof runJob === "function" && typeof jobs?.enqueue === "function";
         for (const item of items) {
             item.jobId = null;
@@ -243,22 +264,26 @@ export function createPipeline({ config, skillsDir, jobs, comfy, llm, runJob } =
             item.status = "queued";
             const start = frames.find((frame) => frame.shotId === item.shotId && frame.role === "start");
             if (def.id === "keyframe") {
-                item.template = item.role === "end" ? pipelineConfig.editTemplate : pipelineConfig.imageTemplate;
-                const params = { PROMPT: item.prompt, ...extraParams };
+                // start / key / end 三种帧都用同一个文生图模板。end 帧此前被指向 editTemplate
+                // （img_boogu_outfit_edit 是换装模板，要 PERSON_IMAGE + CLOTHING_IMAGE），既语义不符也必然报错。
+                item.template = pipelineConfig.imageTemplate;
+                const params = { ...imageDefaults, PROMPT: item.prompt, ...extraParams };
+                // 模板确实需要 INPUT_IMAGE 时（例如后续接入图生图模板）才带上起始帧，避免无意义地触发上传。
                 if (item.role === "end" && start?.artifactUrl) params.INPUT_IMAGE = start.artifactUrl;
-                if (canEnqueue && (item.role !== "end" || params.INPUT_IMAGE)) item.jobId = enqueueItem(run, def, item.id, "image", item.template, params);
+                if (canEnqueue) item.jobId = enqueueItem(run, def, item.id, "image", item.template, params);
             } else {
                 item.template = pipelineConfig.videoTemplate;
                 item.durationSec = Number(item.durationSec) > 0 ? Number(item.durationSec) : fallbackSeconds;
                 if (!item.keyframeId) item.keyframeId = start?.id ?? null;
                 const shot = shots.find((entry) => entry.id === item.shotId);
                 const params = {
+                    ...videoDefaults,
                     PROMPT: [shot?.prompt, shot?.action].filter(Boolean).join(", "),
-                    LENGTH: Math.max(1, Math.round(item.durationSec * fps)),
-                    FRAME_RATE: fps,
+                    LENGTH: frameCountFor(item.durationSec, fps),
                     ...extraParams,
                 };
                 if (start?.artifactUrl) params.INPUT_IMAGE = start.artifactUrl;
+                // 图生视频必须有起始帧；没拿到就保持 queued + jobId:null，等关键帧阶段产出后再跑（契约见 05 SKILL.md）。
                 if (canEnqueue && params.INPUT_IMAGE) item.jobId = enqueueItem(run, def, item.id, "video", item.template, params);
             }
         }

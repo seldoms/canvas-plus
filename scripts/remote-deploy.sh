@@ -63,6 +63,11 @@ cat > canvas-server/config.json <<JSON
         "editTemplate": "img_boogu_outfit_edit",
         "videoTemplate": "video_h3_i2v",
         "upscaleTemplate": "upscale_4x",
+        "imageWidth": 768,
+        "imageHeight": 1344,
+        "imageBatch": 1,
+        "videoWidth": 768,
+        "videoHeight": 1344,
         "videoSeconds": 5,
         "videoFps": 24,
         "maxKeyframesPerShot": 2

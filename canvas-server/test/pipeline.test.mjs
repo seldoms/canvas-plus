@@ -3,9 +3,15 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { createPipeline } from "../src/pipeline.js";
+import { extractTokens, renderTemplate } from "../src/providers/comfy.js";
 import { loadRegistry, loadSkills, readSkill } from "../src/skills.js";
+
+const workflowsDir = fileURLToPath(new URL("../workflows/", import.meta.url));
+/** 这几个 token 由执行器统一兜底（见 src/generate.js），不要求编排器提供。 */
+const RUNNER_FILLED = new Set(["SEED", "OUTPUT_PREFIX", "LORA_FILE", "LORA_STRENGTH"]);
 
 /** 造一份最小可用的 skills 环境：4 个阶段 + registry。 */
 function makeEnv() {
@@ -276,15 +282,21 @@ test("生成型阶段：回填 template/jobId/status 并入队，不采信模型
     const frames = keyed.stages.keyframe.output.frames;
     assert.deepEqual(frames.map((frame) => [frame.id, frame.role, frame.status]), [["sh1-start", "start", "queued"], ["sh1-end", "end", "queued"]]);
     assert.equal(frames[0].template, "img-test");
-    assert.equal(frames[1].template, "edit-test");
+    // end 帧不再指向 editTemplate（那是换装模板 img_boogu_outfit_edit，要 PERSON_IMAGE + CLOTHING_IMAGE，
+    // 语义不符且必然报「缺少参数」），三种角色统一用 imageTemplate。
+    assert.equal(frames[1].template, "img-test");
     assert.equal(frames[0].jobId, `${run.id}-sh1-start`);
-    assert.equal(frames[1].jobId, null);
+    assert.equal(frames[1].jobId, `${run.id}-sh1-end`);
     assert.deepEqual(frames.map((frame) => frame.artifactUrl), [null, null]);
-    assert.equal(jobs.enqueued.length, 1);
+    assert.equal(jobs.enqueued.length, 2);
     assert.equal(jobs.enqueued[0].kind, "image");
     assert.equal(jobs.enqueued[0].template, "img-test");
     assert.equal(jobs.enqueued[0].params.INPUT_IMAGE, undefined);
     assert.equal(jobs.enqueued[0].params.PROMPT, "少女走进老屋，中景");
+    // 尺寸参数必须补齐，否则真实模板会在渲染阶段报「缺少参数：WIDTH」
+    assert.equal(jobs.enqueued[0].params.WIDTH, 768);
+    assert.equal(jobs.enqueued[0].params.HEIGHT, 1344);
+    assert.equal(jobs.enqueued[0].params.BATCH, 1);
 
     const assembled = await pipeline.runStage(run.id, "assembly");
     const clips = assembled.stages.assembly.output.clips;
@@ -293,7 +305,9 @@ test("生成型阶段：回填 template/jobId/status 并入队，不采信模型
     assert.equal(clips[0].jobId, null);
     assert.equal(clips[0].artifactUrl, null);
     assert.deepEqual(assembled.stages.assembly.output.assembly, { order: ["sh1-clip"], transition: "dissolve", status: "queued" });
-    assert.equal(jobs.enqueued.length, 1);
+    // 只有两个关键帧入了队；片段因为起始帧还没有产物（没有 INPUT_IMAGE）保持 queued 不入队。
+    assert.equal(jobs.enqueued.length, 2);
+    assert.deepEqual(jobs.enqueued.map((job) => job.kind), ["image", "image"]);
 });
 
 test("没有 runJob 时生成型阶段只标记 queued，不入队", async (t) => {
@@ -310,4 +324,45 @@ test("没有 runJob 时生成型阶段只标记 queued，不入队", async (t) =
     assert.equal(keyed.stages.keyframe.status, "done");
     assert.deepEqual(keyed.stages.keyframe.output.frames.map((frame) => frame.jobId), [null, null]);
     assert.equal(jobs.enqueued.length, 0);
+});
+
+test("编排器产出的参数必须覆盖真实模板要求的 token（契约回归）", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    // 换成本仓库真实模板与真实尺寸默认值，模拟线上配置。
+    env.config.workflowsDir = workflowsDir;
+    env.config.pipeline = {
+        imageTemplate: "img_zimage_artistic",
+        editTemplate: "img_boogu_outfit_edit",
+        videoTemplate: "video_h3_i2v",
+        imageWidth: 768,
+        imageHeight: 1344,
+        imageBatch: 1,
+        videoWidth: 768,
+        videoHeight: 1344,
+        videoSeconds: 5,
+        videoFps: 24,
+        maxKeyframesPerShot: 2,
+    };
+
+    const jobs = fakeJobs();
+    const llm = fakeLlm(stageReply);
+    const { pipeline } = build(env, { llm, jobs, runJob: async () => ({ outputs: [] }) });
+    const run = pipeline.create({ novel: "很久以前" });
+    await pipeline.runStage(run.id, "script");
+    await pipeline.runStage(run.id, "storyboard");
+    await pipeline.runStage(run.id, "keyframe");
+
+    assert.ok(jobs.enqueued.length >= 1, "关键帧阶段至少应入队一个任务");
+    for (const job of jobs.enqueued) {
+        const templatePath = join(workflowsDir, `${job.template}.json`);
+        const required = extractTokens(templatePath).filter((token) => !RUNNER_FILLED.has(token));
+        const missing = required.filter((token) => job.params[token] === undefined || job.params[token] === "");
+        assert.deepEqual(missing, [], `${job.template} 缺少参数：${missing.join("、")}`);
+        // 用真实模板渲染一次，确认不会在渲染阶段就抛错。
+        assert.doesNotThrow(
+            () => renderTemplate(templatePath, { ...job.params, SEED: 1, OUTPUT_PREFIX: "canvas/test", LORA_FILE: "", LORA_STRENGTH: 1 }),
+            `${job.template} 渲染失败`,
+        );
+    }
 });
