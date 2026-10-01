@@ -27,9 +27,7 @@ done
 echo "==> 同步工作区到 ${REMOTE_HOST}:${REMOTE_DIR}"
 ssh "$REMOTE_HOST" "mkdir -p '$REMOTE_DIR'"
 # 排除依赖、构建产物与运行时数据；config.json 由远程自己维护，不要被本地覆盖。
-# --no-owner/--no-group：本机是 macOS uid 501，不加会把远程文件变成未知属主、git 还会报 dubious ownership。
-# --chmod=Fugo+r：本地文件是 600，不加则同机其他用户/Agent 读不到（保留脚本已有的可执行位）。
-rsync -a --delete --no-owner --no-group --chmod=D755,Fugo+r \
+rsync -a --delete \
     --exclude 'node_modules' \
     --exclude 'dist' \
     --exclude 'data' \
@@ -37,6 +35,16 @@ rsync -a --delete --no-owner --no-group --chmod=D755,Fugo+r \
     --exclude '.DS_Store' \
     --exclude '*.log' \
     ./ "${REMOTE_HOST}:${REMOTE_DIR}/"
+
+# 本机是 macOS uid 501 且文件是 600，rsync 会把这些带到远程：属主变成未知 uid、
+# git 还会报 dubious ownership，同机其他用户与 Agent 也读不到交接文件。
+# macOS 自带的 openrsync 不支持 --chmod/--no-owner 的部分写法，统一在远程侧规范化。
+ssh "$REMOTE_HOST" "
+    chown -R root:root '$REMOTE_DIR'
+    find '$REMOTE_DIR' -type d -exec chmod 755 {} +
+    find '$REMOTE_DIR' -type f -perm -u+x -exec chmod 755 {} +
+    find '$REMOTE_DIR' -type f ! -perm -u+x -exec chmod 644 {} +
+"
 
 if [ "$DO_BUILD" = 1 ]; then
     echo "==> 远程构建前端"
