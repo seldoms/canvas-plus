@@ -81,10 +81,11 @@ export function createJobQueue({ dataDir, concurrency = 1, label = "job" } = {})
         };
     }
 
-    function enqueue({ id, kind, template, name, params, meta }, runner) {
+    function enqueue({ id, kind, backend, template, name, params, meta }, runner) {
         const job = {
             id,
             kind,
+            backend: backend || "local",
             template,
             name: name || id,
             params: params || {},

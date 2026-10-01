@@ -43,6 +43,21 @@ cat > canvas-server/config.json <<JSON
         "pollIntervalMs": 3000,
         "maxQueue": 16
     },
+    "generation": {
+        "defaultBackend": "local",
+        "allowRunningHub": true
+    },
+    "runninghub": {
+        "baseUrl": "https://www.runninghub.ai/openapi/v2",
+        "apiKey": "",
+        "pollIntervalMs": 5000,
+        "timeoutMs": 1800000,
+        "probeTimeoutMs": 8000,
+        "model": {
+            "image": "z-image/turbo",
+            "video": "alibaba/wan-2.7/image-to-video"
+        }
+    },
     "pipeline": {
         "imageTemplate": "img_zimage_artistic",
         "editTemplate": "img_boogu_outfit_edit",

@@ -5,7 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/root/canvas-plus/canvas-server
+WorkingDirectory=/sobey/canvas-plus/canvas-server
 ExecStart=/usr/bin/node src/index.js
 Restart=always
 RestartSec=3

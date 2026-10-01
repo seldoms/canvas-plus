@@ -11,7 +11,10 @@
         "apiKey": "",
         "timeoutMs": 600000,
         "defaultModel": "qwen2.5:latest",
-        "fallbacks": ["http://127.0.0.1:1234", "http://127.0.0.1:8080"]
+        "fallbacks": [
+            "http://127.0.0.1:1234",
+            "http://127.0.0.1:8080"
+        ]
     },
     "comfy": {
         "baseUrl": "http://192.168.123.147:8188",
@@ -20,6 +23,21 @@
         "username": "",
         "password": "",
         "maxQueue": 16
+    },
+    "generation": {
+        "defaultBackend": "local",
+        "allowRunningHub": true
+    },
+    "runninghub": {
+        "baseUrl": "https://www.runninghub.ai/openapi/v2",
+        "apiKey": "",
+        "pollIntervalMs": 5000,
+        "timeoutMs": 1800000,
+        "probeTimeoutMs": 8000,
+        "model": {
+            "image": "z-image/turbo",
+            "video": "alibaba/wan-2.7/image-to-video"
+        }
     },
     "pipeline": {
         "llmModel": "",

@@ -10,8 +10,10 @@ import { createRouter, readJson, readBody, sendError, sendJson, serveFile, apply
 import { createJobQueue, waitForJob } from "./jobs.js";
 import { createPipeline } from "./pipeline.js";
 import { loadRegistry } from "./skills.js";
-import { createComfyClient, probeComfy, listComfyCapabilities, listTemplates, renderTemplate, extractTokens, disableEmptyLoras, collectOutputs } from "./providers/comfy.js";
+import { createComfyClient, probeComfy, listComfyCapabilities, listTemplates } from "./providers/comfy.js";
 import { probeLlm, listLlmModels, forwardToLlm, chat as llmChat } from "./providers/llm.js";
+import { createLocalRunner } from "./generate.js";
+import { probeRunningHub, listRunningHubModels, runRunningHubJob } from "./providers/runninghub.js";
 
 const config = loadConfig();
 
@@ -23,109 +25,51 @@ const llm = {
 };
 const uploads = ensureDir(safeJoin(config.dataDir, "uploads"));
 
-const IMAGE_TOKENS = new Set(["PROMPT", "WIDTH", "HEIGHT", "BATCH", "SEED", "OUTPUT_PREFIX", "LORA_FILE", "LORA_STRENGTH", "INPUT_IMAGE", "STEPS", "REALISM_STRENGTH"]);
-
-/** 生图/生视频任务的真实执行体：渲染模板 → 提交 ComfyUI → 轮询 → 回收产物。 */
-async function runGenerationJob(job, ctx) {
-    const templatePath = safeJoin(config.workflowsDir, `${job.template}.json`);
-    if (!templatePath) throw new Error(`非法模板名：${job.template}`);
-
-    const params = { ...job.params };
-    params.SEED ??= Math.floor(Math.random() * 2 ** 31);
-    params.OUTPUT_PREFIX ??= `canvas/${sanitizeName(job.name || job.id)}`;
-
-    // 模板要求的 token 全部补齐：LoRA 允许缺省，缺省时由 disableEmptyLoras 把 LoRA 节点摘掉，
-    // 这样调用方（画布前端）不需要知道该用哪个 lora 文件名。
-    for (const token of extractTokens(templatePath)) {
-        if (params[token] !== undefined) continue;
-        if (token === "LORA_FILE") params[token] = "";
-        else if (token === "LORA_STRENGTH") params[token] = 1;
-        else throw new Error(`模板 ${job.template} 缺少参数：${token}`);
-    }
-
-    // 参考图/参考视频允许传本机绝对路径，统一上传到 ComfyUI 后再写回参数。
-    for (const token of ["INPUT_IMAGE", "REF_VIDEO", "PERSON_IMAGE", "CLOTHING_IMAGE", "REF_IMAGE_1", "REF_IMAGE_2", "REF_IMAGE_3"]) {
-        if (params[token]) params[token] = await resolveAsset(params[token]);
-    }
-
-    const graph = renderTemplate(templatePath, params);
-    const removed = disableEmptyLoras(graph);
-    if (removed.length) console.log(`[job ${job.id}] 未指定 LoRA，已摘除节点 ${removed.join(", ")}`);
-    const promptId = await comfy.queuePrompt(graph);
-    ctx.patch({ promptId });
-    ctx.progress(0, 0, "已提交");
-
-    const deadline = Date.now() + config.comfy.timeoutMs;
-    let entry = null;
-    while (Date.now() < deadline) {
-        if (ctx.signal.aborted) throw new Error("已取消");
-        entry = await comfy.history(promptId);
-        if (entry) break;
-        const counts = await comfy.queueCounts().catch(() => ({ running: 0, pending: 0 }));
-        ctx.progress(0, 0, counts.running ? "生成中" : "排队中");
-        await sleep(config.comfy.pollIntervalMs, ctx.signal);
-    }
-    if (!entry) {
-        await comfy.interrupt().catch(() => {});
-        throw new Error(`生成超时（${Math.round(config.comfy.timeoutMs / 1000)}s）`);
-    }
-
-    const status = entry.status || {};
-    if (status.status_str === "error") {
-        const detail = (status.messages || []).filter((item) => item[0] === "execution_error");
-        throw new Error(detail.length ? JSON.stringify(detail, null, 2) : "ComfyUI 执行失败");
-    }
-
-    const outputs = await collectOutputs(entry, job.id, config, comfy);
-    if (!outputs.length) throw new Error("ComfyUI 未返回任何产物，请检查模板的输出节点");
-    ctx.progress(outputs.length, outputs.length, "已完成");
-    return { outputs };
-}
-
-async function resolveAsset(value) {
-    const text = String(value);
-    if (/^https?:\/\//i.test(text)) {
-        const response = await fetch(text);
-        if (!response.ok) throw new Error(`下载参考素材失败：${response.status}`);
-        const buffer = Buffer.from(await response.arrayBuffer());
-        return comfy.uploadFile(buffer, sanitizeName(text.split("/").pop() || "asset"));
-    }
-    // 上游阶段回填的产物地址是网关自己的相对路径，直接读本地产物文件，避免依赖 publicUrl 配绝对地址。
-    if (text.startsWith("/api/artifacts/")) {
-        const segments = text.slice("/api/artifacts/".length).split("/").filter(Boolean);
-        const file = safeJoin(config.dataDir, "artifacts", ...segments);
-        if (!file) throw new Error(`非法产物地址：${text}`);
-        const { readFile } = await import("node:fs/promises");
-        const buffer = await readFile(file);
-        return comfy.uploadFile(buffer, sanitizeName(segments.pop()));
-    }
-    if (text.startsWith("comfy:") || !text.includes("/")) return text;
-    const { readFile } = await import("node:fs/promises");
-    const buffer = await readFile(text);
-    return comfy.uploadFile(buffer, sanitizeName(text.split(/[\\/]/).pop()));
-}
-
-function sleep(ms, signal) {
-    return new Promise((resolve, reject) => {
-        const timer = setTimeout(resolve, ms);
-        signal?.addEventListener("abort", () => {
-            clearTimeout(timer);
-            reject(new Error("已取消"));
-        }, { once: true });
-    });
-}
-
 const jobs = createJobQueue({ dataDir: config.dataDir, concurrency: 1, label: "canvas-server" });
-const pipeline = createPipeline({ config, skillsDir: config.skillsDir, jobs, comfy, llm, runJob: runGenerationJob });
+const local = createLocalRunner({ config, comfy, jobs });
+/** 后端分派：默认走本地 ComfyUI；只有显式指定 runninghub 且配置允许时才走云端。 */
+function backendOf(job) {
+    return job.backend === "runninghub" ? "runninghub" : "local";
+}
 
+async function runJob(job, ctx) {
+    if (backendOf(job) === "runninghub") {
+        if (!config.generation.allowRunningHub) throw new Error("RunningHub 后端已被配置禁用");
+        return runRunningHubJob(job, ctx, config);
+    }
+    return local.runJob(job, ctx);
+}
+
+const pipeline = createPipeline({ config, skillsDir: config.skillsDir, jobs, comfy, llm, runJob });
+
+/** 入队入口：默认本地 ComfyUI，显式传 backend:"runninghub" 时才走云端。 */
 function submitGeneration(kind, body) {
-    const template = String(body.template || "").trim();
-    if (!template) throw new Error("缺少 template");
-    const templatePath = safeJoin(config.workflowsDir, `${template}.json`);
-    if (!templatePath) throw new Error(`非法模板名：${template}`);
+    const backend = String(body.backend || config.generation.defaultBackend || "local").trim();
+    if (backend === "local") return local.submit({ ...body, kind });
+
+    if (backend !== "runninghub") throw new Error(`未知生成后端：${backend}`);
+    if (!config.generation.allowRunningHub) throw new Error("RunningHub 后端已被配置禁用");
+    const endpoint = String(body.params?.endpoint || body.endpoint || "").trim();
+    if (!endpoint) throw new Error("RunningHub 任务缺少 params.endpoint");
     const id = `${kind}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
-    const params = { ...(body.params || {}) };
-    return jobs.enqueue({ id, kind, template, name: body.name || template, params, meta: body.meta }, runGenerationJob);
+    return jobs.enqueue(
+        { id, kind, backend, template: endpoint, name: body.name || endpoint, params: { ...(body.params || {}) }, meta: body.meta },
+        runJob,
+    );
+}
+
+/** 前端与运维用的后端清单：本地永远可用，RunningHub 取决于是否配置了 Key。 */
+function backends() {
+    const runninghub = { id: "runninghub", label: "RunningHub 云端", available: false, reason: "未配置 API Key" };
+    if (!config.generation.allowRunningHub) runninghub.reason = "配置已禁用";
+    else if (config.runninghub.apiKey) {
+        runninghub.available = true;
+        delete runninghub.reason;
+    }
+    return [
+        { id: "local", label: "本地 ComfyUI", available: true, baseUrl: config.comfy.baseUrl, default: config.generation.defaultBackend === "local" },
+        { ...runninghub, baseUrl: config.runninghub.baseUrl, default: config.generation.defaultBackend === "runninghub" },
+    ];
 }
 
 const router = createRouter();
@@ -134,7 +78,7 @@ const serviceInfo = {
     name: "canvas-server",
     description: "无限画布本地网关：内网 LLM 与 ComfyUI 生图/生视频统一出口",
     version: "0.1.0",
-    endpoints: ["/api/health", "/api/providers", "/api/jobs", "/api/pipeline/runs", "/v1/models", "/v1/chat/completions"],
+    endpoints: ["/api/health", "/api/backends", "/api/providers", "/api/jobs", "/api/runninghub/models", "/api/pipeline/runs", "/v1/models", "/v1/chat/completions"],
 };
 
 router.get("/api", (req, res) => sendJson(res, 200, serviceInfo));
@@ -147,11 +91,22 @@ router.get("/", (req, res) => {
 });
 
 router.get("/api/health", async (req, res) => {
-    const [llmResult, comfyResult] = await Promise.all([
+    const [llmResult, comfyResult, runninghubResult] = await Promise.all([
         probeLlm(config).catch((error) => ({ ok: false, baseUrl: config.llm.baseUrl, error: error.message })),
         probeComfy(config).catch((error) => ({ ok: false, baseUrl: config.comfy.baseUrl, error: error.message })),
+        probeRunningHub({ ...config, runninghub: { ...config.runninghub, timeoutMs: config.runninghub.probeTimeoutMs } }).catch((error) => ({ ok: false, baseUrl: config.runninghub.baseUrl, error: error.message })),
     ]);
-    sendJson(res, 200, { ok: llmResult.ok || comfyResult.ok, llm: llmResult, comfy: comfyResult, queue: jobs.counts() });
+    sendJson(res, 200, { ok: llmResult.ok || comfyResult.ok, llm: llmResult, comfy: comfyResult, runninghub: runninghubResult, queue: jobs.counts() });
+});
+
+/** 生图/生视频后端清单。本地是默认且必须可用的那条链路。 */
+router.get("/api/backends", (req, res) => {
+    sendJson(res, 200, { backends: backends(), defaultBackend: config.generation.defaultBackend, allowRunningHub: config.generation.allowRunningHub });
+});
+
+/** RunningHub 可选模型目录（本地内置，不请求上游，避免未配置 Key 时也打网络）。 */
+router.get("/api/runninghub/models", (req, res) => {
+    sendJson(res, 200, listRunningHubModels(config));
 });
 
 router.get("/api/providers", async (req, res) => {
@@ -159,7 +114,7 @@ router.get("/api/providers", async (req, res) => {
         listLlmModels(config).catch(() => []),
         listComfyCapabilities(config).catch((error) => ({ templates: listTemplates(config.workflowsDir), models: {}, error: error.message })),
     ]);
-    sendJson(res, 200, { llm: { baseUrl: config.llm.baseUrl, models }, comfy: capabilities });
+    sendJson(res, 200, { llm: { baseUrl: config.llm.baseUrl, models }, comfy: capabilities, backends: backends() });
 });
 
 router.get("/api/skills", (req, res) => {
@@ -345,4 +300,4 @@ if (isMain) {
     });
 }
 
-export { server, config, jobs, pipeline, comfy, llm, runGenerationJob, submitGeneration, resolveAsset, IMAGE_TOKENS, waitForJob, fileSize, artifactUrl };
+export { server, config, jobs, pipeline, comfy, llm, local, runJob, submitGeneration, backends, waitForJob, fileSize, artifactUrl };

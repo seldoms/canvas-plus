@@ -32,11 +32,23 @@ node src/index.js            # 默认 127.0.0.1:8788
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/api/health` | `{ ok, llm: {ok, baseUrl, error?}, comfy: {ok, baseUrl, error?}, queue: {running, pending} }` |
-| GET | `/api/providers` | `{ llm: { models: string[] }, comfy: { templates: TemplateInfo[], models: { checkpoints: string[], loras: string[], vae: string[] } } }` |
+| GET | `/api/health` | `{ ok, llm: {ok, baseUrl, error?}, comfy: {ok, baseUrl, error?}, runninghub: {ok, baseUrl, error?}, queue: {running, pending} }` |
+| GET | `/api/backends` | `{ backends: BackendInfo[], defaultBackend, allowRunningHub }` |
+| GET | `/api/providers` | `{ llm: { models: string[] }, comfy: { templates: TemplateInfo[], models: {...} }, backends: BackendInfo[] }` |
+| GET | `/api/runninghub/models` | `{ image: RunningHubModel[], video: RunningHubModel[] }`，本地内置目录，不请求上游 |
 | GET | `/api/skills` | `{ skills: SkillInfo[] }` |
 
 `TemplateInfo` = `{ name, family: "image"｜"video"｜"upscale"｜"edit", title, tokens: string[] }`
+`BackendInfo` = `{ id: "local"｜"runninghub", label, available: boolean, baseUrl, default: boolean, reason?: string }`
+`RunningHubModel` = `{ id, name, endpoint, outputType, priceLabel?, description? }`
+
+### 生成后端（本地优先）
+
+**生图、生视频默认且必须走本地 ComfyUI**（`backends[0].id === "local"`，`defaultBackend` 默认 `"local"`）。
+RunningHub 是**保留的可选云端后端**：未配置 `runninghub.apiKey` 时它在 `/api/backends` 里显示为不可用，
+且完全不影响本地链路；只有请求里显式传 `backend: "runninghub"` 才会走云端。
+
+`config.generation.allowRunningHub` 置为 `false` 可整体关闭云端后端（此时即使传 `backend` 也会被拒绝）。
 
 ### LLM 透传（OpenAI 兼容）
 
@@ -49,7 +61,7 @@ node src/index.js            # 默认 127.0.0.1:8788
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| POST | `/api/generate/image` | body `{ template, params, name? }` → `201 { job }` |
+| POST | `/api/generate/image` | body `{ template, params, name?, backend? }` → `201 { job }` |
 | POST | `/api/generate/video` | 同上，语义分类不同 |
 | POST | `/api/uploads` | multipart 上传参考图/视频 → `201 { name, comfyName }` |
 | GET | `/api/jobs` | `?status=&limit=` → `{ jobs: Job[] }` |
@@ -57,7 +69,10 @@ node src/index.js            # 默认 127.0.0.1:8788
 | POST | `/api/jobs/:id/cancel` | → `{ job: Job }` |
 | GET | `/api/artifacts/<jobId>/<filename>` | 产物文件字节流（带正确 content-type） |
 
-`Job` = `{ id, kind: "image"｜"video"｜"upscale"｜"edit", template, name, params, status: "queued"｜"running"｜"done"｜"error"｜"canceled", promptId?, progress?: { value, max, node? }, outputs: Artifact[], error?, createdAt, startedAt?, finishedAt? }`
+- `backend: "local"`（默认）：`template` 是 `canvas-server/workflows/` 下的工作流模板名。
+- `backend: "runninghub"`：`params.endpoint` 是 RunningHub 模型端点（如 `z-image/turbo`），`params.prompt` 等按该模型 schema 透传；本地素材会先上传再替换为 `download_url`。
+
+`Job` = `{ id, kind: "image"｜"video"｜"upscale"｜"edit", backend: "local"｜"runninghub", template, name, params, status: "queued"｜"running"｜"done"｜"error"｜"canceled", promptId?, progress?: { value, max, node? }, outputs: Artifact[], error?, createdAt, startedAt?, finishedAt? }`
 `Artifact` = `{ filename, url, type: "image"｜"video"｜"audio"｜"file", width?, height?, bytes? }`
 
 ### 流水线（五段式）

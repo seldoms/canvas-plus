@@ -27,6 +27,23 @@ const DEFAULTS = {
         password: "",
         maxQueue: 16,
     },
+    // 本地优先：生图/生视频默认且必须走本地 ComfyUI；RunningHub 是保留的可选云端后端。
+    generation: {
+        defaultBackend: "local",
+        allowRunningHub: true,
+    },
+    runninghub: {
+        baseUrl: "https://www.runninghub.ai/openapi/v2",
+        apiKey: "",
+        pollIntervalMs: 5000,
+        timeoutMs: 1800000,
+        // 仅用于 /api/health 的连通性探测，避免健康检查被任务级超时（30 分钟）拖住。
+        probeTimeoutMs: 8000,
+        model: {
+            image: "z-image/turbo",
+            video: "alibaba/wan-2.7/image-to-video",
+        },
+    },
     pipeline: {
         llmModel: "",
         imageTemplate: "img_zimage_artistic",
@@ -75,6 +92,8 @@ export function loadConfig(overrides = {}) {
         ...overrides,
         llm: { ...DEFAULTS.llm, ...fileConfig.llm, ...overrides.llm },
         comfy: { ...DEFAULTS.comfy, ...fileConfig.comfy, ...overrides.comfy },
+        generation: { ...DEFAULTS.generation, ...fileConfig.generation, ...overrides.generation },
+        runninghub: { ...DEFAULTS.runninghub, ...fileConfig.runninghub, ...overrides.runninghub },
         pipeline: { ...DEFAULTS.pipeline, ...fileConfig.pipeline, ...overrides.pipeline },
     };
 
@@ -92,6 +111,9 @@ export function loadConfig(overrides = {}) {
     merged.comfy.baseUrl = envValue("CANVAS_SERVER_COMFY_URL") ?? merged.comfy.baseUrl;
     merged.comfy.username = envValue("CANVAS_SERVER_COMFY_USER") ?? merged.comfy.username;
     merged.comfy.password = envValue("CANVAS_SERVER_COMFY_PASSWORD") ?? merged.comfy.password;
+    merged.generation.defaultBackend = envValue("CANVAS_SERVER_DEFAULT_BACKEND") ?? merged.generation.defaultBackend;
+    merged.runninghub.baseUrl = envValue("CANVAS_SERVER_RH_URL") ?? merged.runninghub.baseUrl;
+    merged.runninghub.apiKey = envValue("CANVAS_SERVER_RH_KEY") ?? merged.runninghub.apiKey;
 
     merged.dataDir = resolvePath(merged.dataDir, serverRoot);
     merged.workflowsDir = resolvePath(merged.workflowsDir, serverRoot);

@@ -8,6 +8,11 @@
 + [新增] 前端配置页新增「本地网关」页签，可填网关地址并测试 LLM 与 ComfyUI 连通性；主导航新增流水线页面，支持分步运行、查看与人工修订各阶段产物、按 jobId 轮询关键帧和片段产物。
 + [新增] 内置本地网关调用脚本模板：Z-Image 快出、FLUX 氛围感、Krea2 质感生图，以及 H3 图生视频、MiniMax H3 文生视频。
 + [优化] 模板未指定 LoRA 时网关自动摘除对应 LoRA 节点，调用方不需要知道该用哪个 lora 文件名。
++ [新增] 确立「本地优先」的生成后端抽象：生图、生视频默认且必须走本地 ComfyUI，新增 `/api/backends` 暴露后端清单与可用性，任务带 `backend` 字段。
++ [新增] 新增 RunningHub 云端后端适配器（提交 / 轮询 / 素材上传 / 取消），可用 `/api/runninghub/models` 查看内置模型目录；未配置 API Key 时完全静默不可用，不影响本地链路，显式传 `backend: "runninghub"` 才会走云端，不会静默回落到本地。
++ [新增] 新增 `scripts/sync-remote.sh`：用 rsync 把本地工作区直接同步到远程并重建、重启，用于在远程直接部署和调试；`scripts/deploy.sh` 的 git 推送流程继续保留。
++ [调整] 远程部署目录由 `/root/canvas-plus` 迁到 `/sobey/canvas-plus`，systemd 单元随之切换。
++ [新增] 新增 `canvas-server/scripts/smoke.mjs` 端到端冒烟脚本，覆盖后端连通性、真实生图（含 LoRA 自动摘除）与流水线剧本阶段。
 
 ## v0.19.0 - 2026-09-16
 
