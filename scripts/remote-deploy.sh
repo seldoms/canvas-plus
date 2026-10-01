@@ -57,9 +57,13 @@ JSON
 
 echo "==> 构建前端"
 cd web
-if [ ! -d node_modules ]; then
-    # 上游 package.json 存在既有 peer 冲突：@ant-design/pro-components@3.0.0-beta.3 仍声明 peer antd@^5，
-    # 而根依赖是 antd@^6。这是仓库既有状态，不是本次改动引入的，用 --legacy-peer-deps 沿用上游解析结果。
+# 仓库里的 package-lock.json 是在 macOS 上生成的，既缺 i18next / react-i18next 条目，
+# 又缺少 Linux 平台的可选依赖（@rollup/rollup-linux-x64-gnu），直接装会在 vite build 时报
+# Cannot find module @rollup/rollup-linux-x64-gnu。这里按需清掉 node_modules 与 lock 重建依赖树。
+# 同时用 --legacy-peer-deps 规避上游既有的 peer 冲突（pro-components@3.0.0-beta.3 声明 peer antd@^5，
+# 而根依赖是 antd@^6）。
+if [ ! -d node_modules ] || [ ! -d node_modules/@rollup/rollup-linux-x64-gnu ]; then
+    rm -rf node_modules package-lock.json
     npm install --no-audit --no-fund --legacy-peer-deps
 fi
 npm run build
