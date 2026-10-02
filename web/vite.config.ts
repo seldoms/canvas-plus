@@ -40,6 +40,14 @@ function localPluginsManifest(): Plugin {
 
 export default defineConfig({
     base: process.env.VITE_BASE || "/",
+    server: {
+        allowedHosts: ["canvas.wbsyb.cloud"],
+        // 对外只暴露一个端口（经反代到本服务）时，把网关 API 收到同源：/api 与 /v1 转发到本地 canvas-server。
+        proxy: {
+            "/api": { target: "http://127.0.0.1:8788", changeOrigin: true },
+            "/v1": { target: "http://127.0.0.1:8788", changeOrigin: true },
+        },
+    },
     plugins: [react(), localPluginsManifest()],
     resolve: {
         alias: {

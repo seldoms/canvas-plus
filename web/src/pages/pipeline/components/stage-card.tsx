@@ -1,4 +1,4 @@
-import { Button } from "antd";
+import { Button, Select } from "antd";
 import { ChevronDown, ChevronUp, Pencil, Play, RotateCcw } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -15,7 +15,7 @@ const STATUS_CLASS: Record<GatewayStageStatus, string> = {
     error: "text-red-600 dark:text-red-400",
 };
 
-export function StageCard({ index, view, busy, disabledReason, onRun, onRerun, onEdit }: { index: number; view: PipelineStageView; busy: boolean; disabledReason: string; onRun: () => void; onRerun: () => void; onEdit: () => void }) {
+export function StageCard({ index, view, busy, disabledReason, modelOptions, model, onModelChange, onRun, onRerun, onEdit }: { index: number; view: PipelineStageView; busy: boolean; disabledReason: string; modelOptions: Array<{ label: string; options: Array<{ value: string; label: string }> }>; model: string; onModelChange: (model: string) => void; onRun: () => void; onRerun: () => void; onEdit: () => void }) {
     const { t } = useTranslation();
     const [expanded, setExpanded] = useState(false);
     const output = view.stage?.output;
@@ -32,6 +32,14 @@ export function StageCard({ index, view, busy, disabledReason, onRun, onRerun, o
                 </span>
                 {view.generating ? <span className="text-xs text-stone-500 dark:text-stone-400">{t("pipeline.generating")}</span> : null}
                 <div className="ml-auto flex items-center gap-1">
+                    <Select
+                        size="small"
+                        value={model}
+                        onChange={onModelChange}
+                        style={{ minWidth: 200 }}
+                        placeholder={t("pipeline.modelLoadFailed")}
+                        options={modelOptions}
+                    />
                     <Button type="text" size="small" icon={<Play className="size-3.5" />} loading={busy} disabled={Boolean(disabledReason)} onClick={onRun}>
                         {t("pipeline.runStage")}
                     </Button>

@@ -955,13 +955,16 @@ async function generateVideo({ prompt, images, params, baseUrl, http, poll }) {
   if (!images || !images.length) throw new Error("H3 图生视频需要一张参考图，请先接入参考图");
   const [width, height] = resolveSize(params.size || params.ratio, [1280, 720]);
   const baseSeed = params.seed === undefined || params.seed === null || params.seed === "" ? Math.floor(Math.random() * 2147483647) : Number(params.seed);
+  // H3 的 LENGTH 是帧数（fps=24）且必须落在 17n+5 网格（5s≈124 帧、2.3s≈56 帧），不能把秒数直接当帧数。
+  const frames = Math.max(1, Math.round((Number(params.seconds) || 5) * 24));
+  const length = 17 * Math.max(0, Math.round((frames - 5) / 17)) + 5;
   const form = new FormData();
   form.append("file", await (await fetch(images[0])).blob(), "input.png");
   const uploaded = await http.post(gateway + "/api/uploads", form);
   const created = await http.post(gateway + "/api/generate/video", {
     template: "video_h3_i2v",
     name: "canvas_h3_i2v_" + Date.now(),
-    params: { PROMPT: prompt, INPUT_IMAGE: uploaded.comfyName || uploaded.name, WIDTH: width, HEIGHT: height, LENGTH: Math.max(1, Number(params.seconds) || 5), SEED: baseSeed },
+    params: { PROMPT: prompt, INPUT_IMAGE: uploaded.comfyName || uploaded.name, WIDTH: width, HEIGHT: height, LENGTH: length, SEED: baseSeed },
   });
   return { url: await waitForJobUrl(gateway, created.job.id, http, poll, { intervalMs: 3000, timeoutMs: 7200000 }) };
 }
@@ -1016,10 +1019,13 @@ async function generateVideo({ prompt, params, baseUrl, http, poll }) {
   const gateway = baseUrl.replace(/\\/+$/, "").replace(/\\/v1$/i, "");
   const [width, height] = resolveSize(params.size || params.ratio, [1280, 720]);
   const baseSeed = params.seed === undefined || params.seed === null || params.seed === "" ? Math.floor(Math.random() * 2147483647) : Number(params.seed);
+  // H3 的 LENGTH 是帧数（fps=24）且必须落在 17n+5 网格（5s≈124 帧、2.3s≈56 帧），不能把秒数直接当帧数。
+  const frames = Math.max(1, Math.round((Number(params.seconds) || 5) * 24));
+  const length = 17 * Math.max(0, Math.round((frames - 5) / 17)) + 5;
   const created = await http.post(gateway + "/api/generate/video", {
     template: "video_minimax_h3_t2v",
     name: "canvas_h3_t2v_" + Date.now(),
-    params: { PROMPT: prompt, WIDTH: width, HEIGHT: height, LENGTH: Math.max(1, Number(params.seconds) || 5), STEPS: Number(params.steps) || 6, SEED: baseSeed },
+    params: { PROMPT: prompt, WIDTH: width, HEIGHT: height, LENGTH: length, STEPS: Number(params.steps) || 6, SEED: baseSeed },
   });
   return { url: await waitForJobUrl(gateway, created.job.id, http, poll, { intervalMs: 3000, timeoutMs: 7200000 }) };
 }

@@ -79,6 +79,13 @@ export const LOCAL_PROXY_PACKAGE = "@basketikun/canvas-proxy";
 export const DEFAULT_LOCAL_PROXY_URL = "http://127.0.0.1:23210";
 export const DEFAULT_GATEWAY_URL = "http://127.0.0.1:8788";
 
+// 网关 API 已由页面服务同源反代（vite proxy / canvas-server 自托管），默认网关地址直接用当前源，
+// 这样 localhost、局域网 IP、域名单端口入口都不需要手动配置；回环兜底留给探测逻辑。
+export function defaultGatewayUrl() {
+    if (typeof window === "undefined") return DEFAULT_GATEWAY_URL;
+    return window.location.origin;
+}
+
 export const defaultConfig: AiConfig = {
     channelMode: "local",
     baseUrl: OPENAI_BASE_URL,
@@ -123,7 +130,7 @@ export const defaultConfig: AiConfig = {
     canvasImageCount: "3",
     proxyEnabled: false,
     proxyUrl: DEFAULT_LOCAL_PROXY_URL,
-    gatewayUrl: DEFAULT_GATEWAY_URL,
+    gatewayUrl: defaultGatewayUrl(),
 };
 
 export const defaultWebdavSyncConfig: WebdavSyncConfig = {
@@ -276,7 +283,8 @@ export const useConfigStore = create<ConfigStore>()(
                         canvasImageCount: config.canvasImageCount || "3",
                         proxyEnabled: Boolean(config.proxyEnabled),
                         proxyUrl: config.proxyUrl || DEFAULT_LOCAL_PROXY_URL,
-                        gatewayUrl: normalizeGatewayUrl(config.gatewayUrl) || DEFAULT_GATEWAY_URL,
+                        // 未手动改过的默认值跟随当前访问主机推导；手动配置过的地址保持不变
+                        gatewayUrl: !config.gatewayUrl || normalizeGatewayUrl(config.gatewayUrl) === DEFAULT_GATEWAY_URL ? defaultGatewayUrl() : normalizeGatewayUrl(config.gatewayUrl),
                     },
                 };
             },

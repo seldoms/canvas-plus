@@ -1,16 +1,17 @@
 import { App, Button, Form, Input } from "antd";
 import type { TFunction } from "i18next";
-import { Server, Wifi } from "lucide-react";
+import { Server, Wifi, Zap } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 
-import { fetchGatewayHealth, type GatewayHealth } from "@/services/api/gateway";
-import { DEFAULT_GATEWAY_URL, normalizeGatewayUrl, useConfigStore } from "@/stores/use-config-store";
+import { fetchGatewayHealth, fetchGatewayProviders, gatewayDefaultModels, planGatewayChannel, upsertGatewayChannel, type GatewayHealth } from "@/services/api/gateway";
+import { defaultGatewayUrl, encodeChannelModel, modelOptionsFromChannels, normalizeGatewayUrl, useConfigStore } from "@/stores/use-config-store";
 
 export function ConfigGateway() {
-    const { message } = App.useApp();
+    const { message, modal } = App.useApp();
     const { t } = useTranslation();
     const [testing, setTesting] = useState(false);
+    const [onboarding, setOnboarding] = useState(false);
     const [health, setHealth] = useState<GatewayHealth | null>(null);
     const config = useConfigStore((state) => state.config);
     const updateConfig = useConfigStore((state) => state.updateConfig);
@@ -27,6 +28,43 @@ export function ConfigGateway() {
         }
     };
 
+    const onboardGateway = async () => {
+        setOnboarding(true);
+        try {
+            const plan = planGatewayChannel(await fetchGatewayProviders(config.gatewayUrl));
+            if (!plan.models.length) {
+                message.warning(t("config.gateway.onboardEmpty"));
+                return;
+            }
+            modal.confirm({
+                title: t("config.gateway.onboardTitle"),
+                content: (
+                    <div className="space-y-1 text-xs">
+                        <div>{t("config.gateway.onboardSummary", plan.counts)}</div>
+                        <div className="text-stone-500">{t("config.gateway.onboardHint")}</div>
+                    </div>
+                ),
+                okText: t("config.gateway.onboard"),
+                cancelText: t("common.cancel"),
+                onOk: () => {
+                    const state = useConfigStore.getState();
+                    const { channels, channel } = upsertGatewayChannel(state.config.channels, state.config.gatewayUrl, plan.models);
+                    updateConfig("channels", channels);
+                    updateConfig("models", modelOptionsFromChannels(channels));
+                    const defaults = gatewayDefaultModels(channel.models);
+                    if (defaults.text) updateConfig("textModel", encodeChannelModel(channel.id, defaults.text));
+                    if (defaults.image) updateConfig("imageModel", encodeChannelModel(channel.id, defaults.image));
+                    if (defaults.video) updateConfig("videoModel", encodeChannelModel(channel.id, defaults.video));
+                    message.success(t("config.gateway.onboardDone", plan.counts));
+                },
+            });
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : t("config.gateway.unreachable"));
+        } finally {
+            setOnboarding(false);
+        }
+    };
+
     return (
         <Form layout="vertical" requiredMark={false}>
             <section className="rounded-lg border border-stone-200 p-3 dark:border-stone-800">
@@ -38,17 +76,22 @@ export function ConfigGateway() {
                 <Form.Item label={t("config.gateway.address")} extra={t("config.gateway.addressDescription")} className="mt-3 mb-0">
                     <Input
                         value={config.gatewayUrl}
-                        placeholder={DEFAULT_GATEWAY_URL}
+                        placeholder={defaultGatewayUrl()}
                         onChange={(event) => {
                             setHealth(null);
                             updateConfig("gatewayUrl", event.target.value);
                         }}
-                        onBlur={(event) => updateConfig("gatewayUrl", normalizeGatewayUrl(event.target.value) || DEFAULT_GATEWAY_URL)}
+                        onBlur={(event) => updateConfig("gatewayUrl", normalizeGatewayUrl(event.target.value) || defaultGatewayUrl())}
                     />
                 </Form.Item>
-                <Button className="mt-3" icon={<Wifi className="size-4" />} loading={testing} onClick={() => void testGateway()}>
-                    {t("config.gateway.test")}
-                </Button>
+                <div className="mt-3 flex flex-wrap gap-2">
+                    <Button icon={<Wifi className="size-4" />} loading={testing} onClick={() => void testGateway()}>
+                        {t("config.gateway.test")}
+                    </Button>
+                    <Button type="primary" icon={<Zap className="size-4" />} loading={onboarding} onClick={() => void onboardGateway()}>
+                        {t("config.gateway.onboard")}
+                    </Button>
+                </div>
                 {health ? (
                     <div className="mt-3 space-y-1 text-xs">
                         <GatewayStatusRow label="LLM" ok={health.llm.ok} address={health.llm.baseUrl} error={health.llm.error} t={t} />
