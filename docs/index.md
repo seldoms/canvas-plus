@@ -53,6 +53,12 @@ so they do not render in the docs site. Read them directly from the repository.
   pipeline is really four and a half, the seven identifier layers Project must add, four traps
   that bite on day one, the decision log (naming, artifact storage), and the P0-a→P2 work
   packages with acceptance criteria. Every claim is graded verified / investigated.
+- `docs/content/docs/progress/libtv-product-analysis.md` — competitive teardown of LibTV
+  (liblib.tv) at the **product and canvas** level: page features, design system, button design,
+  and technical implementation, with findings graded confirmed / inferred / unverified. Written
+  by the project owner and kept verbatim; the seven screenshots it references at the end were
+  not supplied, so those links are dead. Distinct from `gateway-api-benchmark.md`, which
+  benchmarks the LiblibAI **open platform API** rather than the LibTV **product**.
 - `docs/content/docs/progress/gateway-api-benchmark.md` — generation-gateway API benchmark
   against a mature commercial platform (LiblibAI): capability matrix, three-layer gap verdict,
   additive API design on the frozen contract, prioritized catch-up plan, and the boundary

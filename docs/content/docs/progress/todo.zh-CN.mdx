@@ -14,13 +14,15 @@ description: 当前项目后续值得处理的事项
 
 权威排序、依赖关系与验收标准见 `docs/content/docs/progress/development-plan.md` §8；产品视角的优先级见 `prd.md` §6。以下只列尚未开工的项。
 
-- **P0-a 修 `artifactUrl` 回写断链**：`attachGeneration` 把它置 null 后全仓再无代码写回（任务队列完成时没有回调进流水线），导致尾帧拿不到首帧当参考图、assembly 永不入队、`stage.artifacts` 恒为空 —— **五段流水线实际只有四段半，到不了成片**。修法是订阅 `jobs` 的 change 事件回写 item；`job.meta` 里已有 `{runId, stageId, itemId}`，反查所需信息已经在。这也是「活扣」的前置（同一条回写通路）。
-- **P0-b run 可恢复**：前端 `run` 是裸 `useState`，刷新即永久丢失，而后端仍在跑、仍在烧额度；服务端**早就有** `GET /api/pipeline/runs`，前端没封。要持久化 runId、补列表客户端、允许命名（现在一律落「未命名流水线」）、加离开页面拦截。
-- **P0-c 命名重构 + Project 服务端实体**：`CanvasProject` 改名 `Canvas`，新实体 `Project` = 一部剧、可含多个画布。**必须在写新代码之前做完**，否则 `projectId` 的歧义会扩散（`CanvasAgentSnapshot.projectId` 现在填的是画布 id）。
-- **P1-a 打通流水线出口**：`pages/pipeline/` 对素材库/画布 store 的引用数为 0，产物是死胡同，30 镜×2 帧要靠 60 次「另存为+重新上传」搬进画布。产物按引用入素材库（不复制第三份），`shots[]` 一键导入分镜板（插件 Shot 与服务端 02 契约 11 字段同构，目前只能复制 JSON 让 LLM 再付费重跑一遍）。
-- **P1-b 生图/生视频活扣**：重跑现在会 `item.jobId = null` 清空上次产物，结构上无法对比；`item.template` 写死取全局 config，连 `run.options.image.template` 都不生效。改成 `candidates[] + selected`，新增只给单个 item 追加候选的 regenerate 端点。
-- **P1-c 六阶段方法论吸收**：新增阶段 0（规划与参数澄清），把创作方法论灌进各阶段「提示词模板」段但保留输出契约。受 `AGENTS.md`「内容创作规范」约束：忠于原著、不注入教化式结构、风险只提示不改稿、评审角色降级为顾问。同时接线 `skills/libraries/` 两个库（script-writing-studio 与 Luster 岩井俊二美学），风格锚点机制就是把 Luster 接上的钩子。
-- 片段合成接 ffmpeg 拼接执行体：`assembly` 只规划 clips 与拼接顺序，没有拼接/转场执行体、没有视频超分、没有音轨混流。拼接用本机 ffmpeg 即可，不占 GPU。**注意这与 P0-a 是两个不同问题**：P0-a 是拿不到关键帧所以不入队，本条是即使入队产出了片段也没有拼接成片的执行体。
+- **P0-0 冻结领域契约**：先确定 Project/Canvas/Workflow/Tool/Asset/Job/Artifact 的边界、稳定 ID、状态机和 schema；页面可以整体重构，旧插件字段不作为新接口前提。
+- **P0-a 建立 Project 内核**：服务端 Project/Episode/Scene/Shot/AssetRef/Canvas 引用、源版本、Project Context API 和全新项目总览页，贯通来源、集、镜头、画布、任务和资产入口。
+- **P0-b 修 Job→Artifact 回写断链**：落实真实阶段状态、取消传播、重试和可重放投影，确保关键帧完成后能驱动视频和后期。
+- **P0-c 让 run/sourceRevision 可恢复**：服务端列表与详情、命名、断点续跑和刷新保护；长篇正文保存为版本引用。
+- **P0-d 统一 Tool/Provider/Device 调度**：区分 GPU 生图、生视频、CPU 后期、LLM、外部 API，支持 schema 参数、局域网资源和配额。
+- **P1-a 打通项目产物图谱**：Artifact/AssetRef、分镜、角色、场景和关键帧在新工作区互相跳转；旧插件只作为一次性导入源。
+- **P1-b 生图/生视频活扣与批量执行**：候选对比、分组运行、逐镜重试、采用/回退和 Canvas 批量操作，失败镜头可续跑。
+- **P1-c 六阶段方法论吸收**：新增阶段 0（规划与参数澄清），按 Project/Workflow 版本运行并接线两个库；受 `AGENTS.md` 内容创作规范约束。
+- **P1-d 片段合成和交付**：用 CPU ffmpeg 完成拼接、音频、字幕、封面、分集/全剧交付包；片段生成不等于成片完成。
 - 视频提速：实测上游 `video_h3_i2v_sla` / `video_h3_i2v_blockcache` 加速模板；先降分辨率出草稿、定稿再出高清是零新增模型零新增模板的方案。
 - `TemplateInfo` 增补 `schema`：把 `tokens: string[]` 升级成带类型、范围、默认值、帧网格约束的 schema，让「拷一个工作流 JSON 就自动可用」成立，并删掉前端按模板名硬编码的分支。
 - 生成任务可观测性：接 ComfyUI WebSocket 拿真实进度（当前 job 的 `progress` 只填 0/0），并暴露成 `GET /api/jobs/:id/events`（SSE）与 `?wait=` 长轮询。视频任务 8~40 分钟。（流水线**阶段**的进度已在上一轮做完，这条是**生成任务**的进度。）

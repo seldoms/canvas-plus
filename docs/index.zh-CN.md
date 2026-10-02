@@ -47,6 +47,10 @@
   三视角调研（资产复用 / 数据流断点 / 用户成本）的结论、`artifactUrl` 从不回写导致
   五段流水线实际只有四段半的致命断链、Project 要补的七层标识符、四个落地即踩的陷阱、
   决策登记（命名、产物存储）、P0-a→P2 工作包与验收标准。每条结论标注【已复核】/【调研】。
+- `docs/content/docs/progress/libtv-product-analysis.md` —— LibTV（liblib.tv）**产品与画布**层面的
+  竞品拆解：页面功能、设计系统、按钮设计、技术实现，结论分【已确认】/【推测】/【未确认】三档。
+  由项目负责人自行撰写，正文逐字保留；其末尾引用的 7 张截图未随投放提供，链接是死的。
+  注意与 `gateway-api-benchmark.md` 区分：那份对标的是 LiblibAI **开放平台 API**，这份是 **LibTV 产品**。
 - `docs/content/docs/progress/gateway-api-benchmark.md` —— 生成网关 API 对标研究与设计方案：
   以成熟商业平台（LiblibAI）为基准线的能力对照矩阵、三层差距结论、冻结契约上的向后兼容加法设计、
   按性价比排序的补齐路线，以及仍待确认的边界值清单。

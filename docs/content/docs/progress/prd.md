@@ -158,17 +158,16 @@ item.template = pipelineConfig.imageTemplate;  // 全局单值；run.options.ima
 | 优先级 | 需求 | 依赖 |
 | --- | --- | --- |
 | **P0** | 流水线可观测/可取消/可续跑/成本预估 | ✅ **已完成并真机验证** |
-| **P0-a** | 修 `artifactUrl` 回写断链，让五段流水线真的能到成片 | — |
-| **P0-b** | run 可恢复：持久化 runId、封已有的 `GET /api/pipeline/runs`、run 可命名、离开页面拦截 | — |
-| **P0-c** | 命名重构（Project = 剧、Canvas = 画布）+ Project 服务端实体与 CRUD | P0-a、P0-b |
-| **P1-a** | 打通流水线出口：产物一键入素材库（引用 URL 不复制）、`shots[]` 一键导入分镜板 | P0-a、P0-c |
-| **P1-b** | 生图/生视频活扣（candidates + regenerate + 并排对比 UI） | P0-a（同一条回写通路） |
-| **P1-c** | 六阶段方法论吸收（含阶段 0）+ 接线两个库 | P0-c（风格锚点、完成度检查表是项目级字段）；受 §7 约束 |
-| **P1** | `episodes[]` 升格为主线容器；剧本成为项目级权威产物 | P0-c |
-| **P2** | 项目页完整化、标识符贯通（episodeId/sceneId/shotId）、角色资产升格 | P1 |
-| **P2** | `assembly` 接 ffmpeg 拼接执行体（**与 P0-a 是两个不同问题**） | P0-a |
-| **P2** | `TemplateInfo.schema` 化（让「拷个 JSON 就自动可用」成立） | — |
-| **P2** | 网关 `auth.mode`（局域网侧无鉴权） | — |
+| **P0-0** | 冻结 Project/Canvas/Workflow/Tool/Asset/Job/Artifact 领域契约和稳定 ID，允许页面整体重构 | — |
+| **P0-a** | 建立 Project 内核、项目上下文 API 和全新项目总览页，贯通来源、集、镜头、画布、任务和资产入口 | P0-0 |
+| **P0-b** | 修 Job→Artifact 回写断链，落实真实阶段状态、取消传播、重试和可重放投影 | P0-0 |
+| **P0-c** | run/sourceRevision 可恢复、可命名、可续跑，页面不再依赖裸 `useState` | P0-a、P0-b |
+| **P0-d** | 建立 Tool/Provider/Device Registry 和局域网资源调度，统一本地模型、外部 API 与后期工具 | P0-0 |
+| **P1-a** | 打通项目产物图谱：AssetRef、分镜、角色、场景、关键帧互相跳转；旧插件仅作为一次性导入源 | P0-a、P0-b |
+| **P1-b** | 生图/生视频活扣、分组执行、候选对比和逐镜续跑 | P0-b、P0-d |
+| **P1-c** | 六阶段方法论吸收（含阶段 0）+ 接线两个库 | P0-a、P0-c（风格锚点、完成度检查表是项目级字段）；受 §7 约束 |
+| **P1-d** | `assembly` 接 ffmpeg、音频、字幕、封面和交付包执行体 | P0-b、P0-d |
+| **P2** | 跨集项目复用、引用清理、导出和逐步移除旧页面适配层 | P1 |
 | **P3** | 契约死字段清理（`comfy.maxQueue` 从未被读取、job `progress` 只填 0/0） | — |
 
 ## 7. 内容创作规范（硬约束）
@@ -213,7 +212,7 @@ item.template = pipelineConfig.imageTemplate;  // 全局单值；run.options.ima
 4. 审核风险提示 `reviewNotes[]` 的粒度：按项目、按集、还是按镜头？
 5. 活扣的候选保留上限（防止一个镜头攒几十个候选撑爆磁盘）？
 6. 「一键跑完五阶段」要不要做？做了就必须在**全局取消**与**逐阶段确认门禁**之间取舍（外部方法论强调每阶段停下等确认，与一键跑完冲突）
-7. 「项目」这个词的归属 → **已给出建议 D1：Project = 剧、Canvas = 画布**，属机械改名重构，但必须在 P0-c 之前完成
+7. 「项目」这个词的归属 → **已给出建议 D1：Project = 剧、Canvas = 画布**，在 P0-0 冻结领域契约、P0-a 新项目入口中直接采用；旧页面不构成新设计约束
 
 ## 11. 基线（复核用）
 
