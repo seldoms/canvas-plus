@@ -47,6 +47,12 @@ so they do not render in the docs site. Read them directly from the repository.
   feature priorities, the **content-authoring policy (overseas release, faithful to the source,
   flag review risks but never rewrite)**, non-functional requirements, and open questions.
   This is the alignment baseline for all further work.
+- `docs/content/docs/progress/development-plan.md` — **development plan** (the execution side of
+  the PRD): findings from a three-angle investigation (asset reuse / data-flow break points /
+  user cost), the critical break where `artifactUrl` is never written back so the five-stage
+  pipeline is really four and a half, the seven identifier layers Project must add, four traps
+  that bite on day one, the decision log (naming, artifact storage), and the P0-a→P2 work
+  packages with acceptance criteria. Every claim is graded verified / investigated.
 - `docs/content/docs/progress/gateway-api-benchmark.md` — generation-gateway API benchmark
   against a mature commercial platform (LiblibAI): capability matrix, three-layer gap verdict,
   additive API design on the frozen contract, prioritized catch-up plan, and the boundary

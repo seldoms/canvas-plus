@@ -12,13 +12,19 @@ description: 当前项目后续值得处理的事项
 
 ## 本地网关与影视流水线
 
-细节与优先级排序见仓库根目录 `HANDOFF.md` 的「下一步」，以及 `docs/content/docs/progress/gateway-api-benchmark.md` §7（内部研究文档，不进文档站导航）。
+权威排序、依赖关系与验收标准见 `docs/content/docs/progress/development-plan.md` §8；产品视角的优先级见 `prd.md` §6。以下只列尚未开工的项。
 
-- 片段合成接 ffmpeg 拼接执行体：五段流水线目前唯一的断点。`assembly` 阶段只规划 clips 与拼接顺序并生成片段，产物停在 `status: "queued"`，没有拼接/转场执行体、没有视频超分、没有音轨混流。拼接用本机 ffmpeg 即可，不占 GPU。
-- 接线已导入的 skill 库：`skills/libraries/` 里的 script-writing-studio 与 Luster 岩井俊二美学已入库但未接上，`skills/01-*` ~ `05-*` 仍在用骨架期的默认提示词。两个库面向云端生成器，所以是分层不是替换：库管内容与风格，阶段技能负责翻译成 ComfyUI 模板 token 并剥掉专用尾参。
+- **P0-a 修 `artifactUrl` 回写断链**：`attachGeneration` 把它置 null 后全仓再无代码写回（任务队列完成时没有回调进流水线），导致尾帧拿不到首帧当参考图、assembly 永不入队、`stage.artifacts` 恒为空 —— **五段流水线实际只有四段半，到不了成片**。修法是订阅 `jobs` 的 change 事件回写 item；`job.meta` 里已有 `{runId, stageId, itemId}`，反查所需信息已经在。这也是「活扣」的前置（同一条回写通路）。
+- **P0-b run 可恢复**：前端 `run` 是裸 `useState`，刷新即永久丢失，而后端仍在跑、仍在烧额度；服务端**早就有** `GET /api/pipeline/runs`，前端没封。要持久化 runId、补列表客户端、允许命名（现在一律落「未命名流水线」）、加离开页面拦截。
+- **P0-c 命名重构 + Project 服务端实体**：`CanvasProject` 改名 `Canvas`，新实体 `Project` = 一部剧、可含多个画布。**必须在写新代码之前做完**，否则 `projectId` 的歧义会扩散（`CanvasAgentSnapshot.projectId` 现在填的是画布 id）。
+- **P1-a 打通流水线出口**：`pages/pipeline/` 对素材库/画布 store 的引用数为 0，产物是死胡同，30 镜×2 帧要靠 60 次「另存为+重新上传」搬进画布。产物按引用入素材库（不复制第三份），`shots[]` 一键导入分镜板（插件 Shot 与服务端 02 契约 11 字段同构，目前只能复制 JSON 让 LLM 再付费重跑一遍）。
+- **P1-b 生图/生视频活扣**：重跑现在会 `item.jobId = null` 清空上次产物，结构上无法对比；`item.template` 写死取全局 config，连 `run.options.image.template` 都不生效。改成 `candidates[] + selected`，新增只给单个 item 追加候选的 regenerate 端点。
+- **P1-c 六阶段方法论吸收**：新增阶段 0（规划与参数澄清），把创作方法论灌进各阶段「提示词模板」段但保留输出契约。受 `AGENTS.md`「内容创作规范」约束：忠于原著、不注入教化式结构、风险只提示不改稿、评审角色降级为顾问。同时接线 `skills/libraries/` 两个库（script-writing-studio 与 Luster 岩井俊二美学），风格锚点机制就是把 Luster 接上的钩子。
+- 片段合成接 ffmpeg 拼接执行体：`assembly` 只规划 clips 与拼接顺序，没有拼接/转场执行体、没有视频超分、没有音轨混流。拼接用本机 ffmpeg 即可，不占 GPU。**注意这与 P0-a 是两个不同问题**：P0-a 是拿不到关键帧所以不入队，本条是即使入队产出了片段也没有拼接成片的执行体。
 - 视频提速：实测上游 `video_h3_i2v_sla` / `video_h3_i2v_blockcache` 加速模板；先降分辨率出草稿、定稿再出高清是零新增模型零新增模板的方案。
 - `TemplateInfo` 增补 `schema`：把 `tokens: string[]` 升级成带类型、范围、默认值、帧网格约束的 schema，让「拷一个工作流 JSON 就自动可用」成立，并删掉前端按模板名硬编码的分支。
-- 可观测性：接 ComfyUI WebSocket 拿真实进度（当前 `progress` 只填 0/0），并把它暴露成 `GET /api/jobs/:id/events`（SSE）与 `?wait=` 长轮询。视频任务 8~40 分钟，这块优先级因此上调。
+- 生成任务可观测性：接 ComfyUI WebSocket 拿真实进度（当前 job 的 `progress` 只填 0/0），并暴露成 `GET /api/jobs/:id/events`（SSE）与 `?wait=` 长轮询。视频任务 8~40 分钟。（流水线**阶段**的进度已在上一轮做完，这条是**生成任务**的进度。）
 - RunningHub 真机验证：适配器代码完成但旧 API Key 已失效，需要新的有效 Key 才能跑通 submit / query / upload 三条链路；前端也还没有后端切换入口。
 - `img_` 模板的尺寸 32 倍数吸附：官方明确 Qwen-Image 2.1「尺寸建议 32 的倍数」，但网关的吸附目前只对 `video_` 前缀生效（`generate.js`），`img_` 不吸附。
 - 契约里的死字段：`comfy.maxQueue`（默认 16，`src/` 中从未被读取）与 job 的 `progress`（只填 0/0，未接 ComfyUI WebSocket）——要么实现，要么从契约删掉，不要留着承诺做不到的字段。
+- 重复实现收敛：文本文件导入有 2 份逐字重复、`type="file"` 11 处、模型下拉 3 套实现、「渠道::模型」2 种编码、尺寸 3 套词汇、「存进素材库」7 处各写一遍。属低单价高频次摩擦，建议在 P0/P1 落地过程中顺带收敛，不单独占一轮。

@@ -50,9 +50,11 @@
 | 画布插件 SDK + 第一个插件 | `plugin-node-context.ts`；`plugins/canvas/storyboard-studio`（分镜工作台） |
 | Agent 批量画布 op | `applyCanvasAgentOps` + 8 个 op，等价于对标产品的 `nodes_connections_batch` |
 
-### 2.2 已知缺口（详见 `local-asset-inventory.md` §D）
+### 2.2 已知缺口（详见 `local-asset-inventory.md` §D 与 `development-plan.md`）
 
-`assembly` 阶段没有拼接执行体（产物永远停在 `status:"queued"`）· 五个阶段的 SKILL.md 提示词很薄（各约 90 行，只有机器契约没有创作方法论）· `skills/libraries/` 两个库导入未接线 · 生图/生视频模板选择写死在全局 config，重跑会清空上次产物，**无法对比** · 网关局域网侧无鉴权。
+**最严重的一条**：`attachGeneration` 把 `item.artifactUrl` 置 null 后**全仓再无任何代码写回**（任务队列完成时没有回调进流水线），导致 `pipeline.js:483`（尾帧取首帧当参考图）、`:497-498`（assembly 入队条件）、`:513`（`stage.artifacts`）三处恒假 —— **五段流水线实际只有四段半，结构性到不了成片**。图确实生成了、前端靠直接轮询 jobs 也能看见，但 run 自己永远不知道，下游拿不到。
+
+其余缺口：`assembly` 还**另外**缺一个 ffmpeg 拼接执行体（这是与上面那条**不同**的问题：前者是拿不到关键帧所以不入队，后者是即使入队产出了片段也没有拼接成片的执行体）· 前端 `run` 是裸 `useState`，刷新即永久丢失且服务端已有的 `GET /api/pipeline/runs` 前端没封 · 五个阶段的 SKILL.md 提示词很薄（各约 90 行，只有机器契约没有创作方法论）· `skills/libraries/` 两个库导入未接线 · 生图/生视频模板选择写死在全局 config，重跑会清空上次产物，**无法对比** · 网关局域网侧无鉴权。
 
 ## 3. 目标架构
 
@@ -151,15 +153,20 @@ item.template = pipelineConfig.imageTemplate;  // 全局单值；run.options.ima
 
 ## 6. 功能需求与优先级
 
+> 执行细节、依赖关系、验收标准与决策登记见 `development-plan.md` §8。本表只给产品视角的优先级。
+
 | 优先级 | 需求 | 依赖 |
 | --- | --- | --- |
 | **P0** | 流水线可观测/可取消/可续跑/成本预估 | ✅ **已完成并真机验证** |
-| **P0** | Project 一等实体 + 混合存储 + CRUD | — |
-| **P0** | `episodes[]` 升格为主线容器；剧本成为项目级权威产物 | Project |
-| **P1** | 生图/生视频活扣（candidates + regenerate + 对比 UI） | Project（assetRefs 要能指向某个候选） |
-| **P1** | 六阶段方法论吸收（含阶段 0）+ 接线两个库 | Project（风格锚点、完成度检查表是项目级字段） |
-| **P1** | 画布 ⇄ 流水线双向打通 + 项目页 | Project + 活扣 |
-| **P2** | `assembly` 接 ffmpeg 拼接执行体（当前唯一断点） | — |
+| **P0-a** | 修 `artifactUrl` 回写断链，让五段流水线真的能到成片 | — |
+| **P0-b** | run 可恢复：持久化 runId、封已有的 `GET /api/pipeline/runs`、run 可命名、离开页面拦截 | — |
+| **P0-c** | 命名重构（Project = 剧、Canvas = 画布）+ Project 服务端实体与 CRUD | P0-a、P0-b |
+| **P1-a** | 打通流水线出口：产物一键入素材库（引用 URL 不复制）、`shots[]` 一键导入分镜板 | P0-a、P0-c |
+| **P1-b** | 生图/生视频活扣（candidates + regenerate + 并排对比 UI） | P0-a（同一条回写通路） |
+| **P1-c** | 六阶段方法论吸收（含阶段 0）+ 接线两个库 | P0-c（风格锚点、完成度检查表是项目级字段）；受 §7 约束 |
+| **P1** | `episodes[]` 升格为主线容器；剧本成为项目级权威产物 | P0-c |
+| **P2** | 项目页完整化、标识符贯通（episodeId/sceneId/shotId）、角色资产升格 | P1 |
+| **P2** | `assembly` 接 ffmpeg 拼接执行体（**与 P0-a 是两个不同问题**） | P0-a |
 | **P2** | `TemplateInfo.schema` 化（让「拷个 JSON 就自动可用」成立） | — |
 | **P2** | 网关 `auth.mode`（局域网侧无鉴权） | — |
 | **P3** | 契约死字段清理（`comfy.maxQueue` 从未被读取、job `progress` 只填 0/0） | — |
@@ -198,11 +205,15 @@ item.template = pipelineConfig.imageTemplate;  // 全局单值；run.options.ima
 
 ## 10. 待确认
 
-1. Project 的**服务端 CRUD 与浏览器画布**之间，冲突如何解决？（同一项目两台设备同时改画布 → 目前无协同，倾向「后写覆盖 + 版本号提示」）
-2. `assetRefs` 是**引用**浏览器素材库，还是把素材**复制**一份到服务端？引用则换设备丢图，复制则占服务端磁盘。
+> 权威清单在 `development-plan.md` §10；已给出 CTO 建议并登记为决策的见该文件 §7。
+
+1. Project 的**服务端 CRUD 与浏览器画布**之间，冲突如何解决？（同一项目两台设备同时改画布 → 目前无协同，倾向「后写覆盖 + 版本号提示」，画布域已有墓碑机制可复用）
+2. ~~`assetRefs` 是引用还是复制~~ → **已决策 D2：默认引用服务端产物，不下载不复制**，理由与兜底见 `development-plan.md` §7
 3. 阶段 0 规划的参数（比例、单集时长、剧作基调）是**项目级一次锁定**，还是允许逐集覆盖？
 4. 审核风险提示 `reviewNotes[]` 的粒度：按项目、按集、还是按镜头？
 5. 活扣的候选保留上限（防止一个镜头攒几十个候选撑爆磁盘）？
+6. 「一键跑完五阶段」要不要做？做了就必须在**全局取消**与**逐阶段确认门禁**之间取舍（外部方法论强调每阶段停下等确认，与一键跑完冲突）
+7. 「项目」这个词的归属 → **已给出建议 D1：Project = 剧、Canvas = 画布**，属机械改名重构，但必须在 P0-c 之前完成
 
 ## 11. 基线（复核用）
 
