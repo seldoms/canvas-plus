@@ -41,6 +41,12 @@
 Plain `.md` files under `docs/content/docs/progress/`, deliberately absent from `meta.json`
 so they do not render in the docs site. Read them directly from the repository.
 
+- `docs/content/docs/progress/prd.md` — **product requirements document**: positioning, the
+  current state (three disconnected worlds), the target architecture with Project as a
+  first-class entity and hybrid storage, the six-stage pipeline, canvas ⇄ pipeline integration,
+  feature priorities, the **content-authoring policy (overseas release, faithful to the source,
+  flag review risks but never rewrite)**, non-functional requirements, and open questions.
+  This is the alignment baseline for all further work.
 - `docs/content/docs/progress/gateway-api-benchmark.md` — generation-gateway API benchmark
   against a mature commercial platform (LiblibAI): capability matrix, three-layer gap verdict,
   additive API design on the frozen contract, prioritized catch-up plan, and the boundary
