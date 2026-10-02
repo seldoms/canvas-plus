@@ -9,9 +9,34 @@
 | --- | --- | --- | --- |
 | `script-writing-studio/` | `~/Desktop/2026.8新 国内一线影视内部skill/script-writing-studio/` | `SKILL.md` 262 行 + 35 个 reference，共 12,533 行；另含 `agents/openai.yaml` | 端到端中文剧本创作工作室（总控型 skill，按需读取 reference） |
 | `Luster-iwai-aesthetic-prompt/` | `~/Desktop/Luster-岩井俊二美学风格skill-b282ccc2fcfe.zip` | `SKILL.md` + 3 个 reference，共 160 行 | 岩井俊二美学提示词生成（作者 抖音Luster，MIT） |
+| `doubao-creative-drama/` | 项目负责人从豆包「短剧创作」技能导出打包（2026-10-02 投放） | `SKILL.md` 175 行 + 5 个 reference，共 1,981 行 | 短篇短剧全流程主规划入口：planner → scriptwriter → storyboard → assets → frame → prompt |
 | `docs/V2.0中文使用手册2.pdf` | 同 `script-writing-studio` 所在目录 | 736 KB | 该工作室的官方中文使用手册 |
+| `docs/short-drama-methodology.md` | 同 `doubao-creative-drama`，其自述为「与具体 AI 工具无关的通用版，已去除宿主工具名与专有语法」 | 646 行 | 六阶段短剧创作方法论通用版，是 `doubao-creative-drama` 的去宿主化表述，两者内容基本对应 |
 
-两处来源均已用 `diff -r` 与源目录逐字节比对通过，PDF 的 sha1 与源一致。
+各处来源均已用 `diff -r` / `cmp` 与源逐字节比对通过，PDF 的 sha1 与源一致；
+`doubao-creative-drama/` 另与原始 zip 解包结果逐字节比对通过（sha256 前 24 位：`SKILL.md` = `332c9c31b79100d70566519b`，
+`docs/short-drama-methodology.md` = `5662d70922fb180e2394da31`）。
+
+### 授权状态（如实登记，不要含糊）
+
+| 库 | 授权 |
+| --- | --- |
+| `Luster-iwai-aesthetic-prompt/` | **MIT**（作者 抖音Luster），其 SKILL.md 内已带声明 |
+| `script-writing-studio/` | 来源为「国内一线影视内部 skill」，**授权未知** |
+| `doubao-creative-drama/` 与 `docs/short-drama-methodology.md` | 从豆包产品导出，**授权未知** |
+
+三者都**仅内部使用**，且**只推私有远端** `canvas-plus/main`。公开远端 `origin`（GitHub
+`basketikun/infinite-canvas`）上 `skills/libraries/` 目前为 **0 个文件**，推公开分支前必须先解决授权，
+不要把本目录带上去。仓库根 `LICENSE` 是 MIT（本仓自有代码），**不覆盖**本目录的第三方内容；仓库目前没有 `NOTICE` 文件。
+
+### 吸收 `doubao-creative-drama` 时必须遵守的一条
+
+`AGENTS.md` 的「内容创作规范」要求去掉其「反派惩罚铁律」（`references/scriptwriter.md:362`）、
+「人物小传必须写惩罚落点」（同文件 `:91`）、「澄清清单里的禁用内容」（`SKILL.md:83` 与 `scriptwriter.md:46`）三条。
+但本目录的规矩是**逐字保留、不做改写** —— 两者不冲突：**库保持原样，那三条由我们自己的阶段技能
+（`skills/01-*` ~ `05-*`）在引用时不采纳**。不要为了符合规范去改这个库里的文件。
+同文件 `scriptwriter.md:372`「微电影向不追求反派实质惩罚」与本项目取向一致，可正常采用。
+另注意 `SKILL.md:52-54` 的「图片质量审查原则」是**质量**校验（面部是否正脸、三视图是否一致），不是内容审查，要保留。
 
 ## `script-writing-studio` 是什么
 
