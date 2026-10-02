@@ -10,6 +10,7 @@
         "baseUrl": "http://127.0.0.1:11434",
         "apiKey": "",
         "timeoutMs": 600000,
+        "probeTimeoutMs": 8000,
         "defaultModel": "qwen2.5:latest",
         "fallbacks": [
             "http://127.0.0.1:1234",
@@ -52,6 +53,7 @@
         "videoHeight": 1344,
         "videoSeconds": 5,
         "videoFps": 24,
-        "maxKeyframesPerShot": 2
+        "maxKeyframesPerShot": 2,
+        "maxNovelChunkChars": 16000
     }
 }

@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { existsSync, statSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Readable } from "node:stream";
@@ -11,11 +11,38 @@ import { createJobQueue, waitForJob } from "./jobs.js";
 import { createPipeline } from "./pipeline.js";
 import { loadRegistry } from "./skills.js";
 import { createComfyClient, probeComfy, listComfyCapabilities, listTemplates } from "./providers/comfy.js";
-import { probeLlm, listLlmModels, forwardToLlm, chat as llmChat } from "./providers/llm.js";
+import { probeLlm, listLlmModels, forwardToLlm, chat as llmChat, externalProviders } from "./providers/llm.js";
 import { createLocalRunner } from "./generate.js";
 import { probeRunningHub, listRunningHubModels, runRunningHubJob } from "./providers/runninghub.js";
 
 const config = loadConfig();
+
+// 外部 LLM 渠道注册表：独立存 data/llm-providers.json，启动时并入 config.llm.providers，支持热更新。
+const llmProvidersFile = safeJoin(config.dataDir, "llm-providers.json");
+
+/**
+ * 注册表里存的是明文 API Key，收紧成仅属主可读写。
+ * writeFileSync 的 mode 只在「新建文件」时生效，已存在的文件会保留原权限，所以每次都补一次 chmod；
+ * 启动时也调一次，把此前用默认 0644 写出的文件纠正过来。
+ */
+function lockProvidersFile() {
+    try {
+        chmodSync(llmProvidersFile, 0o600);
+    } catch {
+        // 文件还不存在（首次启动）或文件系统不支持 chmod，都不该阻断启动。
+    }
+}
+
+function readLlmProviders() {
+    try {
+        const raw = JSON.parse(readFileSync(llmProvidersFile, "utf8"));
+        return Array.isArray(raw?.providers) ? raw.providers : [];
+    } catch {
+        return [];
+    }
+}
+config.llm.providers = readLlmProviders();
+lockProvidersFile();
 
 const comfy = createComfyClient(config);
 const llm = {
@@ -131,6 +158,33 @@ router.get("/api/llm/models", async (req, res) => {
     sendJson(res, 200, { models: await listLlmModels(config).catch(() => []) });
 });
 
+// 外部 LLM 渠道注册表：GET 返回脱敏清单（不吐 SK），PUT 全量替换并热更新 config。
+router.get("/api/llm/providers", (req, res) => {
+    sendJson(res, 200, { providers: externalProviders(config).map(({ name, baseUrl, apiKey }) => ({ name, baseUrl, hasKey: Boolean(apiKey) })) });
+});
+
+router.post("/api/llm/providers", async (req, res) => {
+    try {
+        const body = await readJson(req);
+        const list = Array.isArray(body?.providers) ? body.providers : [];
+        const providers = [];
+        for (const item of list) {
+            const name = String(item?.name || "").trim();
+            const baseUrl = String(item?.baseUrl || "").trim().replace(/\/+$/, "");
+            if (!name) continue;
+            if (!/^https?:\/\//i.test(baseUrl)) throw new Error(`渠道 ${name} 的 baseUrl 必须是 http(s) 地址`);
+            if (name.includes("::")) throw new Error(`渠道名不能包含「::」：${name}`);
+            providers.push({ name, baseUrl, apiKey: String(item?.apiKey || "") });
+        }
+        writeFileSync(llmProvidersFile, JSON.stringify({ providers }, null, 2), { mode: 0o600 });
+        lockProvidersFile();
+        config.llm.providers = providers;
+        sendJson(res, 200, { providers: externalProviders(config).map(({ name, baseUrl, apiKey }) => ({ name, baseUrl, hasKey: Boolean(apiKey) })) });
+    } catch (error) {
+        sendError(res, 400, error.message);
+    }
+});
+
 // 前端把渠道 baseUrl 指向本服务即可复用既有 OpenAI 兼容调用链。
 router.any("/v1/*path", async (req, res, { url }) => {
     try {
@@ -233,7 +287,8 @@ router.get("/api/pipeline/runs/:id", (req, res, { params }) => {
 
 router.post("/api/pipeline/runs/:id/steps/:stage/run", async (req, res, { params }) => {
     try {
-        sendJson(res, 200, { run: await pipeline.runStage(params.id, params.stage) });
+        const body = await readJson(req).catch(() => ({}));
+        sendJson(res, 200, { run: await pipeline.runStage(params.id, params.stage, body && typeof body === "object" ? body : {}) });
     } catch (error) {
         sendError(res, 400, error.message);
     }
@@ -297,6 +352,13 @@ if (isMain) {
         console.log(`  配置 : ${config.configPath}`);
         console.log(`  模板 : ${listTemplates(config.workflowsDir).length} 个`);
         console.log(`  前端 : ${webDist || "未构建（web/dist 不存在），仅提供 API"}`);
+        // 网关自身没有鉴权，绑定非回环地址等于把「调用你的 LLM 渠道额度与 GPU 产能」开放给整个网段。
+        const host = String(config.host || "");
+        const loopback = host === "" || host === "localhost" || host === "127.0.0.1" || host === "::1";
+        if (!loopback) {
+            console.warn(`  ⚠ 监听 ${host}:${config.port} 不是回环地址，而网关没有鉴权：同网段任何人都能提交生成任务、消耗已注册 LLM 渠道的额度。`);
+            console.warn(`    要公网访问请在前置反向代理上加鉴权，或把 host 改回 127.0.0.1 只经本机/隧道访问。`);
+        }
     });
 }
 

@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { splitNovelIntoChunks } from "./chunk-novel.js";
 import { ensureDir, safeJoin } from "./files.js";
 import { loadRegistry, readSkill } from "./skills.js";
 
@@ -187,42 +188,109 @@ export function createPipeline({ config, skillsDir, jobs, comfy, llm, runJob } =
         return template;
     }
 
-    async function chat(messages, run, temperature) {
+    function resolveModel(run, stageId) {
+        // 按阶段绑定的模型优先，其次整条流水线的 llmModel，最后网关默认
+        return run.options?.stageModels?.[stageId] || run.options?.llmModel || pipelineConfig.llmModel || "";
+    }
+
+    async function chat(messages, run, temperature, stageId, provider) {
         if (typeof llm?.chat !== "function") throw new Error("未配置 LLM 提供方");
         const options = { messages, temperature, response_format: { type: "json_object" } };
-        const model = run.options?.llmModel || pipelineConfig.llmModel || "";
+        const model = resolveModel(run, stageId);
         if (model) options.model = model;
+        // 浏览器渠道透传的外部 API（仅本次调用生效，不落盘）
+        if (provider) options.provider = provider;
         const result = await llm.chat(options);
         return result?.choices?.[0]?.message?.content ?? "";
     }
 
-    /** 文本型阶段：填模板 → 要求严格 JSON → 失败重试一次 → 再失败置 error。 */
-    async function composeWithLlm(run, def, stage) {
-        const prompt = fillTemplate(readPromptTemplate(def), buildContext(run, def));
-        const messages = [
-            { role: "system", content: `你是「${def.title}」阶段的执行者。严格只返回一个 JSON 对象，不要输出解释、Markdown 代码块或任何多余文字。` },
-            { role: "user", content: prompt },
-        ];
-        const first = await chat(messages, run, 0.6);
+    /** 调一次模型并解析 JSON，失败带原文重试一次；再失败抛出带 raw 的错误。 */
+    async function askJson(messages, run, stageId, provider, temperature = 0.6) {
+        const first = await chat(messages, run, temperature, stageId, provider);
         const parsed = parseJsonLoose(first);
-        if (parsed) {
-            stage.output = parsed;
-            return;
-        }
+        if (parsed) return parsed;
         const retry = await chat(
             [...messages, { role: "assistant", content: String(first ?? "") }, { role: "user", content: "你上一次的输出不是合法 JSON。请只返回一个 JSON 对象，不要 Markdown 代码块、不要任何解释。" }],
             run,
             0,
+            stageId,
+            provider,
         );
         const retried = parseJsonLoose(retry);
-        if (retried) {
-            stage.output = retried;
-            return;
-        }
-        stage.output = null;
+        if (retried) return retried;
         const error = new Error("模型未返回合法 JSON");
         error.raw = String(retry ?? first ?? "");
         throw error;
+    }
+
+    /**
+     * 01 剧本分块改编（map-reduce）：整本长篇超过阈值时切成 N 块，逐块提取局部人物/场次，
+     * 再把全部局部结果与项目标题喂给模型合并成符合 01 SKILL.md 契约的完整剧本。
+     * stage.output 与单次调用完全同构，分块信息记在 stage.chunked。
+     */
+    async function composeScriptChunked(run, def, stage, provider, maxChunkChars) {
+        const chunks = splitNovelIntoChunks(run.novel, maxChunkChars);
+        const system = { role: "system", content: `你是「${def.title}」阶段的执行者。严格只返回一个 JSON 对象，不要输出解释、Markdown 代码块或任何多余文字。` };
+        const partials = [];
+        for (const chunk of chunks) {
+            const mapPrompt = `你是影视剧本改编。长篇小说《${run.title}》太长，已分成 ${chunks.length} 块，这是第 ${chunk.index}/${chunks.length} 块（来源：${chunk.label}）。
+
+<novel-part>
+${chunk.text}
+</novel-part>
+
+要求：
+
+1. 只提取本块出现的 characters 与 scenes，不要写 logline / synopsis / episodes。
+2. characters 覆盖本块所有有台词或推动剧情的角色：profile 写身份、性格、人物关系；appearance 写成能直接喂给生图模型的外观描述（年龄、体态、五官、发型、服装基调），不要抽象形容词；voice 写音色、语速、口音等可复现的声音特征。
+3. scenes 按本块时间顺序排列；beats 用 3~8 条原文里的可拍摄动作/台词节拍，不要文学抒情和心理描写。
+4. location 统一写成「内景/外景 + 地点」，time 只用 日 / 夜 / 黄昏 / 清晨 这类可布光的词。
+5. 只输出下面结构的 JSON 本体，id 在本块内唯一即可（合并时会统一重排），不要 Markdown 代码块、不要解释文字：
+
+{"characters":[{"id":"c1","name":"","profile":"","appearance":"","voice":""}],"scenes":[{"id":"sc1","title":"","location":"","time":"","intent":"","beats":[""]}]}`;
+            const partial = await askJson([system, { role: "user", content: mapPrompt }], run, def.id, provider);
+            partials.push({ index: chunk.index, label: chunk.label, ...partial });
+        }
+        const reducePrompt = `你是影视剧本改编。长篇小说《${run.title}》已分 ${chunks.length} 块逐块提取出局部人物与场次（JSON 如下，label 是该块在原文里的来源标记）。把它们合并成一份完整剧本。
+
+<partials>
+${JSON.stringify(partials, null, 2)}
+</partials>
+
+要求：
+
+1. 生成 logline（一句话故事线）与 synopsis（不超过 300 字的故事梗概）。
+2. characters 按姓名合并去重，profile 合并各块信息；appearance 与 voice 必须每条非空，缺失时依据原文细节合理推断补齐。
+3. scenes 按时间顺序合并，跨块重复的场次合并且不丢 beats；beats 保留可拍摄的动作/台词细节。
+4. characters[].id 与 scenes[].id 全部重排为连续稳定的 c1、c2… 与 sc1、sc2…，只允许 [A-Za-z0-9_-]。
+5. 短篇可省略 episodes；若给出，sceneIds 必须都能在 scenes 里找到。
+6. 只输出下面结构的 JSON 本体，字段名不得改动，不要 Markdown 代码块、不要解释文字：
+
+{"logline":"","synopsis":"","characters":[{"id":"c1","name":"","profile":"","appearance":"","voice":""}],"scenes":[{"id":"sc1","title":"","location":"","time":"","intent":"","beats":[""]}],"episodes":[]}`;
+        stage.output = await askJson([system, { role: "user", content: reducePrompt }], run, def.id, provider, 0.3);
+        stage.chunked = { chunks: chunks.length, labels: chunks.map((chunk) => chunk.label), mergeModel: resolveModel(run, def.id) };
+    }
+
+    /** 文本型阶段：填模板 → 要求严格 JSON → 失败重试一次 → 再失败置 error。provider 为浏览器透传的外部渠道（仅本次调用）。 */
+    async function composeWithLlm(run, def, stage, provider) {
+        const prompt = fillTemplate(readPromptTemplate(def), buildContext(run, def));
+        const maxChunkChars = Number(pipelineConfig.maxNovelChunkChars) || 16000;
+        try {
+            // 只有 01 剧本阶段会做分块；填入小说后的完整 prompt 超阈值时走 map-reduce，其余一律单次调用。
+            if (def.id === "script" && prompt.length > maxChunkChars) {
+                await composeScriptChunked(run, def, stage, provider, maxChunkChars);
+                return;
+            }
+            const messages = [
+                { role: "system", content: `你是「${def.title}」阶段的执行者。严格只返回一个 JSON 对象，不要输出解释、Markdown 代码块或任何多余文字。` },
+                { role: "user", content: prompt },
+            ];
+            stage.output = await askJson(messages, run, def.id, provider);
+            stage.chunked = undefined;
+        } catch (error) {
+            stage.output = null;
+            throw error;
+        }
     }
 
     function enqueueItem(run, def, itemId, kind, template, params) {
@@ -302,10 +370,21 @@ export function createPipeline({ config, skillsDir, jobs, comfy, llm, runJob } =
         stage.artifacts = items.filter((item) => item.artifactUrl).map((item) => ({ jobId: item.jobId, url: item.artifactUrl }));
     }
 
-    async function runStage(runId, stageId) {
+    async function runStage(runId, stageId, runOptions = {}) {
         const run = requireRun(runId);
         const def = requireStageDef(stageId);
         const stage = requireStage(run, def);
+        // 调用方可按阶段绑定模型：body.model 持久化到 run.options.stageModels，重跑沿用
+        if (typeof runOptions.model === "string" && runOptions.model.trim()) {
+            run.options = { ...(run.options || {}), stageModels: { ...(run.options?.stageModels || {}), [def.id]: runOptions.model.trim() } };
+        }
+        // 浏览器渠道透传的外部 API：仅校验形状，仅本次调用生效，绝不写入 run/options
+        let provider = null;
+        if (runOptions.provider && typeof runOptions.provider === "object") {
+            const baseUrl = String(runOptions.provider.baseUrl || "").trim();
+            if (!/^https?:\/\//i.test(baseUrl)) throw new Error("provider.baseUrl 必须是 http(s) 地址");
+            provider = { baseUrl, apiKey: String(runOptions.provider.apiKey || "") };
+        }
         for (const depId of def.requires) {
             const dep = run.stages?.[depId];
             if (!dep || dep.status !== "done" || dep.output === undefined || dep.output === null) {
@@ -319,7 +398,7 @@ export function createPipeline({ config, skillsDir, jobs, comfy, llm, runJob } =
         saveRun(run);
         try {
             // 五个阶段都先由 LLM 按「输出契约」产出 JSON；生成型阶段再回填生成参数并入队。
-            await composeWithLlm(run, def, stage);
+            await composeWithLlm(run, def, stage, provider);
             if (GENERATIVE_STAGES.has(def.id)) attachGeneration(run, def, stage);
             stage.status = "done";
             stage.finishedAt = nowIso();

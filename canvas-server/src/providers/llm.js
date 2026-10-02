@@ -18,6 +18,14 @@ function rootBase(baseUrl) {
     return trimBase(baseUrl).replace(/\/v1$/i, "");
 }
 
+/** 网关侧注册的外部 LLM 渠道（config.llm.providers 或由 /api/llm/providers 热更新）。 */
+export function externalProviders(config) {
+    const list = Array.isArray(config?.llm?.providers) ? config.llm.providers : [];
+    return list
+        .map((item) => ({ name: String(item?.name || "").trim(), baseUrl: trimBase(item?.baseUrl), apiKey: String(item?.apiKey || "") }))
+        .filter((item) => item.name && item.baseUrl);
+}
+
 /** 主地址优先，其后按配置顺序是 fallbacks。 */
 function candidates(config) {
     const list = [config?.llm?.baseUrl, ...(config?.llm?.fallbacks || [])];
@@ -26,6 +34,11 @@ function candidates(config) {
 
 function timeoutMs(config) {
     return Number(config?.llm?.timeoutMs) > 0 ? Number(config.llm.timeoutMs) : 600000;
+}
+
+/** 列模型探测的超时，默认 8 秒。与 timeoutMs 分开：后者是给长思考 chat 的，不能用来卡住探活接口。 */
+function probeTimeoutMs(config) {
+    return Number(config?.llm?.probeTimeoutMs) > 0 ? Number(config.llm.probeTimeoutMs) : 8000;
 }
 
 /** 有 API Key 才带鉴权头；任何日志都不要输出它。 */
@@ -56,23 +69,45 @@ function pickNames(payload, listKeys) {
     return names.filter(Boolean).map(String);
 }
 
-/** 同一地址同时探测 OpenAI `/v1/models` 与 Ollama 原生 `/api/tags`，合并去重。 */
+/** 同一地址并行探测 OpenAI `/v1/models` 与 Ollama 原生 `/api/tags`，合并去重。用短超时，任一端点失败只当作没有模型。 */
 async function modelsAt(baseUrl, config) {
-    const openai = await getJson(`${apiBase(baseUrl)}/models`, config);
-    const ollama = await getJson(`${rootBase(baseUrl)}/api/tags`, config);
+    const scoped = { ...config, llm: { ...config?.llm, timeoutMs: probeTimeoutMs(config) } };
+    const [openai, ollama] = await Promise.all([
+        getJson(`${apiBase(baseUrl)}/models`, scoped),
+        getJson(`${rootBase(baseUrl)}/api/tags`, scoped),
+    ]);
     return [...new Set([...pickNames(openai, ["data", "models"]), ...pickNames(ollama, ["models"])])];
 }
 
 export async function listLlmModels(config) {
     const bases = candidates(config);
+    let models = [];
     for (const baseUrl of bases) {
-        const models = await modelsAt(baseUrl, config);
+        models = await modelsAt(baseUrl, config);
         if (models.length) {
             lastGood = baseUrl;
-            return models;
+            break;
         }
     }
-    throw new Error(`LLM 服务不可达或没有模型，已尝试：${bases.join("、") || "（未配置 baseUrl）"}`);
+    if (!models.length && !externalProviders(config).length) {
+        throw new Error(`LLM 服务不可达或没有模型，已尝试：${bases.join("、") || "（未配置 baseUrl）"}`);
+    }
+    // 外部渠道的模型以「渠道名::模型名」命名空间列出，chat 按此前缀路由。
+    // 必须并行探测：串行时一个连不上的渠道会把 /api/health 和前端模型下拉一起拖住几十分钟。
+    const providers = externalProviders(config);
+    const remotes = await Promise.all(
+        providers.map((provider) =>
+            modelsAt(provider.baseUrl, { ...config, llm: { ...config.llm, baseUrl: provider.baseUrl, apiKey: provider.apiKey } }),
+        ),
+    );
+    providers.forEach((provider, index) => {
+        const remote = remotes[index];
+        if (!remote.length) {
+            console.warn(`[llm] 外部渠道「${provider.name}」(${provider.baseUrl}) 在 ${Math.round(probeTimeoutMs(config) / 1000)}s 内未返回模型，本次跳过`);
+        }
+        for (const name of remote) models.push(`${provider.name}::${name}`);
+    });
+    return [...new Set(models)];
 }
 
 export async function probeLlm(config) {
@@ -140,20 +175,34 @@ export async function forwardToLlm(incomingReq, outgoingRes, config, pathWithQue
 /**
  * 流水线编排用的非流式便捷调用。stream 参数保留以兼容调用方签名，
  * 这里固定走非流式；需要流式请走 forwardToLlm。
+ * 模型名带「渠道名::模型名」前缀时路由到 config.llm.providers 里的外部渠道；
+ * options.provider = { baseUrl, apiKey } 也可临时指定渠道（仅本次调用，不落盘）。
  */
-export async function chat(config, { messages, model, stream, temperature, ...rest } = {}) {
-    const target = model || config?.llm?.defaultModel || "";
+export async function chat(config, { messages, model, stream, temperature, provider, ...rest } = {}) {
+    let effective = config;
+    let target = model || "";
+    if (provider?.baseUrl) {
+        effective = { ...config, llm: { baseUrl: provider.baseUrl, apiKey: String(provider.apiKey || ""), timeoutMs: config?.llm?.timeoutMs } };
+    } else if (target.includes("::")) {
+        const sep = target.indexOf("::");
+        const name = target.slice(0, sep);
+        const found = externalProviders(config).find((item) => item.name === name);
+        if (!found) throw new Error(`未注册的外部 LLM 渠道：${name}（请先在 /api/llm/providers 注册）`);
+        effective = { ...config, llm: { baseUrl: found.baseUrl, apiKey: found.apiKey, timeoutMs: config?.llm?.timeoutMs } };
+        target = target.slice(sep + 2);
+    }
+    if (!target) target = effective?.llm?.defaultModel || "";
     if (!target) throw new Error("LLM 调用缺少 model：请在参数或 config.llm.defaultModel 中指定模型");
     const payload = JSON.stringify({ messages, model: target, temperature, ...rest, stream: false });
-    const bases = candidates(config);
+    const bases = candidates(effective);
     let lastError;
 
     for (const baseUrl of bases) {
         const url = `${apiBase(baseUrl)}/chat/completions`;
         const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), timeoutMs(config));
+        const timer = setTimeout(() => controller.abort(), timeoutMs(effective));
         try {
-            const response = await fetch(url, { method: "POST", headers: headers(config), body: payload, signal: controller.signal });
+            const response = await fetch(url, { method: "POST", headers: headers(effective), body: payload, signal: controller.signal });
             if (!response.ok) {
                 const detail = await response.text().catch(() => "");
                 const error = new Error(`LLM 请求失败：${url} 返回 ${response.status}${detail ? ` ${detail.slice(0, 300)}` : ""}`);

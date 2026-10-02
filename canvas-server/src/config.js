@@ -16,6 +16,9 @@ const DEFAULTS = {
         baseUrl: "http://127.0.0.1:11434",
         apiKey: "",
         timeoutMs: 600000,
+        // 列模型探测专用超时。不能复用 timeoutMs（10 分钟，那是给长思考 chat 的）：
+        // /api/health 与 /api/llm/models 要逐个探测外部渠道，一个连不上的地址就能把接口挂住几十分钟。
+        probeTimeoutMs: 8000,
         defaultModel: "",
         fallbacks: [],
     },
@@ -59,6 +62,11 @@ const DEFAULTS = {
         videoSeconds: 5,
         videoFps: 24,
         maxKeyframesPerShot: 2,
+        // 「01 剧本」阶段填入小说后的完整 prompt 超过该字符数时，自动分块改编（map-reduce）；
+        // 小于等于阈值维持单次调用。针对整本长篇超出模型上下文的场景（如 156 万 token 超 DeepSeek 104 万上限）。
+        // 默认 16000：对齐剧本工作室 skill 的「每批 8000 字以内」注意力策略并放宽一倍兼顾吞吐；
+        // 本地 27B（32k 上下文）也能容纳单块 + 模板 + 输出。
+        maxNovelChunkChars: 16000,
     },
 };
 

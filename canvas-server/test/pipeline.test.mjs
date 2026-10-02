@@ -63,6 +63,8 @@ function fakeJobs() {
 }
 
 const SCRIPT = { logline: "一句话", synopsis: "梗概", characters: [], scenes: [{ id: "sc1" }] };
+const CHUNK_PARTIAL_A = { characters: [{ id: "c1", name: "甲", profile: "村民", appearance: "青年", voice: "清亮" }], scenes: [{ id: "sc1", title: "村口", location: "外景 村口", time: "日", intent: "出场", beats: ["甲走进村子"] }] };
+const CHUNK_PARTIAL_B = { characters: [{ id: "c1", name: "乙", profile: "猎户", appearance: "壮汉", voice: "低沉" }], scenes: [{ id: "sc1", title: "山林", location: "外景 山林", time: "夜", intent: "冲突", beats: ["乙拦住甲"] }] };
 const SHOTS = { shots: [{ id: "sh1", sceneId: "sc1", index: 1, durationSec: 4, shotSize: "中景", camera: "固定", action: "走路", dialogue: "", audio: "", prompt: "a girl walking", negativePrompt: "blur" }] };
 // 生成型阶段：模型故意填了假的 template/jobId/artifactUrl，编排器必须全部覆盖。
 const FRAMES = {
@@ -263,6 +265,40 @@ test("setStageInput 修订产物置 done，其它键合并进 inputs", (t) => {
     const bare = pipeline.setStageInput(run.id, "script", { script: { ...SCRIPT, logline: "产物本体" } });
     assert.equal(bare.stages.script.output.logline, "人工修订");
     assert.equal(bare.stages.script.inputs.script.logline, "产物本体");
+});
+
+test("script 阶段超长小说自动分块：N 次 map + 1 次 reduce，产物契约与单次调用一致", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    env.config.pipeline.maxNovelChunkChars = 100; // 小阈值强制走分块流程
+    const paragraph = "这是一段小说正文内容。";
+    const partA = `【甲.txt】\n${paragraph.repeat(5)}`;
+    const partB = `【乙.txt】\n${paragraph.repeat(5)}`;
+    const llm = fakeLlm((content) => {
+        if (content.includes("合并成一份完整剧本")) return SCRIPT;
+        return content.includes("第 1/2 块") ? CHUNK_PARTIAL_A : CHUNK_PARTIAL_B;
+    });
+    const { pipeline } = build(env, { llm });
+    const run = pipeline.create({ novel: `${partA}\n\n${partB}`, title: "长篇" });
+
+    const done = await pipeline.runStage(run.id, "script", { model: "test-model" });
+    assert.equal(done.stages.script.status, "done");
+    // 2 块 → 2 次 map + 1 次 reduce，且每次都带阶段绑定的模型
+    assert.equal(llm.calls.length, 3);
+    assert.deepEqual(llm.calls.map((call) => call.model), ["test-model", "test-model", "test-model"]);
+    assert.match(llm.calls[0].messages.at(-1).content, /第 1\/2 块（来源：甲\.txt）/);
+    assert.match(llm.calls[1].messages.at(-1).content, /第 2\/2 块（来源：乙\.txt）/);
+    const reducePrompt = llm.calls[2].messages.at(-1).content;
+    assert.match(reducePrompt, /合并成一份完整剧本/);
+    assert.match(reducePrompt, /"name": "甲"/);
+    assert.match(reducePrompt, /"name": "乙"/);
+    // output 契约与单次调用完全一致，下游零感知
+    assert.deepEqual(Object.keys(done.stages.script.output).sort(), ["characters", "logline", "scenes", "synopsis"]);
+    assert.equal(done.stages.script.output.logline, "一句话");
+    // 分块信息记在 stage.chunked，便于前端/排查
+    assert.deepEqual(done.stages.script.chunked, { chunks: 2, labels: ["甲.txt", "乙.txt"], mergeModel: "test-model" });
+    assert.equal(pipeline.get(run.id).stages.script.chunked.chunks, 2);
+    assert.ok(existsSync(join(env.config.dataDir, "runs", run.id, "script.json")));
 });
 
 test("生成型阶段：回填 template/jobId/status 并入队，不采信模型编造的产物", async (t) => {

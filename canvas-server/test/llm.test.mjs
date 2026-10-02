@@ -185,6 +185,79 @@ test("chat：上游报错时抛出含地址与状态码的中文错误", async (
     );
 });
 
+// 回归：外部渠道注册表引入后，/api/health 与 /api/llm/models 会逐个探测渠道。
+// 若沿用 chat 的 600s 超时且串行探测，一个 TCP 连上就不回包的死链能把接口挂住几十分钟。
+test("外部渠道挂死时按 probeTimeoutMs 跳过，不拖住本机与其它渠道", async (t) => {
+    const local = await startStub((req, res) => {
+        if (req.url === "/api/tags") json(res, 200, { models: [{ name: "qwen3.8:27b" }] });
+        else json(res, 404, {});
+    });
+    const good = await startStub((req, res) => {
+        if (req.url === "/v1/models") json(res, 200, { data: [{ id: "deepseek-v4-pro" }] });
+        else json(res, 404, {});
+    });
+    const hang = await startStub(() => {}); // 永不回包
+    t.after(() => {
+        for (const stub of [local, good, hang]) {
+            stub.server.closeAllConnections?.();
+            stub.server.close();
+        }
+    });
+
+    const started = Date.now();
+    const models = await listLlmModels({
+        llm: {
+            baseUrl: local.baseUrl,
+            timeoutMs: 600000, // chat 用的长超时，不应影响列模型探测
+            probeTimeoutMs: 300,
+            providers: [
+                { name: "hang", baseUrl: hang.baseUrl },
+                { name: "good", baseUrl: good.baseUrl, apiKey: "sk-test" },
+            ],
+        },
+    });
+    const elapsed = Date.now() - started;
+    assert.deepEqual(models, ["qwen3.8:27b", "good::deepseek-v4-pro"], "死渠道只应丢自己的模型，不能连累本机与其它渠道");
+    assert.ok(elapsed < 3000, `探测应在 probeTimeoutMs 量级返回，实际 ${elapsed}ms`);
+});
+
+test("多个外部渠道并行探测，总耗时接近最慢的一个而非累加", async (t) => {
+    const local = await startStub((req, res) => {
+        if (req.url === "/api/tags") json(res, 200, { models: [{ name: "m0" }] });
+        else json(res, 404, {});
+    });
+    const delayed = () =>
+        startStub((req, res) => {
+            setTimeout(() => {
+                if (req.url === "/v1/models") json(res, 200, { data: [{ id: "m" }] });
+                else json(res, 404, {});
+            }, 400);
+        });
+    const stubs = [local, await delayed(), await delayed(), await delayed()];
+    t.after(() => {
+        for (const stub of stubs) {
+            stub.server.closeAllConnections?.();
+            stub.server.close();
+        }
+    });
+
+    const started = Date.now();
+    const models = await listLlmModels({
+        llm: {
+            baseUrl: local.baseUrl,
+            probeTimeoutMs: 5000,
+            providers: [
+                { name: "a", baseUrl: stubs[1].baseUrl },
+                { name: "b", baseUrl: stubs[2].baseUrl },
+                { name: "c", baseUrl: stubs[3].baseUrl },
+            ],
+        },
+    });
+    const elapsed = Date.now() - started;
+    assert.deepEqual(models, ["m0", "a::m", "b::m", "c::m"]);
+    assert.ok(elapsed < 1000, `并行应约 400ms，串行会 >=1200ms，实际 ${elapsed}ms`);
+});
+
 test("真实 Ollama 集成（不可达则跳过）", async (t) => {
     const probe = await probeLlm({ llm: { baseUrl: "http://127.0.0.1:11434", timeoutMs: 5000 } });
     if (!probe.ok) {
