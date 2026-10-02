@@ -14,10 +14,10 @@ description: 当前项目后续值得处理的事项
 
 权威排序、依赖关系与验收标准见 `docs/content/docs/progress/development-plan.md` §8；产品视角的优先级见 `prd.md` §6。以下只列尚未开工的项。
 
-- **P0-0 冻结领域契约**：先确定 Project/Canvas/Workflow/Tool/Asset/Job/Artifact 的边界、稳定 ID、状态机和 schema；页面可以整体重构，旧插件字段不作为新接口前提。
+- ~~**P0-0 冻结领域契约**~~：✅ 已完成（`domain-contract.md` + `web/src/types/domain.ts` + `canvas-server/src/contracts.js`），验收见待测试清单。
 - **P0-a 建立 Project 内核**：服务端 Project/Episode/Scene/Shot/AssetRef/Canvas 引用、源版本、Project Context API 和全新项目总览页，贯通来源、集、镜头、画布、任务和资产入口。
-- **P0-b 修 Job→Artifact 回写断链**：落实真实阶段状态、取消传播、重试和可重放投影，确保关键帧完成后能驱动视频和后期。
-- **P0-c 让 run/sourceRevision 可恢复**：服务端列表与详情、命名、断点续跑和刷新保护；长篇正文保存为版本引用。
+- ~~**P0-b 修 Job→Artifact 回写断链**~~：✅ 已完成并真机验证（历史 run 的 keyframe 产物恢复、assembly 真正入队），验收见待测试清单。
+- **P0-c run/sourceRevision 可恢复**：**前端部分已完成**（run 持久化、历史列表、命名、刷新保护）；服务端详情、长篇正文改为 `sourceRevisionId` 版本引用**尚未做**。
 - **P0-d 统一 Tool/Provider/Device 调度**：区分 GPU 生图、生视频、CPU 后期、LLM、外部 API，支持 schema 参数、局域网资源和配额。
 - **P1-a 打通项目产物图谱**：Artifact/AssetRef、分镜、角色、场景和关键帧在新工作区互相跳转；旧插件只作为一次性导入源。
 - **P1-b 生图/生视频活扣与批量执行**：候选对比、分组运行、逐镜重试、采用/回退和 Canvas 批量操作，失败镜头可续跑。

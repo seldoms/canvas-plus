@@ -2,6 +2,11 @@
 
 ## Unreleased
 
++ [修复] 修复流水线「任务完成不回写」的断链：此前 `attachGeneration` 把 `item.artifactUrl` 置 null 后全仓再无写回，任务队列的 `change` 事件也没有订阅者，导致尾帧永远取不到首帧当参考图、`assembly` 阶段永不入队（clips 永远 `queued` / `jobId: null`）、`stage.artifacts` 恒为空 —— 五段流水线实际只有四段半。现在网关在模块初始化时订阅任务终态，并**重放** `jobs.json` 里的历史终态任务，按 `job.meta` 反查 run/阶段/条目幂等回写产物，重启后也能重建。真机验证：历史 run `run-muprxois-wvmqq` 的 keyframe 产物从 `artifacts: 0` 恢复为 2，`assembly` 阶段真正入队。
++ [调整] 生成型阶段的状态以任务终态为准，不再「入队即 done」：必需 Job 全部成功才 `done`，有任务仍在跑为 `running`，部分成功为 `partial`（新增），全失败为 `error`，取消为 `canceled`（新增）。取消阶段时一并取消该阶段已入队的图像/视频任务（沿 阶段→Job 传播），不再只 abort LLM。
++ [新增] 生图/生视频改为**候选活扣**：每个条目维护 `candidates[]`，换模型重跑只追加候选、保留全部历史产物，`jobId`/`artifactUrl`/`status` 保留为当前选中候选的派生别名。重跑不再清空上次结果，具备逐镜对比的基础。
++ [新增] 流水线 run 不再「刷新即丢」：前端把 run 历史与当前 run 持久化到 localforage（`infinite-canvas:pipeline_runs_v1`），刷新后自动恢复并接回阶段/job 轮询；新增历史流水线列表（接后端早已存在、前端一直没封的 `GET /api/pipeline/runs`，客户端立即收敛为摘要以免把内嵌整本小说的完整 run 存进内存）、本地重命名、按正文首行自动命名，以及有阶段在跑时关闭页面的提示。
++ [新增] 冻结领域契约（P0-0）：新增 `docs/content/docs/progress/domain-contract.md`、`web/src/types/domain.ts`、`canvas-server/src/contracts.js`，确定 Project/Episode/Scene/Shot/GenerationSlot/Job/Artifact/AssetRef/Workflow/Tool 的字段、稳定 ID 与状态机；画布并发写入、规划参数层级、审核提示粒度、候选上限、是否一键跑完五阶段五项决策登记为 D7–D11。
 + [新增] 流水线阶段运行全面可观测、可取消、可续跑。运行改为**异步**：`POST .../steps/:stage/run` 立刻返回 `202`，工作在后台跑 —— 此前是阻塞式 POST，一个 163 块 / 83 分钟的阶段用一个 HTTP 请求扛，隧道/反代/浏览器会在几分钟内掐断连接，前端只看到「毫无反应」而后端仍在跑并消耗额度。
 + [新增] 阶段进度可见：每块 map 完成后写 `data/runs/<id>/progress.json`（几十字节，**不重写内嵌整本小说、可达 6.4MB 的 `run.json`**），新增轻量 `GET /api/pipeline/runs/:id/progress`；前端每 3 秒轮询，卡片显示「第 N/M 块 + 来源章节 + 预计剩余 + 实测速度」与进度条。
 + [新增] 阶段取消与断点续跑：`POST .../steps/:stage/cancel` 的取消信号贯通到 `llm.chat`（与内部超时共用一个 `AbortController`，且取消不会被当成连接失败去试下一个 fallback）；每块结果落盘 `chunks/<i>.json`，带 `resume: true` 重跑只补跑缺的块，前端在阶段失败后把「重跑」变成「续跑（已有 N 块）」。

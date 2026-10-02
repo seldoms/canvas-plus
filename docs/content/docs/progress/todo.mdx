@@ -12,10 +12,10 @@ description: Planned follow-up work
 
 The Chinese version of this page carries the full detail. The authoritative ordering, dependencies and acceptance criteria are in §8 of `docs/content/docs/progress/development-plan.md`; the product-level priorities are in §6 of `prd.md`. Only not-yet-started items are listed here.
 
-- **P0-0 Freeze the domain contract**: define Project/Canvas/Workflow/Tool/Asset/Job/Artifact boundaries, stable IDs, state machines, and schemas first. Pages may be rebuilt wholesale; old plugin fields are not new API prerequisites.
+- ~~**P0-0 Freeze the domain contract**~~: done (`domain-contract.md` + `web/src/types/domain.ts` + `canvas-server/src/contracts.js`); see the pending tests list.
 - **P0-a Build the Project kernel**: add server-side Project/Episode/Scene/Shot/AssetRef/Canvas references, source revisions, a Project Context API, and a new project overview that links sources, episodes, shots, canvas, jobs, and assets.
-- **P0-b Repair Job→Artifact write-back**: implement true stage status, cancellation propagation, retries, and replayable projection so completed keyframes can drive video and post-production.
-- **P0-c Make runs and source revisions recoverable**: server list/detail, naming, resume, and refresh protection; store long-form source text by revision reference.
+- ~~**P0-b Repair Job→Artifact write-back**~~: done and verified on real hardware (a historical run's keyframe artifacts were restored, and assembly truly enqueued); see the pending tests list.
+- **P0-c Make runs and source revisions recoverable**: **frontend part done** (run persistence, history list, naming, refresh protection); server detail and storing long-form source text by `sourceRevisionId` **not done yet**.
 - **P0-d Unify Tool/Provider/Device scheduling**: separate image/video GPUs, CPU post-production, LLMs, and external APIs with schema parameters, LAN resources, and quotas.
 - **P1-a Connect the project artifact graph**: let Artifact/AssetRef, storyboard, character, location, and keyframe workspaces link to one another; treat old plugins only as one-time import sources.
 - **P1-b Add swappable generation slots and batch execution**: candidate comparison, grouped runs, per-shot retries, selection/rollback, and resumable partial failures.
