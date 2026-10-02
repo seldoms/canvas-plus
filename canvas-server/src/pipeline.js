@@ -8,6 +8,9 @@ import { loadRegistry, readSkill } from "./skills.js";
 /** 生成型阶段：只构造生成任务参数并交给任务队列，不等真实产物。 */
 const GENERATIVE_STAGES = new Set(["keyframe", "assembly"]);
 
+/** Job 终态：只有落到这里才回写流水线。 */
+const TERMINAL_JOB = new Set(["done", "error", "canceled"]);
+
 /**
  * H3 系列模板的 LENGTH 走 17n+5 帧网格（5s≈123 帧、10s≈243 帧）。
  * 取不小于目标时长的最小网格点，避免把非网格帧数喂给模型。
@@ -436,68 +439,137 @@ ${JSON.stringify(partials, null, 2)}
         }
     }
 
-    function enqueueItem(run, def, itemId, kind, template, params) {
-        const job = jobs.enqueue(
-            { id: `${run.id}-${itemId}`, kind, template, name: itemId, params, meta: { runId: run.id, stageId: def.id, itemId } },
-            runJob,
-        );
-        return job?.id || null;
+    /** item 的派生别名（jobId/artifactUrl/status）由候选列表算出，selected 指向当前采用的候选；绝不删除旧候选。 */
+    function syncItem(item) {
+        const candidates = Array.isArray(item.candidates) ? item.candidates : [];
+        if (!candidates.length) return;
+        const selected = candidates[candidates.length - 1];
+        item.selected = selected.jobId;
+        item.jobId = selected.jobId;
+        item.status = selected.status;
+        // 产物取「当前候选，其次最近一次成功」，重跑进行中也不会丢掉上一次的结果。
+        const lastUrl = [...candidates].reverse().find((candidate) => candidate.artifactUrl)?.artifactUrl;
+        item.artifactUrl = selected.artifactUrl || lastUrl || null;
+    }
+
+    /** 幂等 upsert 一个候选：同一个 jobId 只更新状态与产物，不重复追加。 */
+    function upsertCandidate(item, job) {
+        item.candidates = Array.isArray(item.candidates) ? item.candidates : [];
+        const artifactUrl = job.status === "done" ? job.outputs?.[0]?.url ?? null : null;
+        const existing = item.candidates.find((candidate) => candidate.jobId === job.id);
+        if (existing) {
+            existing.status = job.status;
+            existing.artifactUrl = artifactUrl;
+            return;
+        }
+        item.candidates.push({ template: job.template, jobId: job.id, artifactUrl, status: job.status, params: job.params, createdAt: job.createdAt || nowIso() });
+    }
+
+    /**
+     * 阶段状态以任务终态为准：必需 Job 全部成功才 done；
+     * 全部进行中 running、部分成功 partial、全失败 error、有取消 canceled。重算 artifacts。
+     */
+    function recomputeStage(stage) {
+        const items = stage.output?.frames || stage.output?.clips || [];
+        const latest = items.map((item) => (item.candidates || []).at(-1)).filter(Boolean);
+        stage.artifacts = items.filter((item) => item.artifactUrl).map((item) => ({ jobId: item.jobId, url: item.artifactUrl }));
+        if (!latest.length) return;
+        const statuses = latest.map((candidate) => candidate.status);
+        // 只要有任务还在排队/运行就是 running —— 部分已完成既不代表阶段可审阅、也不代表可续跑；
+        // 前端也靠 stage.status === "running" 决定要不要继续轮询阶段进度。
+        if (statuses.some((status) => status === "queued" || status === "running")) stage.status = "running";
+        else if (statuses.every((status) => status === "done")) stage.status = "done";
+        else if (statuses.some((status) => status === "done")) stage.status = "partial";
+        else if (statuses.includes("canceled")) stage.status = "canceled";
+        else stage.status = "error";
+        if (TERMINAL_JOB.has(stage.status)) stage.finishedAt = stage.finishedAt || nowIso();
+    }
+
+    /** 单个条目的生成参数与就绪判定：模板要求的 token 必须全给，尺寸取 config.pipeline 默认值。 */
+    function generativePlan(run, def, item, frames, shots) {
+        const extraParams = (def.id === "keyframe" ? run.options?.image : run.options?.video) || {};
+        const start = frames.find((frame) => frame.shotId === item.shotId && frame.role === "start");
+        if (def.id === "keyframe") {
+            // start / key / end 都用同一个文生图模板；end 帧要等同镜 start 帧产出后才能带参考图入队。
+            return {
+                kind: "image",
+                template: pipelineConfig.imageTemplate,
+                ready: item.role !== "end" || Boolean(start?.artifactUrl),
+                params: {
+                    WIDTH: Number(pipelineConfig.imageWidth) || 768,
+                    HEIGHT: Number(pipelineConfig.imageHeight) || 1344,
+                    BATCH: Number(pipelineConfig.imageBatch) || 1,
+                    PROMPT: item.prompt,
+                    ...(item.role === "end" ? { INPUT_IMAGE: start?.artifactUrl } : {}),
+                    ...extraParams,
+                },
+            };
+        }
+        item.durationSec = Number(item.durationSec) > 0 ? Number(item.durationSec) : Number(pipelineConfig.videoSeconds) || 5;
+        if (!item.keyframeId) item.keyframeId = start?.id ?? null;
+        const shot = shots.find((entry) => entry.id === item.shotId);
+        return {
+            kind: "video",
+            template: pipelineConfig.videoTemplate,
+            // 图生视频必须有起始帧；没拿到就保持 queued + jobId:null，等关键帧产物就绪后由回写代理入队（契约见 05 SKILL.md）。
+            ready: Boolean(start?.artifactUrl),
+            params: {
+                WIDTH: Number(pipelineConfig.videoWidth) || 768,
+                HEIGHT: Number(pipelineConfig.videoHeight) || 1344,
+                PROMPT: [shot?.prompt, shot?.action].filter(Boolean).join(", "),
+                LENGTH: frameCountFor(item.durationSec, Number(pipelineConfig.videoFps) || 24),
+                ...(start?.artifactUrl ? { INPUT_IMAGE: start.artifactUrl } : {}),
+                ...extraParams,
+            },
+        };
+    }
+
+    /** 入队一次生成尝试并追加候选。重跑用带时间戳的 id，绝不覆盖旧 jobId/artifactUrl。 */
+    function enqueueAttempt(run, def, item, plan) {
+        if (typeof runJob !== "function" || typeof jobs?.enqueue !== "function") return null;
+        const base = `${run.id}-${item.id}`;
+        const id = item.candidates?.length ? `${base}-${Date.now().toString(36)}` : base;
+        const job = jobs.enqueue({ id, kind: plan.kind, template: plan.template, name: item.id, params: plan.params, meta: { runId: run.id, stageId: def.id, itemId: item.id } }, runJob);
+        if (!job) return null;
+        item.candidates = [...(item.candidates || []), { template: plan.template, jobId: job.id, artifactUrl: null, status: "queued", params: plan.params, createdAt: nowIso() }];
+        item.jobId = job.id;
+        item.selected = job.id;
+        item.status = "queued";
+        return job.id;
+    }
+
+    /** 让尚未入队且前置已就绪的条目补入队；幂等：已有本次 jobId 的跳过。首次编排与回写后都走这里。 */
+    function enqueueReady(run, def, stage, items, frames, shots) {
+        for (const item of items) {
+            const plan = generativePlan(run, def, item, frames, shots);
+            item.template = plan.template;
+            if (item.jobId || !plan.ready) continue;
+            enqueueAttempt(run, def, item, plan);
+        }
     }
 
     /**
      * 生成型阶段：模型只负责写提示词与清单，template/jobId/artifactUrl/status 全部由编排器回填。
-     * end 帧要等同镜 start 帧拿到 artifactUrl 才能入队，没有真实 ComfyUI 时一律停在 queued。
+     * 关键帧先入队 start 帧，end 帧等 start 帧产物回写后由投影补入队；片段等关键帧就绪后入队。
+     * prev 是重排前的产物，用于继承旧候选与产物（重跑只追加候选）。
      */
-    function attachGeneration(run, def, stage) {
+    function attachGeneration(run, def, stage, prev) {
         const output = stage.output && typeof stage.output === "object" ? stage.output : {};
         const items = def.id === "keyframe" ? output.frames : output.clips;
         if (!Array.isArray(items) || !items.length) throw new Error(`模型未返回 ${def.id === "keyframe" ? "frames" : "clips"} 数组`);
         const shots = run.stages?.storyboard?.output?.shots || [];
         const frames = def.id === "keyframe" ? items : run.stages?.keyframe?.output?.frames || [];
-        const extraParams = (def.id === "keyframe" ? run.options?.image : run.options?.video) || {};
-        const fps = Number(pipelineConfig.videoFps) || 24;
-        const fallbackSeconds = Number(pipelineConfig.videoSeconds) || 5;
-        // 模板要求的 token 必须全部给到，否则渲染阶段就会报「缺少参数」。尺寸取 config.pipeline 的默认值，
-        // 调用方仍可用 run.options.image / run.options.video 覆盖。
-        const imageDefaults = {
-            WIDTH: Number(pipelineConfig.imageWidth) || 768,
-            HEIGHT: Number(pipelineConfig.imageHeight) || 1344,
-            BATCH: Number(pipelineConfig.imageBatch) || 1,
-        };
-        const videoDefaults = {
-            WIDTH: Number(pipelineConfig.videoWidth) || 768,
-            HEIGHT: Number(pipelineConfig.videoHeight) || 1344,
-        };
-        const canEnqueue = typeof runJob === "function" && typeof jobs?.enqueue === "function";
+        const prevItems = def.id === "keyframe" ? prev?.frames : prev?.clips;
         for (const item of items) {
+            const old = prevItems?.find((entry) => entry.id === item.id);
+            item.candidates = old?.candidates ? old.candidates.map((candidate) => ({ ...candidate })) : [];
+            item.artifactUrl = old?.artifactUrl ?? null;
+            item.selected = old?.selected ?? null;
             item.jobId = null;
-            item.artifactUrl = null;
             item.status = "queued";
-            const start = frames.find((frame) => frame.shotId === item.shotId && frame.role === "start");
-            if (def.id === "keyframe") {
-                // start / key / end 三种帧都用同一个文生图模板。end 帧此前被指向 editTemplate
-                // （img_boogu_outfit_edit 是换装模板，要 PERSON_IMAGE + CLOTHING_IMAGE），既语义不符也必然报错。
-                item.template = pipelineConfig.imageTemplate;
-                const params = { ...imageDefaults, PROMPT: item.prompt, ...extraParams };
-                // 模板确实需要 INPUT_IMAGE 时（例如后续接入图生图模板）才带上起始帧，避免无意义地触发上传。
-                if (item.role === "end" && start?.artifactUrl) params.INPUT_IMAGE = start.artifactUrl;
-                if (canEnqueue) item.jobId = enqueueItem(run, def, item.id, "image", item.template, params);
-            } else {
-                item.template = pipelineConfig.videoTemplate;
-                item.durationSec = Number(item.durationSec) > 0 ? Number(item.durationSec) : fallbackSeconds;
-                if (!item.keyframeId) item.keyframeId = start?.id ?? null;
-                const shot = shots.find((entry) => entry.id === item.shotId);
-                const params = {
-                    ...videoDefaults,
-                    PROMPT: [shot?.prompt, shot?.action].filter(Boolean).join(", "),
-                    LENGTH: frameCountFor(item.durationSec, fps),
-                    ...extraParams,
-                };
-                if (start?.artifactUrl) params.INPUT_IMAGE = start.artifactUrl;
-                // 图生视频必须有起始帧；没拿到就保持 queued + jobId:null，等关键帧阶段产出后再跑（契约见 05 SKILL.md）。
-                if (canEnqueue && params.INPUT_IMAGE) item.jobId = enqueueItem(run, def, item.id, "video", item.template, params);
-            }
         }
+        enqueueReady(run, def, stage, items, frames, shots);
+        for (const item of items) syncItem(item);
         const assembly = output.assembly && typeof output.assembly === "object" ? output.assembly : {};
         stage.output =
             def.id === "keyframe"
@@ -510,7 +582,59 @@ ${JSON.stringify(partials, null, 2)}
                           status: "queued",
                       },
                   };
-        stage.artifacts = items.filter((item) => item.artifactUrl).map((item) => ({ jobId: item.jobId, url: item.artifactUrl }));
+        recomputeStage(stage);
+    }
+
+    /** Job 终态投影：按 meta 反查 run/stage/item，幂等回写候选与派生字段，并让前置刚就绪的下游条目入队。 */
+    function projectJob(job) {
+        if (!job || !TERMINAL_JOB.has(job.status)) return null;
+        const { runId, stageId, itemId } = job.meta || {};
+        if (!runId || !stageId || !itemId) return null;
+        const run = get(runId);
+        const def = stageDefs.get(String(stageId));
+        const stage = run?.stages?.[stageId];
+        const items = stage?.output?.frames || stage?.output?.clips;
+        const item = Array.isArray(items) ? items.find((entry) => entry.id === itemId) : null;
+        if (!def || !item) return null;
+        upsertCandidate(item, job);
+        syncItem(item);
+        const shots = run.stages?.storyboard?.output?.shots || [];
+        if (def.id === "keyframe") enqueueReady(run, def, stage, items, items, shots);
+        else if (def.id === "assembly") enqueueReady(run, def, stage, items, run.stages?.keyframe?.output?.frames || [], shots);
+        recomputeStage(stage);
+        return saveRun(run);
+    }
+
+    /**
+     * 订阅任务队列终态事件并重放历史任务，建立 Job→Artifact→Item 投影。index.js 启动时调用一次。
+     * 重放让服务重启后能从 jobs.json 的终态任务重建流水线状态（幂等）。
+     */
+    function bindJobs() {
+        if (typeof jobs?.on !== "function") return;
+        jobs.on("change", (job) => {
+            try {
+                projectJob(job);
+            } catch (error) {
+                console.error(`[pipeline] 任务回写失败 ${job?.id}：${error.message}`);
+            }
+        });
+        for (const job of jobs.list?.() || []) projectJob(job);
+    }
+
+    /** 取消阶段：连带取消该阶段已入队的图像/视频 Job，并把阶段落成 canceled。 */
+    function cancelStage(runId, stageId) {
+        requireRun(runId);
+        const def = requireStageDef(stageId);
+        let canceled = 0;
+        for (const job of jobs?.list?.() || []) {
+            const meta = job.meta || {};
+            if (meta.runId !== runId || meta.stageId !== def.id || TERMINAL_JOB.has(job.status)) continue;
+            jobs.cancel(job.id);
+            // 取消一次就投影一次：即便队列没有订阅者，也能把终态写回流水线。
+            projectJob(jobs.get(job.id) || job);
+            canceled += 1;
+        }
+        return { canceled, run: get(runId) };
     }
 
     /**
@@ -562,15 +686,26 @@ ${JSON.stringify(partials, null, 2)}
         const { run, def, stage, provider } = begun;
         const estSecondsPerChunk = Number(pipelineConfig.estSecondsPerChunk) > 0 ? Number(pipelineConfig.estSecondsPerChunk) : 31;
         try {
+            // 生成型阶段重排前的产物，用于继承旧候选（重跑只追加候选，不清空旧 jobId/artifactUrl）。
+            const prevOutput = GENERATIVE_STAGES.has(def.id) ? stage.output : null;
             // 五个阶段都先由 LLM 按「输出契约」产出 JSON；生成型阶段再回填生成参数并入队。
             await composeWithLlm(run, def, stage, provider, { signal: runOptions.signal, resume: Boolean(runOptions.resume), estSecondsPerChunk });
-            if (GENERATIVE_STAGES.has(def.id)) attachGeneration(run, def, stage);
-            stage.status = "done";
-            stage.finishedAt = nowIso();
+            if (GENERATIVE_STAGES.has(def.id)) {
+                attachGeneration(run, def, stage, prevOutput);
+                // 不再「入队即 done」：有任务就等任务终态（回写投影会重算），没有可跑任务（未接 runJob）才算完成。
+                const enqueued = (stage.output.frames || stage.output.clips || []).some((item) => (item.candidates || []).length);
+                if (!enqueued) {
+                    stage.status = "done";
+                    stage.finishedAt = nowIso();
+                }
+            } else {
+                stage.status = "done";
+                stage.finishedAt = nowIso();
+            }
             if (stage.output !== undefined && stage.output !== null) saveOutput(run.id, def.id, stage.output);
-            // 成功也保留一条 phase:"done" 的进度：前端据此停止轮询，不必为了判断「跑完了没」
-            // 去拉内嵌整本小说、可达数 MB 的 run.json
-            writeProgress(run.id, { ...(readProgress(run.id) || {}), runId: run.id, stage: def.id, phase: "done", finishedAt: stage.finishedAt });
+            // 成功也保留一条进度：只有真正 done 才写 phase:"done"，生成型阶段等 Job 终态时写 running，
+            // 否则前端会误判「跑完了」而停止轮询一个还在生成的任务。
+            writeProgress(run.id, { ...(readProgress(run.id) || {}), runId: run.id, stage: def.id, phase: stage.status === "done" ? "done" : "running", finishedAt: stage.finishedAt });
         } catch (error) {
             stage.status = "error";
             stage.error = error.raw ? `${error.message}：${String(error.raw).slice(0, 4000)}` : error.message;
@@ -614,5 +749,5 @@ ${JSON.stringify(partials, null, 2)}
         return fixed;
     }
 
-    return { stages, list, get, create, estimate: estimateFor, runStage, beginStage, executeStage, stageProgress, reconcileRunning, setStageInput };
+    return { stages, list, get, create, estimate: estimateFor, runStage, beginStage, executeStage, stageProgress, reconcileRunning, setStageInput, projectJob, bindJobs, cancelStage };
 }

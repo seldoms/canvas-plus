@@ -68,6 +68,9 @@ async function runJob(job, ctx) {
 }
 
 const pipeline = createPipeline({ config, skillsDir: config.skillsDir, jobs, comfy, llm, runJob });
+// 订阅一次任务队列的 change 事件：Job 落终态时把产物回写流水线条目；并重放 jobs.json 里的终态任务，
+// 让服务重启后能从任务队列重建流水线状态（幂等）。
+pipeline.bindJobs();
 
 /** 入队入口：默认本地 ComfyUI，显式传 backend:"runninghub" 时才走云端。 */
 function submitGeneration(kind, body) {
@@ -326,16 +329,26 @@ router.post("/api/pipeline/runs/:id/steps/:stage/run", async (req, res, { params
 });
 
 /**
- * 取消正在执行的阶段。abort 后由 executeStage 的 catch 落终态（status:error +「已取消（第 N/M 块完成后中止）」），
- * 所以这里**不回传 run** —— 那一刻 run 还没写完，回传会是过期的 running 态；让前端轮询 progress 拿终态。
+ * 取消正在执行的阶段。abort 后由 executeStage 的 catch 落终态；
+ * 同时把该阶段已入队的图像/视频 Job 一并取消（取消要沿 阶段→Job 传播），生成型阶段靠回写投影落成 canceled。
+ * 这里**不回传 run** —— 那一刻 run 还没写完，回传会是过期的 running 态；让前端轮询 progress 拿终态。
  */
 router.post("/api/pipeline/runs/:id/steps/:stage/cancel", (req, res, { params }) => {
     const key = inflightKey(params.id, params.stage);
     const entry = inflightStages.get(key);
-    if (!entry) return sendError(res, 409, `阶段「${params.stage}」当前没有正在执行的任务`);
-    entry.controller.abort();
-    inflightStages.delete(key);
-    sendJson(res, 200, { canceled: true, stage: params.stage, ranMs: Date.now() - entry.startedAt });
+    let result;
+    try {
+        result = pipeline.cancelStage(params.id, params.stage);
+    } catch (error) {
+        return sendError(res, 404, error.message);
+    }
+    if (entry) {
+        entry.controller.abort();
+        inflightStages.delete(key);
+    } else if (!result.canceled) {
+        return sendError(res, 409, `阶段「${params.stage}」当前没有正在执行的任务`);
+    }
+    sendJson(res, 200, { canceled: true, stage: params.stage, jobs: result.canceled, ranMs: entry ? Date.now() - entry.startedAt : undefined });
 });
 
 router.post("/api/pipeline/runs/:id/steps/:stage/input", async (req, res, { params }) => {
