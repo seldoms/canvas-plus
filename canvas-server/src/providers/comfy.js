@@ -21,10 +21,16 @@ const TITLES = {
     img_flux_artistic: "Flux 艺术生图",
     img_krea2_artistic: "Krea2 艺术生图",
     img_boogu_outfit_edit: "Boogu 换装编辑",
+    img_qwen21_t2i: "Qwen-Image 2.1 文生图",
+    img_qwen21_edit: "Qwen-Image 2.1 指令改图",
     upscale_4x: "4 倍放大",
     video_h3_i2v: "H3 图生视频",
     video_h3_ref2v: "H3 参考视频生视频",
+    video_h3_ref2v_image: "H3 参考图生视频",
+    video_h3_ref2v_image_turbo: "H3 参考图生视频（Turbo 8 步）",
+    video_h3_quantfunc_ref2v: "H3 参考图生视频（QuantFunc INT4）",
     video_minimax_h3_t2v: "MiniMax H3 文生视频",
+    video_h3_talk: "H3 台词对口型",
     video_wan_animate: "Wan 动画驱动",
     scail2_action_transfer: "Scail2 动作迁移",
 };
@@ -102,6 +108,28 @@ export function disableEmptyLoras(graph) {
                 // renderTemplate 会把纯数字字符串（含节点 id 引用）转成 number，这里必须按字符串比较，
                 // 否则 "3".inputs.model = [2, 0] 这种引用匹配不上被摘除的节点 "2"。
                 if (Array.isArray(value) && String(value[0]) === String(id)) target.inputs[key] = upstream;
+            }
+        }
+    }
+    return removed;
+}
+
+/**
+ * 把 image 为空的 LoadImage 节点摘除，并删掉所有引用它的输入键。返回被摘除的节点 id 数组。
+ * 用于 Qwen-Image 2.1 这类「多张参考图、每张都可选（Autogrow min=0）」的节点：调用方对不用的槽位传空串即可，
+ * 不必为每种参考图数量各做一个模板。与 disableEmptyLoras 的区别是这里直接删引用键，不需要重连下游。
+ */
+export function disableEmptyImageRefs(graph) {
+    const nodes = graph || {};
+    const removed = [];
+    for (const [id, node] of Object.entries(nodes)) {
+        if (node?.class_type !== "LoadImage" || !isBlank(node.inputs?.image)) continue;
+        delete nodes[id];
+        removed.push(id);
+        for (const target of Object.values(nodes)) {
+            for (const [key, value] of Object.entries(target?.inputs || {})) {
+                // 同 disableEmptyLoras：节点引用被 toNumberTree 保持为字符串，必须按字符串比较。
+                if (Array.isArray(value) && String(value[0]) === String(id)) delete target.inputs[key];
             }
         }
     }

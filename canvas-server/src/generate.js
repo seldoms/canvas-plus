@@ -1,10 +1,20 @@
 import { readFile } from "node:fs/promises";
 
 import { safeJoin, sanitizeName } from "./files.js";
-import { collectOutputs, disableEmptyLoras, extractTokens, renderTemplate } from "./providers/comfy.js";
+import { collectOutputs, disableEmptyImageRefs, disableEmptyLoras, extractTokens, renderTemplate } from "./providers/comfy.js";
 
 /** 这些 token 的值是素材（本机路径 / 远端 URL / 网关产物地址），提交前要先上传到 ComfyUI。 */
-export const ASSET_TOKENS = ["INPUT_IMAGE", "REF_VIDEO", "PERSON_IMAGE", "CLOTHING_IMAGE", "REF_IMAGE_1", "REF_IMAGE_2", "REF_IMAGE_3"];
+export const ASSET_TOKENS = [
+    "INPUT_IMAGE",
+    "REF_VIDEO",
+    "PERSON_IMAGE",
+    "CLOTHING_IMAGE",
+    // REF_IMAGE_1..9 是「额外参考图」槽位，Qwen-Image 2.1 最多支持 10 张（INPUT_IMAGE 占第 1 张）。
+    ...Array.from({ length: 9 }, (_, index) => `REF_IMAGE_${index + 1}`),
+];
+
+/** 可选素材 token：缺省填空串，渲染后由 disableEmptyImageRefs 把对应的 LoadImage 节点摘掉。 */
+const isOptionalRef = (token) => /^REF_IMAGE_\d+$/.test(token);
 
 function sleep(ms, signal) {
     return new Promise((resolve, reject) => {
@@ -56,12 +66,14 @@ export function createLocalRunner({ config, comfy, jobs }) {
         params.SEED ??= Math.floor(Math.random() * 2 ** 31);
         params.OUTPUT_PREFIX ??= `canvas/${sanitizeName(job.name || job.id)}`;
 
-        // 模板要求的 token 全部补齐：LoRA 允许缺省，缺省时由 disableEmptyLoras 把 LoRA 节点摘掉，
-        // 这样调用方（画布前端）不需要知道该用哪个 lora 文件名。
+        // 模板要求的 token 全部补齐：LoRA 与额外参考图允许缺省，缺省时分别由 disableEmptyLoras /
+        // disableEmptyImageRefs 把对应节点摘掉，这样调用方（画布前端）不需要知道该用哪个文件名、
+        // 也不需要为「用了几张参考图」挑不同模板。
         for (const token of extractTokens(templatePath)) {
             if (params[token] !== undefined) continue;
             if (token === "LORA_FILE") params[token] = "";
             else if (token === "LORA_STRENGTH") params[token] = 1;
+            else if (isOptionalRef(token)) params[token] = "";
             else throw new Error(`模板 ${job.template} 缺少参数：${token}`);
         }
 
@@ -69,9 +81,26 @@ export function createLocalRunner({ config, comfy, jobs }) {
             if (params[token]) params[token] = await resolveAsset(params[token]);
         }
 
+        // H3 视频节点硬性要求宽高可被 32 整除（conditioning.py 直接抛 ValueError），
+        // 画布侧传 auto/任意尺寸时在网关吸附到最近的 32 倍数，保护所有调用方。
+        if (job.template.startsWith("video_")) {
+            for (const key of ["WIDTH", "HEIGHT"]) {
+                const value = Number(params[key]);
+                if (Number.isFinite(value) && value > 0) {
+                    const snapped = Math.max(32, Math.round(value / 32) * 32);
+                    if (snapped !== value) {
+                        console.log(`[job ${job.id}] ${key} ${value} 不可被 32 整除，吸附为 ${snapped}`);
+                        params[key] = snapped;
+                    }
+                }
+            }
+        }
+
         const graph = renderTemplate(templatePath, params);
         const removed = disableEmptyLoras(graph);
         if (removed.length) console.log(`[job ${job.id}] 未指定 LoRA，已摘除节点 ${removed.join(", ")}`);
+        const removedRefs = disableEmptyImageRefs(graph);
+        if (removedRefs.length) console.log(`[job ${job.id}] 未指定的参考图槽位，已摘除节点 ${removedRefs.join(", ")}`);
 
         const promptId = await comfy.queuePrompt(graph);
         ctx.patch({ promptId });
