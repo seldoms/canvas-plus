@@ -1,0 +1,26 @@
+/* 分镜工作台:扁平无底色按钮,仅用 currentColor 的轻微 hover 反馈,随主题明暗自适应。 */
+.sb-btn {
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    padding: 4px 8px;
+    font: inherit;
+    font-size: 12px;
+    color: inherit;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    white-space: nowrap;
+}
+.sb-btn:hover:not(:disabled) {
+    background: color-mix(in srgb, currentColor 8%, transparent);
+}
+.sb-btn:disabled {
+    opacity: 0.4;
+    cursor: default;
+}
+.sb-btn:focus-visible {
+    outline: 1px solid currentColor;
+    outline-offset: 1px;
+}

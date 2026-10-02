@@ -1,0 +1,17 @@
+{
+    "name": "canvas-plugin-storyboard-studio",
+    "version": "1.0.0",
+    "private": true,
+    "type": "module",
+    "description": "分镜工作台:从剧本/小说生成分镜表,逐镜编辑、体检、试拍与批量关键帧",
+    "scripts": {
+        "build": "node build.mjs",
+        "dev": "node build.mjs --watch",
+        "typecheck": "tsc --noEmit"
+    },
+    "devDependencies": {
+        "@infinite-canvas/plugin-sdk": "file:../sdk",
+        "@types/react": "19.1.12",
+        "typescript": "^5"
+    }
+}
