@@ -408,7 +408,7 @@ export default {
         invalidJson: "Invalid JSON. Fix it before saving.",
         editTitle: "Edit output: {{stage}}",
         stages: { script: "Script", storyboard: "Storyboard", design: "Design", keyframe: "Keyframes", assembly: "Assembly" },
-        status: { pending: "Pending", running: "Running", done: "Done", error: "Failed" },
+        status: { pending: "Pending", running: "Running", partial: "Partial", done: "Done", error: "Failed", canceled: "Canceled" },
     },
     version: {
         viewUpdates: "View release updates",

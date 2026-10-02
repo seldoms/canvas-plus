@@ -52,7 +52,7 @@ export type GatewayProviders = {
 export type GatewaySkillInfo = { id: string; name?: string; title?: string; description?: string; path?: string; skill?: string; requires?: string[]; produces?: string[] };
 export type GatewayStageInfo = { id: string; title: string; skill: string; requires: string[]; produces: string[] };
 
-export type GatewayStageStatus = "pending" | "running" | "done" | "error";
+export type GatewayStageStatus = "pending" | "running" | "partial" | "done" | "error" | "canceled";
 
 export type GatewayRunStage = {
     id: string;
@@ -222,6 +222,40 @@ export async function createPipelineRun(input: { novel: string; title?: string; 
 export async function getPipelineRun(id: string, baseUrl?: string) {
     const data = await gatewayRequest<{ run: GatewayPipelineRun }>({ method: "get", url: `/api/pipeline/runs/${encodeURIComponent(id)}` }, baseUrl);
     return data.run;
+}
+
+/** 历史列表里每个阶段的摘要，够渲染「标题 + 状态」即可，不拖阶段产物。 */
+export type GatewayPipelineRunStageSummary = { title: string; status: GatewayStageStatus };
+
+/** 历史 run 摘要：后端列表接口回的是完整 run，这里只留列表需要的字段。 */
+export type GatewayPipelineRunSummary = {
+    id: string;
+    title: string;
+    createdAt: string;
+    updatedAt: string;
+    stages: Record<string, GatewayPipelineRunStageSummary>;
+};
+
+/** 把某个 run 的阶段压成历史列表要的「标题 + 状态」摘要。 */
+export function summarizeRunStages(stages?: Record<string, GatewayRunStage>) {
+    return Object.fromEntries(Object.entries(stages || {}).map(([stageId, stage]) => [stageId, { title: stage.title || stageId, status: stage.status }]));
+}
+
+/**
+ * 历史流水线列表。后端 GET /api/pipeline/runs 返回的是**完整 run 对象数组**（每个内嵌整本小说，
+ * 222 万字约 6.4MB），所以这里立即收敛成只含标题、时间、阶段状态的摘要，避免大对象在内存与本地持久化里堆积。
+ */
+export async function listPipelineRuns(baseUrl?: string) {
+    const data = await gatewayRequest<{ runs: GatewayPipelineRun[] }>({ method: "get", url: "/api/pipeline/runs" }, baseUrl);
+    return data.runs.map(
+        (run): GatewayPipelineRunSummary => ({
+            id: run.id,
+            title: run.title || run.id,
+            createdAt: run.createdAt,
+            updatedAt: run.updatedAt,
+            stages: summarizeRunStages(run.stages),
+        }),
+    );
 }
 
 /**

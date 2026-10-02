@@ -11,8 +11,10 @@ import type { PipelineStageView } from "../use-pipeline-run";
 const STATUS_CLASS: Record<GatewayStageStatus, string> = {
     pending: "text-stone-500 dark:text-stone-400",
     running: "text-amber-600 dark:text-amber-400",
+    partial: "text-orange-600 dark:text-orange-400",
     done: "text-emerald-600 dark:text-emerald-400",
     error: "text-red-600 dark:text-red-400",
+    canceled: "text-stone-500 dark:text-stone-400",
 };
 
 function formatDuration(ms: number) {

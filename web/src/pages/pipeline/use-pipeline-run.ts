@@ -9,8 +9,10 @@ import {
     fetchGatewayStages,
     fetchPipelineProgress,
     getPipelineRun,
+    listPipelineRuns,
     probeGatewayBaseUrl,
     runPipelineStage as requestStageRun,
+    summarizeRunStages,
     syncGatewayLlmProviders,
     updatePipelineStageInput,
     type GatewayArtifact,
@@ -22,6 +24,7 @@ import {
     type GatewayStageStatus,
 } from "@/services/api/gateway";
 import { useConfigStore } from "@/stores/use-config-store";
+import { usePipelineStore, type PipelineRunRecord } from "@/stores/use-pipeline-store";
 import { collectJobIds, uniqueArtifacts } from "./pipeline-utils";
 
 export type PipelineStageView = {
@@ -59,6 +62,11 @@ function loadStageModels(): Record<string, string> {
     }
 }
 
+/** 从正文首个非空行截取标题（最长 30 字）；截不到就留空，由后端落「未命名流水线」。 */
+function deriveTitle(text: string) {
+    return (text.split(/\r?\n/).find((line) => line.trim())?.trim() || "").slice(0, 30);
+}
+
 export function usePipelineRun() {
     const [novel, setNovel] = useState("");
     const [run, setRun] = useState<GatewayPipelineRun | null>(null);
@@ -72,7 +80,13 @@ export function usePipelineRun() {
     const [gwBase, setGwBase] = useState("");
     /** 当前阶段的细粒度进度（第几块/共几块/预计还需多久），来自轻量 progress.json。 */
     const [progress, setProgress] = useState<GatewayStageProgress | null>(null);
-    const runId = run?.id || "";
+    const [historyLoading, setHistoryLoading] = useState(false);
+    /** 恢复只做一次，之后不再被本地恢复逻辑覆盖当前 run。 */
+    const [restored, setRestored] = useState(false);
+    const hydrated = usePipelineStore((state) => state.hydrated);
+    const storedActiveRunId = usePipelineStore((state) => state.activeRunId);
+    // 当前 run 的 id：内存里的 run 优先，刷新后 run 尚未拉回时用本地记住的 activeRunId，轮询据此重建。
+    const runId = run?.id || storedActiveRunId;
     const channels = useConfigStore((state) => state.config.channels);
 
     // 后端 202 之后阶段在后台跑，「有没有在跑」只能从 run 的状态看，不能再靠 await 那个 POST
@@ -164,6 +178,58 @@ export function usePipelineRun() {
         }
     }, [runId, gwBase]);
 
+    /** 切到某个历史 run：先清掉上一个 run 的运行态，再拉全量并由上面的轮询 useEffect 重建。 */
+    const openRun = useCallback(
+        async (id: string) => {
+            if (!id) return;
+            setRun(null);
+            setJobs({});
+            setError("");
+            usePipelineStore.getState().setActiveRun(id);
+            try {
+                const loaded = await getPipelineRun(id, gwBase || undefined);
+                setRun(loaded);
+                usePipelineStore.getState().upsertRun({ id: loaded.id, title: loaded.title, createdAt: loaded.createdAt, stages: summarizeRunStages(loaded.stages) });
+            } catch (caught) {
+                setError(messageOf(caught));
+            }
+        },
+        [gwBase],
+    );
+
+    /** 回到「新建」：清掉当前 run（历史记录保留，之后可切回）。 */
+    const resetRun = useCallback(() => {
+        setRun(null);
+        setJobs({});
+        setProgress(null);
+        setError("");
+        usePipelineStore.getState().setActiveRun("");
+        setRestored(true);
+    }, []);
+
+    /** 拉后端历史列表并合并进本地记录（本地改过的标题保留）。 */
+    const loadHistory = useCallback(async () => {
+        setHistoryLoading(true);
+        try {
+            const runs = await listPipelineRuns(gwBase || undefined);
+            usePipelineStore.getState().syncRuns(
+                runs.map((item): PipelineRunRecord => ({ id: item.id, title: item.title, createdAt: item.createdAt, stages: item.stages })),
+            );
+        } catch (caught) {
+            setError(messageOf(caught));
+        } finally {
+            setHistoryLoading(false);
+        }
+    }, [gwBase]);
+
+    /** 重命名只改本地记录（后端没有重命名端点）；顺手同步内存里的 run，让页头标题立刻更新。 */
+    const renameRun = useCallback((id: string, title: string) => {
+        const trimmed = title.trim();
+        if (!trimmed) return;
+        usePipelineStore.getState().renameRun(id, trimmed);
+        setRun((current) => (current && current.id === id ? { ...current, title: trimmed } : current));
+    }, []);
+
     const pendingJobIds = useMemo(() => {
         if (!run) return [];
         return [...collectJobIds(run.stages)].filter((id) => isPending(jobs[id]));
@@ -216,6 +282,25 @@ export function usePipelineRun() {
         };
     }, [runId, runningStage, gwBase, refresh]);
 
+    // 刷新恢复：localforage 水合完成后，用本地记住的 activeRunId 打开最近一次 run，接回阶段/job 轮询。
+    // 只做一次；本页已创建或手动切换过 run 后不再干预。
+    useEffect(() => {
+        if (restored || run || !hydrated || !storedActiveRunId || !gwBase) return;
+        setRestored(true);
+        void openRun(storedActiveRunId);
+    }, [restored, run, hydrated, storedActiveRunId, gwBase, openRun]);
+
+    // 有阶段在跑时拦一下刷新/关闭，避免误关丢掉可能要跑很久的 run；阶段落终态后自动解除。
+    useEffect(() => {
+        if (!runningStage) return;
+        const warn = (event: BeforeUnloadEvent) => {
+            event.preventDefault();
+            event.returnValue = "";
+        };
+        window.addEventListener("beforeunload", warn);
+        return () => window.removeEventListener("beforeunload", warn);
+    }, [runningStage]);
+
     const stageList = useMemo<GatewayStageInfo[]>(() => {
         if (stages.length) return stages;
         return FALLBACK_STAGES.map((item) => ({ id: item.id, title: i18n.t(`pipeline.stages.${item.id}`), skill: item.id, requires: [...item.requires], produces: [] }));
@@ -250,7 +335,9 @@ export function usePipelineRun() {
         setStarting(true);
         setError("");
         try {
-            const created = await createPipelineRun({ novel: text }, gwBase || undefined);
+            const created = await createPipelineRun({ novel: text, title: deriveTitle(text) || undefined }, gwBase || undefined);
+            usePipelineStore.getState().setActiveRun(created.id);
+            usePipelineStore.getState().upsertRun({ id: created.id, title: created.title, createdAt: created.createdAt, stages: summarizeRunStages(created.stages) });
             setRun(created);
             return created;
         } catch (caught) {
@@ -328,6 +415,11 @@ export function usePipelineRun() {
         cancelStage,
         saveStageOutput,
         refresh,
+        openRun,
+        resetRun,
+        loadHistory,
+        historyLoading,
+        renameRun,
         modelOptions,
         stageModels,
         setStageModel,

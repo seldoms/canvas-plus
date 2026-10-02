@@ -399,7 +399,7 @@ export default {
         invalidJson: "JSON 格式不正确，请检查后再保存。",
         editTitle: "编辑产物：{{stage}}",
         stages: { script: "剧本", storyboard: "分镜", design: "服化道", keyframe: "关键帧", assembly: "片段合成" },
-        status: { pending: "待运行", running: "运行中", done: "已完成", error: "失败" },
+        status: { pending: "待运行", running: "运行中", partial: "部分成功", done: "已完成", error: "失败", canceled: "已取消" },
     },
     version: {
         viewUpdates: "查看版本更新",

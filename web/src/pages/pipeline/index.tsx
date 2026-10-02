@@ -1,9 +1,10 @@
 import { Button, Input, Modal, Select } from "antd";
-import { FileText, RefreshCw, Sparkles } from "lucide-react";
+import { FileText, History, Pencil, RefreshCw, Sparkles } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { StageCard } from "./components/stage-card";
+import { PipelineHistory } from "./components/pipeline-history";
 import { CONFIRM_CHUNKS, usePipelineRun, type PipelineStageView } from "./use-pipeline-run";
 
 const TEXT_FILE_RE = /\.(txt|md|markdown|srt|ass|csv|json|text)$/i;
@@ -17,9 +18,11 @@ async function readNovelFiles(files: File[]) {
 
 export default function PipelinePage() {
     const { t } = useTranslation();
-    const { novel, setNovel, run, views, starting, busyStage, runningStage, progress, error, createRunOnly, runStage, cancelStage, saveStageOutput, refresh, modelOptions, stageModels, setStageModel } = usePipelineRun();
+    const { novel, setNovel, run, views, starting, busyStage, runningStage, progress, error, createRunOnly, runStage, cancelStage, saveStageOutput, refresh, openRun, resetRun, loadHistory, historyLoading, renameRun, modelOptions, stageModels, setStageModel } = usePipelineRun();
     const [editing, setEditing] = useState<{ id: string; title: string; text: string; error: string } | null>(null);
     const [imported, setImported] = useState<{ names: string[]; rejected: number } | null>(null);
+    const [showHistory, setShowHistory] = useState(false);
+    const [renaming, setRenaming] = useState<{ id: string; title: string } | null>(null);
     const fileInputRef = useRef<HTMLInputElement | null>(null);
     const statusById = useMemo(() => new Map(views.map((view) => [view.id, view.status])), [views]);
     const titleById = useMemo(() => new Map(views.map((view) => [view.id, view.title])), [views]);
@@ -90,6 +93,31 @@ export default function PipelinePage() {
         if (await saveStageOutput(editing.id, output)) setEditing(null);
     };
 
+    const toggleHistory = () => {
+        if (!showHistory) void loadHistory();
+        setShowHistory(!showHistory);
+    };
+
+    /** 从历史直接开跑新的：清掉当前 run，回到空白输入。 */
+    const createNewRun = () => {
+        resetRun();
+        setNovel("");
+        setImported(null);
+        setShowHistory(false);
+    };
+
+    const openHistoryRun = (id: string) => {
+        setShowHistory(false);
+        void openRun(id);
+    };
+
+    const saveRenaming = () => {
+        if (!renaming) return;
+        const title = renaming.title.trim();
+        if (title) renameRun(renaming.id, title);
+        setRenaming(null);
+    };
+
     return (
         <div className="flex h-full flex-col overflow-hidden bg-background text-stone-800 dark:text-stone-100">
             <main className="min-h-0 flex-1 overflow-y-auto px-4 py-6 sm:px-6">
@@ -140,33 +168,45 @@ export default function PipelinePage() {
                                     {t("pipeline.refresh")}
                                 </Button>
                             ) : null}
-                            {run ? <span className="text-xs text-stone-500 dark:text-stone-400">{run.title || run.id}</span> : null}
+                            {run ? (
+                                <span className="flex items-center gap-0.5 text-xs text-stone-500 dark:text-stone-400">
+                                    {run.title || run.id}
+                                    <Button type="text" size="small" icon={<Pencil className="size-3.5" />} onClick={() => setRenaming({ id: run.id, title: run.title })} />
+                                </span>
+                            ) : null}
+                            <Button className="ml-auto" type={showHistory ? "primary" : "text"} icon={<History className="size-4" />} onClick={toggleHistory}>
+                                {showHistory ? "返回当前" : "历史记录"}
+                            </Button>
                         </div>
                         {imported?.names.length ? <div className="mt-2 text-xs text-stone-500 dark:text-stone-400">📄 {t("pipeline.filesImported", { count: imported.names.length, names: imported.names.join("、") })}</div> : null}
                         {imported?.rejected ? <div className="mt-1 text-xs text-amber-600 dark:text-amber-400">{t("pipeline.filesRejected", { count: imported.rejected })}</div> : null}
                         {error ? <div className="mt-2 text-xs text-red-600 dark:text-red-400">{error}</div> : null}
                     </div>
 
-                    <div className="mt-6 divide-y divide-stone-200/70 dark:divide-stone-800/70">
-                        {views.map((view, index) => (
-                            <StageCard
-                                key={view.id}
-                                index={index}
-                                view={view}
-                                busy={busyStage === view.id}
-                                progress={progress}
-                                resumeChunks={resumableChunks(view)}
-                                disabledReason={disabledReason(view)}
-                                modelOptions={modelOptions}
-                                model={stageModels[view.id] || ""}
-                                onModelChange={(value) => setStageModel(view.id, value)}
-                                onRun={() => void runStage(view.id)}
-                                onRerun={() => void runStage(view.id, { resume: resumableChunks(view) > 0 })}
-                                onCancel={() => void cancelStage(view.id)}
-                                onEdit={() => openEditor(view)}
-                            />
-                        ))}
-                    </div>
+                    {showHistory ? (
+                        <PipelineHistory loading={historyLoading} onOpen={openHistoryRun} onRename={(id, title) => setRenaming({ id, title })} onCreate={createNewRun} onRefresh={() => void loadHistory()} />
+                    ) : (
+                        <div className="mt-6 divide-y divide-stone-200/70 dark:divide-stone-800/70">
+                            {views.map((view, index) => (
+                                <StageCard
+                                    key={view.id}
+                                    index={index}
+                                    view={view}
+                                    busy={busyStage === view.id}
+                                    progress={progress}
+                                    resumeChunks={resumableChunks(view)}
+                                    disabledReason={disabledReason(view)}
+                                    modelOptions={modelOptions}
+                                    model={stageModels[view.id] || ""}
+                                    onModelChange={(value) => setStageModel(view.id, value)}
+                                    onRun={() => void runStage(view.id)}
+                                    onRerun={() => void runStage(view.id, { resume: resumableChunks(view) > 0 })}
+                                    onCancel={() => void cancelStage(view.id)}
+                                    onEdit={() => openEditor(view)}
+                                />
+                            ))}
+                        </div>
+                    )}
                 </div>
             </main>
 
@@ -182,6 +222,18 @@ export default function PipelinePage() {
             >
                 <Input.TextArea rows={18} value={editing?.text || ""} className="font-mono text-xs" onChange={(event) => editing && setEditing({ ...editing, text: event.target.value, error: "" })} />
                 {editing?.error ? <div className="mt-2 text-xs text-red-600 dark:text-red-400">{editing.error}</div> : null}
+            </Modal>
+
+            <Modal
+                open={Boolean(renaming)}
+                title="重命名流水线"
+                okText={t("common.save")}
+                cancelText={t("common.cancel")}
+                onOk={saveRenaming}
+                onCancel={() => setRenaming(null)}
+            >
+                <Input value={renaming?.title || ""} maxLength={30} placeholder="输入流水线名称" onChange={(event) => renaming && setRenaming({ ...renaming, title: event.target.value })} onPressEnter={saveRenaming} />
+                <div className="mt-2 text-xs text-stone-500 dark:text-stone-400">仅修改本地历史记录中的名称，不会同步到后端。</div>
             </Modal>
         </div>
     );
