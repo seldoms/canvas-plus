@@ -9,3 +9,16 @@ description: 当前项目后续值得处理的事项
 
 - 本地 Agent 接入后续：按[本地 Agent 接入规划](/zh-CN/docs/progress/local-agent-integration-plan)把 Claude Code CLI Adapter 升级为 Claude Agent SDK Adapter，并完善工具队列体验。
 - Agent Skill 后续：补充网络检索安装、Skill 资源文件管理和可控的本地记忆沉淀。
+
+## 本地网关与影视流水线
+
+细节与优先级排序见仓库根目录 `HANDOFF.md` 的「下一步」，以及 `docs/content/docs/progress/gateway-api-benchmark.md` §7（内部研究文档，不进文档站导航）。
+
+- 片段合成接 ffmpeg 拼接执行体：五段流水线目前唯一的断点。`assembly` 阶段只规划 clips 与拼接顺序并生成片段，产物停在 `status: "queued"`，没有拼接/转场执行体、没有视频超分、没有音轨混流。拼接用本机 ffmpeg 即可，不占 GPU。
+- 接线已导入的 skill 库：`skills/libraries/` 里的 script-writing-studio 与 Luster 岩井俊二美学已入库但未接上，`skills/01-*` ~ `05-*` 仍在用骨架期的默认提示词。两个库面向云端生成器，所以是分层不是替换：库管内容与风格，阶段技能负责翻译成 ComfyUI 模板 token 并剥掉专用尾参。
+- 视频提速：实测上游 `video_h3_i2v_sla` / `video_h3_i2v_blockcache` 加速模板；先降分辨率出草稿、定稿再出高清是零新增模型零新增模板的方案。
+- `TemplateInfo` 增补 `schema`：把 `tokens: string[]` 升级成带类型、范围、默认值、帧网格约束的 schema，让「拷一个工作流 JSON 就自动可用」成立，并删掉前端按模板名硬编码的分支。
+- 可观测性：接 ComfyUI WebSocket 拿真实进度（当前 `progress` 只填 0/0），并把它暴露成 `GET /api/jobs/:id/events`（SSE）与 `?wait=` 长轮询。视频任务 8~40 分钟，这块优先级因此上调。
+- RunningHub 真机验证：适配器代码完成但旧 API Key 已失效，需要新的有效 Key 才能跑通 submit / query / upload 三条链路；前端也还没有后端切换入口。
+- `img_` 模板的尺寸 32 倍数吸附：官方明确 Qwen-Image 2.1「尺寸建议 32 的倍数」，但网关的吸附目前只对 `video_` 前缀生效（`generate.js`），`img_` 不吸附。
+- 契约里的死字段：`comfy.maxQueue`（默认 16，`src/` 中从未被读取）与 job 的 `progress`（只填 0/0，未接 ComfyUI WebSocket）——要么实现，要么从契约删掉，不要留着承诺做不到的字段。

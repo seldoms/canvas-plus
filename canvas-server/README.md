@@ -20,6 +20,13 @@ node src/index.js            # 默认 127.0.0.1:8788
 复制 `config.example.json` 为 `config.json` 后修改；所有字段都可用环境变量覆盖（`CANVAS_SERVER_*`）。
 配置文件路径可用 `CANVAS_SERVER_CONFIG` 指定。
 
+运行时数据都在 `config.dataDir`（默认 `data/`）：`jobs.json`（任务队列持久化）、`runs/<runId>/`（流水线产物）、
+`uploads/`（上传素材）、`artifacts/`（生成产物）、`llm-providers.json`（外部 LLM 渠道注册表）。
+
+> ⚠️ **外部 LLM 渠道注册表只认 `data/llm-providers.json`**。`index.js` 启动时无条件执行
+> `config.llm.providers = readLlmProviders()`，文件缺失或损坏时按空数组处理——因此**在 `config.json` 里写 `llm.providers` 会被启动时覆盖掉**，
+> 要注册渠道请走 `POST /api/llm/providers`（或直接写那个文件后重启）。
+
 > **模型选型提醒**：`llm.defaultModel` 必须是目标主机真能装下的模型。实测 ubuntu 主机的 Quadro RTX 5000 只有 16GB 显存，且与其它服务共享，27B 级模型加载需要约 15GB、会被 Ollama 判定超出可用显存后反复驱逐甚至连接中断。默认值因此放在 7B 档（`qwen2.5:latest`）。要跑大模型请换到显存更宽裕的主机，或把 `llm.baseUrl` 指向那台机器。
 >
 > LLM 与 ComfyUI 分属两台机器（ubuntu 的 Quadro RTX 5000 与 OMEN 的 RTX 5060 Ti），互不争抢显存，这是有意的部署方式。
@@ -56,6 +63,16 @@ RunningHub 是**保留的可选云端后端**：未配置 `runninghub.apiKey` �
 | --- | --- | --- |
 | ANY | `/v1/*` | 原样转发到 `config.llm.baseUrl`，保留流式响应（SSE 逐块透传）。前端把渠道 baseUrl 填 `http://<host>:8788` 即可。 |
 | GET | `/api/llm/models` | 便捷别名，等价于 `GET /v1/models` 并规整为 `{ models: string[] }` |
+| GET | `/api/llm/providers` | `{ providers: [{ name, baseUrl, hasKey }] }`，**脱敏**：只报有没有 Key，绝不回吐 SK |
+| POST | `/api/llm/providers` | body `{ providers: [{ name, baseUrl, apiKey? }] }` **全量替换**注册表 → `{ providers }`（同上脱敏） |
+
+**外部 LLM 渠道注册表**：让本地模型与远程 API 对调用方完全同构，页面只需连一个端口。
+
+- 注册表独立存 `data/llm-providers.json`（不写进 `config.json`），启动时并入 `config.llm.providers`，`POST` 后**热更新**、无需重启。
+- 校验：`name` 非空且不得含 `::`；`baseUrl` 必须是 `http(s)` 地址，尾部斜杠会被去掉。不合法直接 400。
+- `GET /api/llm/models` 会把外部渠道的模型以 **`渠道名::模型名`** 命名空间追加进列表（如 `deepseek::deepseek-v4-pro`）；本地上游一个都连不上但注册表非空时，不再抛「LLM 服务不可达」。
+- `chat()` 按 `::` 前缀路由到对应渠道；也可传 `options.provider = { baseUrl, apiKey }` **临时**指定渠道（仅本次调用生效，**绝不落盘**，流水线用它透传浏览器侧渠道）。
+- `/v1/*` 透传**不走**注册表，仍固定打 `config.llm.baseUrl` / `fallbacks`。
 
 ### 生成任务
 
@@ -83,12 +100,23 @@ RunningHub 是**保留的可选云端后端**：未配置 `runninghub.apiKey` �
 | POST | `/api/pipeline/runs` | body `{ novel, title?, options? }` → `201 { run }` |
 | GET | `/api/pipeline/runs` | → `{ runs: Run[] }` |
 | GET | `/api/pipeline/runs/:id` | → `{ run: Run }` |
-| POST | `/api/pipeline/runs/:id/steps/:stage/run` | 运行单步 → `{ run }` |
+| POST | `/api/pipeline/runs/:id/steps/:stage/run` | 运行单步，body 可选 `{ model?, provider? }` → `{ run }` |
 | POST | `/api/pipeline/runs/:id/steps/:stage/input` | 人工修订该步产物 → `{ run }` |
 
-`Run` = `{ id, title, novel, createdAt, updatedAt, stages: { [stageId]: { id, title, status, inputs, output, artifacts, error?, startedAt?, finishedAt? } } }`
+`Run` = `{ id, title, novel, createdAt, updatedAt, options?, stages: { [stageId]: { id, title, status, inputs, output, artifacts, error?, chunked?, startedAt?, finishedAt? } } }`
 
 阶段 id 固定为：`script`（小说→剧本）、`storyboard`（分镜拆解）、`design`（服化道）、`keyframe`（关键帧）、`assembly`（片段合成拼接）。
+
+**按阶段绑定模型**：`body.model` 会持久化到 `run.options.stageModels[stageId]`，重跑沿用。模型解析优先级是
+`options.stageModels[stageId]` → `options.llmModel` → `config.pipeline.llmModel` → 网关默认。
+`body.provider = { baseUrl, apiKey }` 是浏览器侧渠道的**临时透传**：只校验形状（`baseUrl` 必须是 http(s)），
+仅本次调用生效，**绝不写入 `run` 或 `options`**。
+
+**超长小说分块改编（仅 `script` 阶段）**：填入小说后的完整 prompt 超过 `config.pipeline.maxNovelChunkChars`
+（默认 **16000** 字符）时自动走 map-reduce——`splitNovelIntoChunks` 切块 → 逐块提取局部 `characters`/`scenes` →
+再把全部局部结果合并成一份完整剧本。`stage.output` 与单次调用**完全同构**，分块信息记在
+`stage.chunked = { chunks, labels, mergeModel }`；未超阈值时维持单次调用且 `chunked` 为 `undefined`。
+每次 LLM 调用（含 map、reduce 与 JSON 重试）都沿用该阶段绑定的模型与 provider。
 
 ### 生成产物与前端的关系
 
@@ -102,10 +130,22 @@ RunningHub 是**保留的可选云端后端**：未配置 `runninghub.apiKey` �
 | `src/http.js` | `createRouter()`, `readJson(req)`, `sendJson(res, status, body)`, `sendError(res, status, message)`, `applyCors(res)`, `readBody(req)`, `serveFile(req, res, filePath)` | 路由表 `router.add(method, pattern, handler)`，`pattern` 支持 `:param` |
 | `src/jobs.js` | `createJobQueue()`, `jobs`（单例 store） | 队列 API：`enqueue(job, runner)`、`get(id)`、`list(filter)`、`cancel(id)`、`update(id, patch)`；`runner(job, ctx)` 返回 `{ outputs }` |
 | `src/files.js` | `artifactsDir`, `ensureDir`, `saveBuffer`, `artifactUrl`, `guessContentType`, `safeJoin` | 产物落盘与路径安全 |
-| `src/providers/llm.js` | `createLlmProvider(config)`, `probeLlm(config)`, `listLlmModels(config)`, `forwardToLlm(req, res, config, pathWithQuery)` | 见下 |
+| `src/generate.js` | `createLocalRunner({ config, comfy, jobs })`, `ASSET_TOKENS` | 本地 ComfyUI 执行器：素材解析 → 尺寸吸附 → 模板渲染 → 提交 → 轮询 → 回收产物 |
+| `src/chunk-novel.js` | `splitNovelIntoChunks(text, maxChunkChars)` | 纯函数长文切块，见下 |
+| `src/providers/llm.js` | `createLlmProvider(config)`, `probeLlm(config)`, `listLlmModels(config)`, `forwardToLlm(req, res, config, pathWithQuery)`, `chat(config, options)`, `externalProviders(config)` | 见下 |
 | `src/providers/comfy.js` | `createComfyClient(config)`, `probeComfy(config)`, `listComfyCapabilities(config)`, `listTemplates(workflowsDir)` | 见下 |
 | `src/skills.js` | `loadSkills(skillsDir)`, `loadRegistry(skillsDir)`, `readSkill(skillsDir, id)` | 见下 |
-| `src/pipeline.js` | `createPipeline({ config, skillsDir, jobs, comfy, llm })` | 见下 |
+| `src/pipeline.js` | `createPipeline({ config, skillsDir, jobs, comfy, llm, runJob })` | 见下 |
+
+### `src/chunk-novel.js`
+
+```js
+splitNovelIntoChunks(text, maxChunkChars = 16000) => [{ index, label, text }]
+```
+
+切块优先级：**【文件名】分节标记** → **中文章节标题**（`第N章/节/回/卷/部`）→ **定长窗口**（在窗口内最后一个段落边界截断，其次换行，再硬切）。
+单节仍超阈值时按窗口二次切，`label` 带 `（i/N）` 序号；相邻小节在阈值内会被贪心合并进同一块，`label` 用「、」连接。
+原文短于阈值时原样返回单块（`label` 为空串），空文本返回 `[]`。每块都保留来源标记便于追溯，`text.length` 恒不超过 `maxChunkChars`。
 
 ### `src/providers/comfy.js`
 
@@ -130,22 +170,41 @@ createComfyClient(config) => {
 renderTemplate(templatePath, params) => graph   // {{TOKEN}} 全量替换；纯数字字符串转 number
 extractTokens(templatePath) => string[]
 disableEmptyLoras(graph) => string[]            // 摘除 lora_name 为空的 LoraLoaderModelOnly 节点，返回被摘节点 id
+disableEmptyImageRefs(graph) => string[]        // 摘除 image 为空的 LoadImage 节点，并删掉引用它的输入键
 ```
 
-- 缺少必需 token 时抛错，错误信息包含缺失 token 名。
+- 缺少必需 token 时抛错，错误信息包含缺失 token 名。**空串 `""` 不算缺失**，可选 token 就是靠这一点实现（见下）。
 - 替换值必须做 JSON 字符串转义，避免换行/引号破坏 JSON。
-- token 命名沿用现有模板：`PROMPT` `LORA_FILE` `LORA_STRENGTH` `WIDTH` `HEIGHT` `BATCH` `SEED` `OUTPUT_PREFIX` `INPUT_IMAGE` `REF_VIDEO` `REF_FRAME_CAP` `LENGTH` `FRAME_RATE` `TTS_TEXT` `TTS_SPEAKER` `TTS_VOICE_DESIGN` `REALISM_STRENGTH` `STEPS` `NEGATIVE_PROMPT` `PERSON_IMAGE` `CLOTHING_IMAGE`。
-- 数值 token 集合：`SEED WIDTH HEIGHT BATCH LENGTH REF_FRAME_CAP STEPS FRAME_RATE LORA_STRENGTH REALISM_STRENGTH`。
+- token 命名沿用现有模板：`PROMPT` `LORA_FILE` `LORA_STRENGTH` `WIDTH` `HEIGHT` `BATCH` `SEED` `OUTPUT_PREFIX` `INPUT_IMAGE` `REF_VIDEO` `REF_FRAME_CAP` `LENGTH` `TTS_TEXT` `TTS_SPEAKER` `TTS_VOICE_DESIGN` `REALISM_STRENGTH` `STEPS` `NEGATIVE_PROMPT` `PERSON_IMAGE` `CLOTHING_IMAGE` `REF_IMAGE_1`…`REF_IMAGE_9`。
+  （`FRAME_RATE` **不是**任何现有模板的 token：H3 的帧数走 `LENGTH`，且必须落在 **17n+5** 网格上——5s≈124 帧、2.3s≈56 帧，不要直接把「秒数 × fps」喂进去。）
+- 数值化不靠白名单：`toNumberTree` 把**任意** dict 直接字符串值里的纯数字还原成 `number`（与 Python 执行器 `run_pipeline.py` 的 `fixnum` 同语义）。**数组内的字符串一律不转**，否则节点引用 `["10", 0]` 会变成数字、ComfyUI 校验抛 `KeyError: prompt_outputs_failed_validation`（坑 #1，有回归测试锁住）。
+
+**素材 token（`ASSET_TOKENS`）**：`INPUT_IMAGE` `REF_VIDEO` `PERSON_IMAGE` `CLOTHING_IMAGE` `REF_IMAGE_1`…`REF_IMAGE_9`。
+`createLocalRunner` 在渲染前对这些 token 调 `resolveAsset`，因此调用方可以传本机路径、`/api/artifacts/...` 相对路径、`http(s)` 远端 URL 或上游产物路径，网关统一换成 ComfyUI 侧的引用名。空值跳过。
+
+**H3 尺寸吸附**：H3 的 conditioning 节点硬性要求宽高可被 **32** 整除（否则 `ValueError` → `execution_error`）。
+`createLocalRunner` 对 `template` 以 `video_` 开头的任务，在渲染前把 `WIDTH`/`HEIGHT` 吸附到最近的 32 倍数（下限 32，720→736）并打日志。
+调用方仍应尽量传标准尺寸（480×864、768×1344），吸附只是兜底。
 
 **LoRA 可选化**：部分模板把 LoRA 参数化成 `{{LORA_FILE}}`，但通用调用方并不知道该填哪个 lora 文件名。网关的行为是：调用方没传 `LORA_FILE` 时补空串，渲染后由 `disableEmptyLoras` 把 `LoraLoaderModelOnly` 节点摘除并把下游重连到其上游，因此**调用方永远不需要感知 LoRA**；想固定形象时才显式传 `LORA_FILE` / `LORA_STRENGTH`。`LoraLoader`（双输出）无法安全摘除，缺 `lora_name` 时直接抛中文错误。
+
+**参考图槽位可选化**：`REF_IMAGE_1`…`REF_IMAGE_9` 是「额外参考图」槽位，与 LoRA 同一套机制——调用方没传时补空串，渲染后由 `disableEmptyImageRefs` 摘掉对应的 `LoadImage` 节点**并删掉引用它的输入键**（不需要重连下游，这是与 LoRA 的区别）。这样**一个模板就能服务 1~10 张参考图**，不必为每种数量各做一个模板。
+`img_qwen21_edit` 是第一个用例：`INPUT_IMAGE` 固定映射到 `images.image_1`（**编辑目标**），`REF_IMAGE_N` 映射到 `images.image_{N+1}`（参考图），提示词里用 `<image1>`、`<image2>`… 指代。前端按 token 出现顺序把上传的图片**按位**填进图槽，因此模板里 `{{INPUT_IMAGE}}` 必须写在所有 `{{REF_IMAGE_N}}` 之前（有回归测试锁住这个顺序）。
 
 ### `src/providers/llm.js`
 
 ```js
 probeLlm(config) => Promise<{ ok, baseUrl, models?, error? }>
-listLlmModels(config) => Promise<string[]>
+listLlmModels(config) => Promise<string[]>   // 含外部渠道的「渠道名::模型名」
 forwardToLlm(incomingReq, outgoingRes, config, pathWithQuery) => Promise<void>  // 含 SSE 流式透传
+externalProviders(config) => [{ name, baseUrl, apiKey }]   // 规整 config.llm.providers，丢弃 name/baseUrl 缺失项
+chat(config, { messages, model?, temperature?, provider?, ...rest }) => Promise<OpenAIChatCompletion>
 ```
+
+`chat` 固定非流式（要流式走 `forwardToLlm`）。渠道路由优先级：`options.provider.baseUrl`（临时，不落盘）→ `model` 里的 `渠道名::` 前缀（查注册表，未注册直接抛中文错误）→ `config.llm.baseUrl` / `fallbacks`。`model` 为空时兜底到 `config.llm.defaultModel`，仍为空则抛错。**连接层失败**会带上 `cause.code`（如 `ECONNREFUSED`）便于排查；**HTTP 非 2xx 不重试**，直接把状态码与前 300 字响应体带进错误信息。
+
+**探测超时与 `timeoutMs` 分开**：`timeoutMs`（默认 600000）是给长思考 `chat` 与 `/v1/*` 透传的，**绝不能**用于列模型探测。`listLlmModels` 一律用 `probeTimeoutMs`（默认 **8000**）。原因：`/api/health` 与 `/api/llm/models` 要探测每个外部渠道，而 `getJson` 失败只返回 `null` 不抛错，所以一个「TCP 连上但不回包」的死链会一直耗到超时——串行 + 600s 时单个死渠道能挂住接口 20 分钟，前端模型下拉直接卡死。
+因此外部渠道是**并行**探测的（`Promise.all`），`modelsAt` 内部的 `/v1/models` 与 `/api/tags` 也是并行的：总耗时 ≈ 最慢的一个渠道，不随渠道数累加。返回空模型的渠道会打一条 `[llm] 外部渠道「X」(url) 在 Ns 内未返回模型，本次跳过` 告警，**只丢它自己的模型**，不影响本机与其它渠道。
 
 ### `src/skills.js`
 
@@ -158,17 +217,20 @@ readSkill(skillsDir, id) => string                            // SKILL.md 全文
 ### `src/pipeline.js`
 
 ```js
-createPipeline({ config, skillsDir, jobs, comfy, llm }) => {
+createPipeline({ config, skillsDir, jobs, comfy, llm, runJob }) => {
   stages(): StageInfo[],
   list(): Run[],
   get(id): Run | null,
   create({ novel, title, options }): Run,
-  runStage(runId, stageId): Promise<Run>,
+  runStage(runId, stageId, runOptions?): Promise<Run>,   // runOptions = { model?, provider? }
   setStageInput(runId, stageId, patch): Run,
 }
 ```
 
 每个阶段由 `skills/<skill>/SKILL.md` 定义提示词与输出 JSON 契约；阶段间产物以 JSON 传递，落盘在 `data/runs/<runId>/<stage>.json`。
+
+文本型阶段统一走 `askJson`：要求严格 JSON → 解析失败带原文重试一次（`temperature: 0`）→ 再失败抛错并把模型原文挂在 `error.raw`（`runStage` 会截前 4000 字写进 `stage.error`，同时把 `stage.output` 置 `null`）。
+生成型阶段（`keyframe` / `assembly`）由编排器**回填** `template` / `jobId` / `artifactUrl` / `status`，**不采信模型编造的这些字段**；尺寸等默认值来自 `config.pipeline.image*` / `video*`，模板要求的全部 token 必须覆盖到（有契约回归测试用真实模板锁住）。
 
 ## 部署与远程调试
 

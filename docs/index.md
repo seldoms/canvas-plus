@@ -36,6 +36,26 @@
 - [Pending Tests](/docs/progress/pending-test)
 - [TODO](/docs/progress/todo)
 
+## Internal Research (not in site navigation)
+
+Plain `.md` files under `docs/content/docs/progress/`, deliberately absent from `meta.json`
+so they do not render in the docs site. Read them directly from the repository.
+
+- `docs/content/docs/progress/gateway-api-benchmark.md` — generation-gateway API benchmark
+  against a mature commercial platform (LiblibAI): capability matrix, three-layer gap verdict,
+  additive API design on the frozen contract, prioritized catch-up plan, and the boundary
+  values that still need owner confirmation.
+- `docs/content/docs/progress/local-capability-audit.md` — local ComfyUI capability audit.
+  Every measured number in the benchmark comes from here; conclusions are graded
+  measured / documented / inferred.
+- `docs/content/docs/progress/liblibai-api-reference.md` — factual digest of the benchmarked
+  third-party API (endpoints, quotas, status enums, error codes) written in our own words.
+  The source page requires login; a verbatim archive was deliberately **not** committed because
+  `origin` is a public remote.
+- `docs/content/docs/progress/local-asset-inventory.md` — inward-facing asset inventory of the
+  local-first capabilities: structural moats, extractable engineering assets, design disciplines
+  worth propagating, and the honest debt list, each item verified against code or a real run.
+
 ## Notes
 
 - Canvas projects and My Assets are primarily stored in the browser. WebDAV can be configured for cross-device synchronization.

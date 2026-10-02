@@ -34,6 +34,23 @@
 - [待测试](/zh-CN/docs/progress/pending-test)
 - [TODO](/zh-CN/docs/progress/todo)
 
+## 内部研究文档（不进文档站导航）
+
+以下是 `docs/content/docs/progress/` 下的纯 `.md` 文件，**有意不登记进 `meta.json`**，
+因此不会出现在文档站里，直接在仓库中阅读。
+
+- `docs/content/docs/progress/gateway-api-benchmark.md` —— 生成网关 API 对标研究与设计方案：
+  以成熟商业平台（LiblibAI）为基准线的能力对照矩阵、三层差距结论、冻结契约上的向后兼容加法设计、
+  按性价比排序的补齐路线，以及仍待确认的边界值清单。
+- `docs/content/docs/progress/local-capability-audit.md` —— 本地 ComfyUI 能力盘点。
+  对标研究里所有实测数字都出自这里，结论分【实测】/【文档】/【推断】三档。
+- `docs/content/docs/progress/liblibai-api-reference.md` —— 对标平台 API 的**事实摘要**
+  （端点、配额、状态枚举、错误码），用我们自己的表述整理。原页面需登录；
+  **有意不提交逐字存档**，因为 `origin` 是公开远端。
+- `docs/content/docs/progress/local-asset-inventory.md` —— 本地化能力的**对内**资产盘点：
+  结构性护城河、可外提复用的工程资产、值得推广的设计纪律、以及诚实列出的技术债，
+  每条都核实到 `file:line` 或真机任务 id，并标注【实测】/【核实】/【推断】。
+
 ## 说明
 
 - 当前画布项目和“我的素材”主要保存在浏览器本地，跨设备可自行配置 WebDAV 同步。

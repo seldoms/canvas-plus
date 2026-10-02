@@ -7,3 +7,16 @@ description: Planned follow-up work
 
 - Replace the Claude Code CLI adapter with a Claude Agent SDK adapter and improve the tool queue, following the [Local Agent Integration Plan](/docs/progress/local-agent-integration-plan).
 - Add Skill installation from web search, Skill resource-file management, and controlled local-memory persistence.
+
+## Local gateway and film pipeline
+
+The Chinese version of this page carries the full detail. Priorities are ordered in `HANDOFF.md` ("下一步") at the repository root and in §7 of `docs/content/docs/progress/gateway-api-benchmark.md` (internal research, not in site navigation).
+
+- Give the clip-assembly stage an ffmpeg concatenation executor: the only remaining break in the five-stage pipeline. `assembly` currently just plans the clips and their order and generates the clips, leaving the result at `status: "queued"` — there is no concat/transition executor, no video upscaling, and no audio muxing. Local ffmpeg is enough and does not touch the GPU.
+- Wire up the imported Skill libraries: script-writing-studio and the Luster aesthetic library are in `skills/libraries/` but not connected, so `skills/01-*` through `05-*` still use the skeleton-era default prompts. Both libraries target cloud generators, so this is layering rather than replacement: the library owns content and style, the stage skill translates it into ComfyUI template tokens and strips vendor-specific trailing parameters.
+- Speed up video: measure the upstream `video_h3_i2v_sla` / `video_h3_i2v_blockcache` acceleration templates; rendering drafts at lower resolution and only the final pass at full size needs no new model and no new template.
+- Add a `schema` to `TemplateInfo`: upgrade `tokens: string[]` into a typed schema with ranges, defaults, and frame-grid constraints so that "drop in a workflow JSON and it just works" holds, and delete the frontend branches keyed on template names.
+- Observability: connect the ComfyUI WebSocket for real progress (`progress` currently only ever reports 0/0) and expose it as `GET /api/jobs/:id/events` (SSE) plus `?wait=` long polling. Video jobs take 8–40 minutes, which raises the priority.
+- Verify RunningHub against the real service: the adapter is complete but the old API key is dead, so submit / query / upload still need a valid key; the frontend also has no backend-switching entry point yet.
+- Snap `img_` template sizes to multiples of 32: Qwen-Image 2.1 officially recommends multiples of 32, but the gateway's snapping currently only applies to the `video_` prefix (`generate.js`).
+- Dead fields in the frozen contract: `comfy.maxQueue` (default 16, never read anywhere in `src/`) and the job's `progress` (only ever 0/0, no ComfyUI WebSocket). Either implement them or drop them from the contract — do not keep promising fields that do nothing.
