@@ -2,6 +2,11 @@
 
 ## Unreleased
 
++ [新增] 流水线阶段运行全面可观测、可取消、可续跑。运行改为**异步**：`POST .../steps/:stage/run` 立刻返回 `202`，工作在后台跑 —— 此前是阻塞式 POST，一个 163 块 / 83 分钟的阶段用一个 HTTP 请求扛，隧道/反代/浏览器会在几分钟内掐断连接，前端只看到「毫无反应」而后端仍在跑并消耗额度。
++ [新增] 阶段进度可见：每块 map 完成后写 `data/runs/<id>/progress.json`（几十字节，**不重写内嵌整本小说、可达 6.4MB 的 `run.json`**），新增轻量 `GET /api/pipeline/runs/:id/progress`；前端每 3 秒轮询，卡片显示「第 N/M 块 + 来源章节 + 预计剩余 + 实测速度」与进度条。
++ [新增] 阶段取消与断点续跑：`POST .../steps/:stage/cancel` 的取消信号贯通到 `llm.chat`（与内部超时共用一个 `AbortController`，且取消不会被当成连接失败去试下一个 fallback）；每块结果落盘 `chunks/<i>.json`，带 `resume: true` 重跑只补跑缺的块，前端在阶段失败后把「重跑」变成「续跑（已有 N 块）」。
++ [新增] 创建 run 时返回成本预估 `run.estimate`（字数 / 块数 / 调用次数 / 预计秒数），前端超过 50 块先弹确认再开跑。预估口径与分块判定一致 —— 用的是**填充后 prompt 长度**而非小说字数。
++ [修复] 服务重启后遗留的 `running` 阶段会永久锁死：新增启动收敛 `reconcileRunning()`，把遗留 `running` 落成明确 error 并提示可 resume 续跑。不收敛的话新加的并发守卫会让那个阶段再也无法重跑。
 + [修复] 一键接入会静默跳过「编辑」「放大」类模板：网关的 `family` 有 image/video/edit/upscale 四种，但执行器只有 image 与 video，前端此前既按 `family` 直接拼 `/api/generate/<family>`（edit/upscale 会 404），又在接入时把这两种族整个跳过。现已统一归一为 image|video，`img_qwen21_edit`、`img_boogu_outfit_edit`、`scail2_action_transfer`、`upscale_4x` 四个模板从此能在画布里正常调用（16 个模板全部接入）；探测摘要里「另有 N 个其他类型模板暂不支持」的提示随之移除。
 + [修复] 外部 LLM 渠道注册表 `data/llm-providers.json` 存的是明文 API Key，此前是默认 `0644`（本机任何用户可读）；现在写入时用 `0600` 并补一次 chmod（`writeFileSync` 的 mode 只对新建文件生效），启动时也会把此前写出的旧文件权限纠正过来。
 + [新增] 网关绑定非回环地址且自身无鉴权时，启动日志打一条中文告警，说明同网段任何人都能提交生成任务、消耗已注册渠道额度，并给出两条处置建议（前置反代加鉴权 / 改回 127.0.0.1）。

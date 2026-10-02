@@ -4,7 +4,7 @@ import { useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { StageCard } from "./components/stage-card";
-import { usePipelineRun, type PipelineStageView } from "./use-pipeline-run";
+import { CONFIRM_CHUNKS, usePipelineRun, type PipelineStageView } from "./use-pipeline-run";
 
 const TEXT_FILE_RE = /\.(txt|md|markdown|srt|ass|csv|json|text)$/i;
 
@@ -17,7 +17,7 @@ async function readNovelFiles(files: File[]) {
 
 export default function PipelinePage() {
     const { t } = useTranslation();
-    const { novel, setNovel, run, views, starting, busyStage, error, startScript, runStage, saveStageOutput, refresh, modelOptions, stageModels, setStageModel } = usePipelineRun();
+    const { novel, setNovel, run, views, starting, busyStage, runningStage, progress, error, createRunOnly, runStage, cancelStage, saveStageOutput, refresh, modelOptions, stageModels, setStageModel } = usePipelineRun();
     const [editing, setEditing] = useState<{ id: string; title: string; text: string; error: string } | null>(null);
     const [imported, setImported] = useState<{ names: string[]; rejected: number } | null>(null);
     const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -35,13 +35,46 @@ export default function PipelinePage() {
         setImported({ names: result.names, rejected: result.rejected });
     };
 
+    /**
+     * 先创建 run 拿到成本预估，块数超过阈值就弹确认再跑。
+     * 222 万字的书会切成 163 块、按实测约 31 秒/块要跑 83 分钟 —— 这种量级不该在用户毫不知情时直接开跑。
+     */
+    const startWithEstimate = async () => {
+        const created = await createRunOnly();
+        if (!created) return;
+        const estimate = created.estimate;
+        if (estimate?.chunked && estimate.chunks > CONFIRM_CHUNKS) {
+            Modal.confirm({
+                title: t("pipeline.estimateTitle"),
+                content: t("pipeline.estimateBody", {
+                    chars: estimate.novelChars.toLocaleString(),
+                    chunks: estimate.chunks,
+                    calls: estimate.llmCalls,
+                    minutes: Math.max(1, Math.round(estimate.estSeconds / 60)),
+                }),
+                okText: t("pipeline.estimateOk"),
+                cancelText: t("common.cancel"),
+                onOk: () => void runStage("script"),
+            });
+            return;
+        }
+        await runStage("script");
+    };
+
     const disabledReason = (view: PipelineStageView) => {
         if (!run) return t("pipeline.needRun");
-        if (busyStage) return t("pipeline.busy");
+        if (busyStage || runningStage) return t("pipeline.busy");
         const missing = view.requires.filter((id) => statusById.get(id) !== "done");
         if (missing.length) return t("pipeline.needPrevious", { stages: missing.map((id) => titleById.get(id) || id).join("、") });
         return "";
     };
+
+    /**
+     * 上次失败/取消前已完成的块数。大于 0 时「重跑」变成「续跑」并带 resume:true，
+     * 后端会复用已落盘的 chunks/*.json —— 163 块跑到第 120 块崩了不必从头再来。
+     */
+    const resumableChunks = (view: PipelineStageView) =>
+        progress && progress.stage === view.id && progress.phase === "failed" ? Number(progress.done) || 0 : 0;
 
     const openEditor = (view: PipelineStageView) => setEditing({ id: view.id, title: view.title, text: JSON.stringify(view.stage?.output ?? null, null, 2), error: "" });
 
@@ -86,7 +119,7 @@ export default function PipelinePage() {
                             }}
                         />
                         <div className="mt-2 flex flex-wrap items-center gap-2">
-                            <Button type="primary" icon={<Sparkles className="size-4" />} loading={starting} disabled={!novel.trim() || Boolean(run)} onClick={() => void startScript()}>
+                            <Button type="primary" icon={<Sparkles className="size-4" />} loading={starting} disabled={!novel.trim() || Boolean(run)} onClick={() => void startWithEstimate()}>
                                 {t("pipeline.start")}
                             </Button>
                             {!run ? (
@@ -121,12 +154,15 @@ export default function PipelinePage() {
                                 index={index}
                                 view={view}
                                 busy={busyStage === view.id}
+                                progress={progress}
+                                resumeChunks={resumableChunks(view)}
                                 disabledReason={disabledReason(view)}
                                 modelOptions={modelOptions}
                                 model={stageModels[view.id] || ""}
                                 onModelChange={(value) => setStageModel(view.id, value)}
                                 onRun={() => void runStage(view.id)}
-                                onRerun={() => void runStage(view.id)}
+                                onRerun={() => void runStage(view.id, { resume: resumableChunks(view) > 0 })}
+                                onCancel={() => void cancelStage(view.id)}
                                 onEdit={() => openEditor(view)}
                             />
                         ))}

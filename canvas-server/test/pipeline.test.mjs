@@ -295,10 +295,113 @@ test("script 阶段超长小说自动分块：N 次 map + 1 次 reduce，产物�
     // output 契约与单次调用完全一致，下游零感知
     assert.deepEqual(Object.keys(done.stages.script.output).sort(), ["characters", "logline", "scenes", "synopsis"]);
     assert.equal(done.stages.script.output.logline, "一句话");
-    // 分块信息记在 stage.chunked，便于前端/排查
-    assert.deepEqual(done.stages.script.chunked, { chunks: 2, labels: ["甲.txt", "乙.txt"], mergeModel: "test-model" });
+    // 分块信息记在 stage.chunked，便于前端/排查；reused 是本次从缓存复用的块数（首跑为 0）
+    assert.deepEqual(done.stages.script.chunked, { chunks: 2, labels: ["甲.txt", "乙.txt"], mergeModel: "test-model", reused: 0 });
     assert.equal(pipeline.get(run.id).stages.script.chunked.chunks, 2);
     assert.ok(existsSync(join(env.config.dataDir, "runs", run.id, "script.json")));
+    // 每块的 map 结果单独落盘，这是断点续跑的物理基础
+    assert.ok(existsSync(join(env.config.dataDir, "runs", run.id, "chunks", "1.json")), "第 1 块结果应已落盘");
+    assert.ok(existsSync(join(env.config.dataDir, "runs", run.id, "chunks", "2.json")), "第 2 块结果应已落盘");
+    // 成功后保留一条 phase:"done" 的进度，前端据此停止轮询而不必拉数 MB 的 run.json
+    assert.equal(pipeline.stageProgress(run.id)?.phase, "done");
+    // 创建时就给出的成本预估，口径必须与实际分块一致
+    assert.deepEqual(run.estimate.chunked, true);
+    assert.equal(run.estimate.chunks, 2);
+    assert.equal(run.estimate.llmCalls, 3);
+});
+
+test("断点续跑：resume 复用已落盘的块，只补跑缺的那些", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    env.config.pipeline.maxNovelChunkChars = 100;
+    const paragraph = "这是一段小说正文内容。";
+    const novel = `【甲.txt】\n${paragraph.repeat(5)}\n\n【乙.txt】\n${paragraph.repeat(5)}`;
+
+    // 第一跑：第 1 块成功、第 2 块炸掉，模拟跑到一半崩了
+    const broken = fakeLlm((content) => {
+        if (content.includes("第 2/2 块")) throw new Error("上游 502");
+        return CHUNK_PARTIAL_A;
+    });
+    const first = build(env, { llm: broken });
+    const run = first.pipeline.create({ novel, title: "长篇" });
+    const failed = await first.pipeline.runStage(run.id, "script", { model: "test-model" });
+    assert.equal(failed.stages.script.status, "error");
+    assert.ok(existsSync(join(env.config.dataDir, "runs", run.id, "chunks", "1.json")), "崩之前完成的块必须已落盘");
+    assert.equal(first.llm.calls.length, 2, "第 1 块 + 失败的 1 次重试");
+
+    // 第二跑带 resume：第 1 块直接复用，只补第 2 块 + reduce
+    const healthy = fakeLlm((content) => {
+        if (content.includes("合并成一份完整剧本")) return SCRIPT;
+        return CHUNK_PARTIAL_B;
+    });
+    const second = build(env, { llm: healthy });
+    const resumed = await second.pipeline.runStage(run.id, "script", { model: "test-model", resume: true });
+    assert.equal(resumed.stages.script.status, "done");
+    assert.deepEqual(second.llm.calls.map((call) => (call.messages.at(-1).content.match(/第 (\d)\/2 块/) || [])[1]).filter(Boolean), ["2"], "只应重跑第 2 块");
+    assert.equal(resumed.stages.script.chunked.reused, 1);
+    assert.equal(resumed.stages.script.chunked.chunks, 2);
+    assert.deepEqual(Object.keys(resumed.stages.script.output).sort(), ["characters", "logline", "scenes", "synopsis"]);
+});
+
+test("不带 resume 重跑会清空上次的分块缓存，避免小说改过之后复用陈旧块", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    env.config.pipeline.maxNovelChunkChars = 100;
+    const paragraph = "这是一段小说正文内容。";
+    const novel = `【甲.txt】\n${paragraph.repeat(5)}\n\n【乙.txt】\n${paragraph.repeat(5)}`;
+    const llm = fakeLlm((content) => (content.includes("合并成一份完整剧本") ? SCRIPT : content.includes("第 1/2 块") ? CHUNK_PARTIAL_A : CHUNK_PARTIAL_B));
+    const { pipeline } = build(env, { llm });
+    const run = pipeline.create({ novel, title: "长篇" });
+    await pipeline.runStage(run.id, "script", { model: "test-model" });
+    assert.equal(llm.calls.length, 3);
+    await pipeline.runStage(run.id, "script", { model: "test-model" });
+    assert.equal(llm.calls.length, 6, "不带 resume 应完整重跑 3 次");
+    assert.equal(pipeline.get(run.id).stages.script.chunked.reused, 0);
+});
+
+test("取消：signal 已中止时立刻失败，不再打模型", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    env.config.pipeline.maxNovelChunkChars = 100;
+    const paragraph = "这是一段小说正文内容。";
+    const novel = `【甲.txt】\n${paragraph.repeat(5)}\n\n【乙.txt】\n${paragraph.repeat(5)}`;
+    const llm = fakeLlm(() => SCRIPT);
+    const { pipeline } = build(env, { llm });
+    const run = pipeline.create({ novel, title: "长篇" });
+    const controller = new AbortController();
+    controller.abort();
+    const done = await pipeline.runStage(run.id, "script", { model: "test-model", signal: controller.signal });
+    assert.equal(done.stages.script.status, "error");
+    assert.match(done.stages.script.error, /已取消/);
+    assert.equal(llm.calls.length, 0, "已取消就不该再发任何模型请求");
+    assert.equal(pipeline.stageProgress(run.id)?.phase, "failed");
+});
+
+test("beginStage 拒绝在正在运行的阶段上重复触发", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    const llm = fakeLlm(stageReply);
+    const { pipeline } = build(env, { llm });
+    const run = pipeline.create({ novel: "一段短小说", title: "短篇" });
+    pipeline.beginStage(run.id, "script", {});
+    assert.equal(pipeline.get(run.id).stages.script.status, "running");
+    assert.throws(() => pipeline.beginStage(run.id, "script", {}), /正在运行中/);
+});
+
+test("reconcileRunning 把上次进程遗留的 running 阶段收敛为 error", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    const { pipeline } = build(env, { llm: fakeLlm(stageReply) });
+    const run = pipeline.create({ novel: "一段短小说", title: "短篇" });
+    pipeline.beginStage(run.id, "script", {}); // 只起步不执行，模拟进程被杀
+    assert.equal(pipeline.get(run.id).stages.script.status, "running");
+
+    const restarted = build(env, { llm: fakeLlm(stageReply) });
+    assert.deepEqual(restarted.pipeline.reconcileRunning(), [run.id]);
+    const after = restarted.pipeline.get(run.id);
+    assert.equal(after.stages.script.status, "error");
+    assert.match(after.stages.script.error, /服务重启导致中断/);
+    assert.deepEqual(restarted.pipeline.reconcileRunning(), [], "再收敛一次应为空");
 });
 
 test("生成型阶段：回填 template/jobId/status 并入队，不采信模型编造的产物", async (t) => {

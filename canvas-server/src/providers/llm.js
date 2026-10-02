@@ -177,8 +177,10 @@ export async function forwardToLlm(incomingReq, outgoingRes, config, pathWithQue
  * 这里固定走非流式；需要流式请走 forwardToLlm。
  * 模型名带「渠道名::模型名」前缀时路由到 config.llm.providers 里的外部渠道；
  * options.provider = { baseUrl, apiKey } 也可临时指定渠道（仅本次调用，不落盘）。
+ * options.signal 是外部取消信号（流水线阶段取消用），与内部超时共用一个 AbortController。
  */
-export async function chat(config, { messages, model, stream, temperature, provider, ...rest } = {}) {
+export async function chat(config, { messages, model, stream, temperature, provider, signal, ...rest } = {}) {
+    if (signal?.aborted) throw new Error("已取消");
     let effective = config;
     let target = model || "";
     if (provider?.baseUrl) {
@@ -201,6 +203,9 @@ export async function chat(config, { messages, model, stream, temperature, provi
         const url = `${apiBase(baseUrl)}/chat/completions`;
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), timeoutMs(effective));
+        // 外部取消与内部超时共用一个 controller，取消能立刻打断在途请求而不用等超时
+        const onAbort = () => controller.abort();
+        signal?.addEventListener("abort", onAbort, { once: true });
         try {
             const response = await fetch(url, { method: "POST", headers: headers(effective), body: payload, signal: controller.signal });
             if (!response.ok) {
@@ -213,10 +218,14 @@ export async function chat(config, { messages, model, stream, temperature, provi
             return await response.json();
         } catch (error) {
             if (error.httpStatus) throw error;
+            // 用户取消必须立刻终止，不能当成连接失败去试下一个 fallback，
+            // 否则一次取消会把 bases 里每个地址都打一遍。
+            if (signal?.aborted) throw new Error("已取消");
             // 连接层失败没有状态码，带上 cause.code（如 ECONNREFUSED）更有助排查。
             lastError = error.cause?.code ? `${error.message}（${error.cause.code}）` : error.message;
         } finally {
             clearTimeout(timer);
+            signal?.removeEventListener("abort", onAbort);
         }
     }
     throw new Error(`LLM 服务不可达，已尝试：${bases.join("、")}（${lastError || "未知错误"}）`);

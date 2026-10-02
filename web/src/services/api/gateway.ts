@@ -66,12 +66,47 @@ export type GatewayRunStage = {
     finishedAt?: string;
 };
 
+/** 创建 run 时就算好的成本预估。口径与后端分块判定一致：比的是填充后的 prompt 长度，不是小说字数。 */
+export type GatewayRunEstimate = {
+    novelChars: number;
+    promptChars: number;
+    maxChunkChars: number;
+    chunked: boolean;
+    chunks: number;
+    llmCalls: number;
+    perChunkSeconds: number;
+    estSeconds: number;
+    resumableChunks: number;
+};
+
+/**
+ * 阶段进度，来自独立的 progress.json（几十字节）。
+ * 不要用 GET /api/pipeline/runs/:id 轮询进度 —— 那个响应内嵌整本小说，222 万字的书有 6.4MB。
+ */
+export type GatewayStageProgress = {
+    runId: string;
+    stage: string;
+    phase: "map" | "reduce" | "single" | "done" | "failed";
+    done?: number;
+    total?: number;
+    label?: string;
+    reused?: number;
+    resumed?: boolean;
+    avgMsPerChunk?: number;
+    etaMs?: number;
+    error?: string;
+    startedAt?: string;
+    finishedAt?: string;
+    updatedAt?: string;
+};
+
 export type GatewayPipelineRun = {
     id: string;
     title: string;
     novel: string;
     createdAt: string;
     updatedAt: string;
+    estimate?: GatewayRunEstimate;
     stages: Record<string, GatewayRunStage>;
 };
 
@@ -189,9 +224,24 @@ export async function getPipelineRun(id: string, baseUrl?: string) {
     return data.run;
 }
 
-export async function runPipelineStage(runId: string, stageId: string, body?: { model?: string; provider?: { baseUrl: string; apiKey: string } }, baseUrl?: string) {
-    const data = await gatewayRequest<{ run: GatewayPipelineRun }>({ method: "post", url: `/api/pipeline/runs/${encodeURIComponent(runId)}/steps/${encodeURIComponent(stageId)}/run`, data: body || {} }, baseUrl);
+/**
+ * 触发单步运行。后端**立刻返回 202**，工作在后台跑 —— 不要指望这个 Promise 解析时阶段已完成。
+ * 返回的 run 里该阶段是 `running`，终态要靠 fetchPipelineProgress 轮询到 phase done/failed 后再 getPipelineRun 取。
+ * `resume: true` 表示复用上次已落盘的分块结果续跑（长篇崩了不必从头再来）；缺省为 false，会清空缓存重跑。
+ */
+export async function runPipelineStage(runId: string, stageId: string, body?: { model?: string; provider?: { baseUrl: string; apiKey: string }; resume?: boolean }, baseUrl?: string) {
+    const data = await gatewayRequest<{ run: GatewayPipelineRun; inflight?: boolean }>({ method: "post", url: `/api/pipeline/runs/${encodeURIComponent(runId)}/steps/${encodeURIComponent(stageId)}/run`, data: body || {} }, baseUrl);
     return data.run;
+}
+
+/** 轻量进度轮询：只回 progress.json，不拖内嵌整本小说的 run.json。 */
+export async function fetchPipelineProgress(runId: string, baseUrl?: string) {
+    return gatewayRequest<{ progress: GatewayStageProgress | null; inflight: boolean }>({ method: "get", url: `/api/pipeline/runs/${encodeURIComponent(runId)}/progress` }, baseUrl);
+}
+
+/** 取消正在执行的阶段。后端 abort 后由 executeStage 落终态，所以这里不回传 run，终态靠轮询拿。 */
+export async function cancelPipelineStage(runId: string, stageId: string, baseUrl?: string) {
+    return gatewayRequest<{ canceled: boolean; stage: string; ranMs: number }>({ method: "post", url: `/api/pipeline/runs/${encodeURIComponent(runId)}/steps/${encodeURIComponent(stageId)}/cancel` }, baseUrl);
 }
 
 export async function fetchGatewayLlmModels(baseUrl?: string) {

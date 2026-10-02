@@ -20,8 +20,11 @@ node src/index.js            # 默认 127.0.0.1:8788
 复制 `config.example.json` 为 `config.json` 后修改；所有字段都可用环境变量覆盖（`CANVAS_SERVER_*`）。
 配置文件路径可用 `CANVAS_SERVER_CONFIG` 指定。
 
-运行时数据都在 `config.dataDir`（默认 `data/`）：`jobs.json`（任务队列持久化）、`runs/<runId>/`（流水线产物）、
-`uploads/`（上传素材）、`artifacts/`（生成产物）、`llm-providers.json`（外部 LLM 渠道注册表）。
+运行时数据都在 `config.dataDir`（默认 `data/`）：`jobs.json`（任务队列持久化）、
+`runs/<runId>/run.json`（运行状态与产物指针，**内嵌整本小说，长篇可达数 MB**）、
+`runs/<runId>/<stage>.json`（阶段产物）、`runs/<runId>/progress.json`（轻量进度，轮询用）、
+`runs/<runId>/chunks/<i>.json`（分块 map 结果，断点续跑用）、
+`uploads/`（上传素材）、`artifacts/`（生成产物）、`llm-providers.json`（外部 LLM 渠道注册表，权限 `0600`）。
 
 > ⚠️ **外部 LLM 渠道注册表只认 `data/llm-providers.json`**。`index.js` 启动时无条件执行
 > `config.llm.providers = readLlmProviders()`，文件缺失或损坏时按空数组处理——因此**在 `config.json` 里写 `llm.providers` 会被启动时覆盖掉**，
@@ -97,26 +100,55 @@ RunningHub 是**保留的可选云端后端**：未配置 `runninghub.apiKey` �
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/api/pipeline/stages` | `{ stages: StageInfo[] }`，来自 `skills/registry.json` |
-| POST | `/api/pipeline/runs` | body `{ novel, title?, options? }` → `201 { run }` |
+| POST | `/api/pipeline/runs` | body `{ novel, title?, options? }` → `201 { run }`，`run.estimate` 已算好 |
 | GET | `/api/pipeline/runs` | → `{ runs: Run[] }` |
-| GET | `/api/pipeline/runs/:id` | → `{ run: Run }` |
-| POST | `/api/pipeline/runs/:id/steps/:stage/run` | 运行单步，body 可选 `{ model?, provider? }` → `{ run }` |
+| GET | `/api/pipeline/runs/:id` | → `{ run: Run }`。**响应内嵌整本小说，222 万字的书有 6.4MB，不要拿它轮询进度** |
+| GET | `/api/pipeline/runs/:id/progress` | → `{ progress: Progress \| null, inflight }`。轻量（几十字节），**轮询进度只用这个** |
+| POST | `/api/pipeline/runs/:id/steps/:stage/run` | 运行单步，body 可选 `{ model?, provider?, resume? }` → **`202 { run, inflight }`** |
+| POST | `/api/pipeline/runs/:id/steps/:stage/cancel` | 取消正在执行的阶段 → `{ canceled, stage, ranMs }`；没有在执行的任务返回 **409** |
 | POST | `/api/pipeline/runs/:id/steps/:stage/input` | 人工修订该步产物 → `{ run }` |
 
-`Run` = `{ id, title, novel, createdAt, updatedAt, options?, stages: { [stageId]: { id, title, status, inputs, output, artifacts, error?, chunked?, startedAt?, finishedAt? } } }`
+`Run` = `{ id, title, novel, createdAt, updatedAt, estimate?, options?, stages: { [stageId]: { id, title, status, inputs, output, artifacts, error?, chunked?, startedAt?, finishedAt? } } }`
+
+`Estimate` = `{ novelChars, promptChars, maxChunkChars, chunked, chunks, llmCalls, perChunkSeconds, estSeconds, resumableChunks }`
+—— 创建 run 时算好，让调用方在**开跑之前**就知道代价。`promptChars` 是**填充后**的 prompt 长度（含 SKILL.md 模板），
+与 `composeWithLlm` 的分块判定同口径，不是小说字数。`perChunkSeconds` 取 `config.pipeline.estSecondsPerChunk`（默认 **31**，
+实测 222 万字 / 163 块 / 83 分钟 ≈ 30.5s/块）。
+
+`Progress` = `{ runId, stage, phase: "map"\|"reduce"\|"single"\|"done"\|"failed", done?, total?, label?, reused?, resumed?, avgMsPerChunk?, etaMs?, error?, startedAt?, finishedAt?, updatedAt? }`
 
 阶段 id 固定为：`script`（小说→剧本）、`storyboard`（分镜拆解）、`design`（服化道）、`keyframe`（关键帧）、`assembly`（片段合成拼接）。
+
+**运行是异步的**：`POST .../run` **立刻返回 202**，返回的 `run` 里该阶段是 `running`，工作在后台跑。
+不要指望这个请求解析时阶段已完成 —— 一个 163 块 / 83 分钟的阶段用一个阻塞式 POST 扛，隧道、反向代理、
+浏览器都会在几分钟内掐断连接，前端 `await` 抛错后按钮复位、页面「毫无反应」，而后端仍在继续跑并消耗 LLM 额度。
+终态靠轮询 `progress` 到 `phase: "done" | "failed"`，再 `GET /api/pipeline/runs/:id` 取产物。
+同一阶段正在跑时再次 `POST .../run` 会 **400**（`阶段「X」正在运行中`）。
 
 **按阶段绑定模型**：`body.model` 会持久化到 `run.options.stageModels[stageId]`，重跑沿用。模型解析优先级是
 `options.stageModels[stageId]` → `options.llmModel` → `config.pipeline.llmModel` → 网关默认。
 `body.provider = { baseUrl, apiKey }` 是浏览器侧渠道的**临时透传**：只校验形状（`baseUrl` 必须是 http(s)），
 仅本次调用生效，**绝不写入 `run` 或 `options`**。
 
+**取消**：`POST .../cancel` abort 后由 `executeStage` 的 catch 落终态（`status: "error"` + `已取消…`），
+所以 cancel **不回传 `run`** —— 那一刻 run 还没写完，回传会是过期的 `running` 态。信号贯通
+`index.js` → `runStage/executeStage` → `composeWithLlm` → `composeScriptChunked` → `askJson` → `pipeline.chat` → `llm.chat(options.signal)`；
+`llm.chat` 里外部 signal 与内部超时共用一个 `AbortController`，且**取消不会被当成连接失败去试下一个 fallback**。
+
 **超长小说分块改编（仅 `script` 阶段）**：填入小说后的完整 prompt 超过 `config.pipeline.maxNovelChunkChars`
 （默认 **16000** 字符）时自动走 map-reduce——`splitNovelIntoChunks` 切块 → 逐块提取局部 `characters`/`scenes` →
 再把全部局部结果合并成一份完整剧本。`stage.output` 与单次调用**完全同构**，分块信息记在
-`stage.chunked = { chunks, labels, mergeModel }`；未超阈值时维持单次调用且 `chunked` 为 `undefined`。
+`stage.chunked = { chunks, labels, mergeModel, reused }`；未超阈值时维持单次调用且 `chunked` 为 `undefined`。
 每次 LLM 调用（含 map、reduce 与 JSON 重试）都沿用该阶段绑定的模型与 provider。
+
+**断点续跑**：每块的 map 结果单独落盘到 `data/runs/<id>/chunks/<index>.json`，进度写在 `data/runs/<id>/progress.json`。
+两者都**不写进 `run.json`** —— 那个文件内嵌整本小说，逐块 `saveRun` 会产生上百次数 MB 的全量重写。
+`body.resume: true` 时复用已落盘的块、只补跑缺的（`stage.chunked.reused` 报告复用了几块）；
+缺省 `false` 会**清空 `chunks/`**，避免小说改过之后复用陈旧块。
+
+**启动收敛**：进程被杀时正在跑的阶段会永远停在 `running`，而 `beginStage` 拒绝在 `running` 阶段上重跑，
+不收敛就会把那个阶段永久锁死。所以启动时 `reconcileRunning()` 把所有遗留 `running` 落成
+`status: "error"` + `服务重启导致中断；已完成的分块结果已保留，可用 resume 续跑`，并打一条告警。
 
 ### 生成产物与前端的关系
 
@@ -221,11 +253,21 @@ createPipeline({ config, skillsDir, jobs, comfy, llm, runJob }) => {
   stages(): StageInfo[],
   list(): Run[],
   get(id): Run | null,
-  create({ novel, title, options }): Run,
-  runStage(runId, stageId, runOptions?): Promise<Run>,   // runOptions = { model?, provider? }
+  create({ novel, title, options }): Run,               // run.estimate 在创建时算好
+  estimate(run): Estimate,                              // 单独重算预估（口径与分块判定一致）
+  beginStage(runId, stageId, runOptions?): Begun,       // 同步：校验依赖、绑定模型、标记 running 并落盘
+  executeStage(begun, runOptions?): Promise<Run>,       // 异步：真正跑 LLM 与入队，落终态与进度
+  runStage(runId, stageId, runOptions?): Promise<Run>,  // = executeStage(beginStage(...))，同步等完（测试用）
+  stageProgress(runId): Progress | null,                // 只读 progress.json，不碰数 MB 的 run.json
+  reconcileRunning(): string[],                         // 启动收敛遗留 running 阶段，返回被收敛的 runId
   setStageInput(runId, stageId, patch): Run,
 }
+// runOptions = { model?, provider?, signal?, resume? }
 ```
+
+HTTP 路由走 `beginStage` + 不 await 的 `executeStage`（立刻 202）；`runStage` 保留给测试与内部同步调用。
+`beginStage` 与 `executeStage` 拆开是这套异步语义的前提 —— 校验必须在响应前同步完成（不合法要能返回 400），
+执行必须在响应后继续（否则长任务会把连接拖断）。
 
 每个阶段由 `skills/<skill>/SKILL.md` 定义提示词与输出 JSON 契约；阶段间产物以 JSON 传递，落盘在 `data/runs/<runId>/<stage>.json`。
 

@@ -54,6 +54,7 @@
         "videoSeconds": 5,
         "videoFps": 24,
         "maxKeyframesPerShot": 2,
-        "maxNovelChunkChars": 16000
+        "maxNovelChunkChars": 16000,
+        "estSecondsPerChunk": 31
     }
 }

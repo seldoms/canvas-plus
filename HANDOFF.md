@@ -46,9 +46,10 @@
 | 小说/分镜原文文件导入、网关地址自动探测、`/api`+`/v1` 同源反代 | 代码完成，**未浏览器实测** | 前端 `tsc --noEmit` 0 错；验收项见 `pending-test.zh-CN.mdx` |
 | `video_h3_talk` 补登记中文标题 | 完成 | 此前 `TITLES` 漏登记，`/api/providers` 把裸模板名当 title 吐给前端；已补「H3 台词对口型」，并加回归测试锁住「每个模板都必须有标题」 |
 | 文档口径纠正 | 完成 | Kimi 把 9 条中文验收项写进了**英文版** `pending-test.mdx`、中文版只补了 4 条；已全部归位（中文版 117 条为完整清单，英文版译回英文）。CHANGELOG 与验收项里「默认 6 万字符」改为与代码一致的 **1.6 万字符** |
-| 后端测试 | **68/68 全绿** | `cd canvas-server && node --test test/*.test.mjs` |
+| 后端测试 | **73/73 全绿** | `cd canvas-server && node --test test/*.test.mjs` |
 | `img_qwen21_t2i` + `img_qwen21_edit` 模板 | **完成并真机跑通** | 147 已由用户升级到 ComfyUI **0.38.2**；改走官方 safetensors 路线（GGUF 上游不支持，见坑）。五项实测通过：文生图 `image-muqq7gy8-o41z0`、指令改图 `image-muqqov3y-0fosg`、抠背景透明 `image-muqqyhb0-gb4b9`、透明贴纸直出 `image-muqquoup-elupj`、多图参考合成 `image-muqrx41l-4qxk6`。H3 主力管线在 aimdo 0.5.5 下也复测通过（`video-muqp3s3h-26kei`） |
 | `/api/health` 被死渠道挂住 | **已修** | 外部 LLM 渠道探测改用独立 `llm.probeTimeoutMs`（默认 8s，不复用 chat 的 600s）+ 并行探测。修前一个死渠道能挂 20 分钟、前端模型下拉卡死；修后线上实测 **8.07s 返回 200**。见坑末条 |
+| 流水线阶段可观测 / 可取消 / 可续跑 | **完成并真机跑通** | 运行改异步（`POST .../run` → **202，0.02s 返回**）、进度写独立 `progress.json`（不重写 6.4MB 的 `run.json`）+ 轻量 `GET .../progress`、取消信号贯通到 `llm.chat`、每块 map 结果落盘 `chunks/<i>.json` 支持 `resume`、创建时返回 `run.estimate`、启动 `reconcileRunning()` 收敛遗留 running。实测 `run-mur4csot-suj8z`：202 立返 → 12s 读到 `phase=reduce done=2/2` → 取消落 `已取消` + 两块保留 → `resume:true` 重跑 **`reused:2` 零次 map** 直接 reduce 到 `done` |
 
 **已踩过的新坑**
 

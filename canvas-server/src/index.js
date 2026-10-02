@@ -279,19 +279,63 @@ router.post("/api/pipeline/runs", async (req, res) => {
     }
 });
 
+// 正在执行的阶段：`${runId}:${stageId}` → { controller, startedAt }。既用于取消，也用于防重复触发。
+const inflightStages = new Map();
+const inflightKey = (runId, stageId) => `${runId}:${stageId}`;
+
 router.get("/api/pipeline/runs/:id", (req, res, { params }) => {
     const run = pipeline.get(params.id);
     if (!run) return sendError(res, 404, "流水线不存在");
     sendJson(res, 200, { run });
 });
 
+/**
+ * 轻量进度：只回 progress.json（几十字节）。
+ * 不要用 GET /api/pipeline/runs/:id 轮询进度 —— 那个响应内嵌整本小说，222 万字的书有 6.4MB，
+ * 每 3 秒轮询一次就是每分钟 128MB 传输。
+ */
+router.get("/api/pipeline/runs/:id/progress", (req, res, { params }) => {
+    const progress = pipeline.stageProgress(params.id);
+    const inflight = progress?.stage ? inflightStages.has(inflightKey(params.id, progress.stage)) : false;
+    sendJson(res, 200, { progress: progress || null, inflight });
+});
+
+/**
+ * 运行单步。**立刻返回 202**，工作在后台跑。
+ * 此前是 `await pipeline.runStage(...)` 的阻塞式 POST：一个 163 块 / 83 分钟的阶段用一个 HTTP
+ * 请求扛，隧道、反向代理、浏览器都会在几分钟内掐断连接，前端 await 抛错后按钮复位、页面
+ * 「毫无反应」，而后端仍在继续跑并消耗 LLM 额度 —— 用户既看不到进度也停不下来。
+ */
 router.post("/api/pipeline/runs/:id/steps/:stage/run", async (req, res, { params }) => {
     try {
         const body = await readJson(req).catch(() => ({}));
-        sendJson(res, 200, { run: await pipeline.runStage(params.id, params.stage, body && typeof body === "object" ? body : {}) });
+        const runOptions = body && typeof body === "object" ? body : {};
+        // 同步部分先跑：依赖校验、模型绑定、标记 running 都在这一步，参数不合法仍能返回 400
+        const begun = pipeline.beginStage(params.id, params.stage, runOptions);
+        const key = inflightKey(params.id, params.stage);
+        const controller = new AbortController();
+        inflightStages.set(key, { controller, startedAt: Date.now() });
+        void pipeline
+            .executeStage(begun, { ...runOptions, signal: controller.signal })
+            .catch((error) => console.error(`[pipeline] 阶段 ${params.stage} 执行失败：${error.message}`))
+            .finally(() => inflightStages.delete(key));
+        sendJson(res, 202, { run: begun.run, inflight: true });
     } catch (error) {
         sendError(res, 400, error.message);
     }
+});
+
+/**
+ * 取消正在执行的阶段。abort 后由 executeStage 的 catch 落终态（status:error +「已取消（第 N/M 块完成后中止）」），
+ * 所以这里**不回传 run** —— 那一刻 run 还没写完，回传会是过期的 running 态；让前端轮询 progress 拿终态。
+ */
+router.post("/api/pipeline/runs/:id/steps/:stage/cancel", (req, res, { params }) => {
+    const key = inflightKey(params.id, params.stage);
+    const entry = inflightStages.get(key);
+    if (!entry) return sendError(res, 409, `阶段「${params.stage}」当前没有正在执行的任务`);
+    entry.controller.abort();
+    inflightStages.delete(key);
+    sendJson(res, 200, { canceled: true, stage: params.stage, ranMs: Date.now() - entry.startedAt });
 });
 
 router.post("/api/pipeline/runs/:id/steps/:stage/input", async (req, res, { params }) => {
@@ -345,6 +389,10 @@ const webDist = (() => {
 const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 
 if (isMain) {
+    // 上次进程被杀时正在跑的阶段会永远停在 running，而 beginStage 拒绝在 running 阶段上重跑，
+    // 不收敛就会把那个阶段永久锁死。分块结果仍在 chunks/ 里，可用 resume 续跑。
+    const stale = pipeline.reconcileRunning();
+    if (stale.length) console.warn(`[pipeline] 收敛了 ${stale.length} 条上次中断的运行：${stale.join("、")}（阶段标记为 error，分块结果已保留，可 resume 续跑）`);
     server.listen(config.port, config.host, () => {
         console.log(`canvas-server 已启动：http://${config.host}:${config.port}`);
         console.log(`  LLM  : ${config.llm.baseUrl}`);
