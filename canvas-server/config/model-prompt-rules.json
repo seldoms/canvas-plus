@@ -1,0 +1,1082 @@
+{
+  "_readme": "来源 = research/win147-comfyui/registry.json（win147 ComfyUI 模型能力与提示词规范调研，2026-10-03）。本表是该调研的逐模型提示词规则在后端的运行时副本：13 个模型全部提升，不抽样、不改写语义。以调研为准 —— 修改任一字段前必须先同步修订 research/win147-comfyui/registry.json 及其 sources/*.md，再由 test/model-rules.test.mjs 的对账用例校验一致，禁止只改本文件。H3 的两种提示词口径（本地字段口径 / 云端中文三段式）见顶层 h3_prompt_protocols，其中 local_fields 为本地默认（依据 sources/video-models.md:149-165）。",
+  "machine": {
+    "host": "192.168.123.147",
+    "gpu": "RTX 5060 Ti 16G",
+    "vram_gib": 15.93,
+    "ram_gb": 32,
+    "instances": {
+      "8188": {
+        "role": "生产实例",
+        "comfyui": "0.38.2",
+        "nodes": 4485,
+        "note": "89+ 第三方节点包，不轻易升级主版本"
+      },
+      "8190": {
+        "role": "Qwen-Image 2.1 专用实例",
+        "comfyui": "0.37.0",
+        "nodes": 971,
+        "note": "节点少、升级风险低；与 8188 共享模型目录"
+      }
+    }
+  },
+  "models": {
+    "qwen_image": {
+      "label": "Qwen-Image 20B 文生图",
+      "instance": 8188,
+      "scenarios": [
+        "t2i",
+        "keyframe",
+        "poster",
+        "text_in_image"
+      ],
+      "weights": {
+        "unet": "qwen_image_fp8_e4m3fn.safetensors",
+        "clip": "qwen_2.5_vl_7b_fp8_scaled.safetensors",
+        "clip_type": "qwen_image",
+        "vae": "qwen_image_vae.safetensors"
+      },
+      "prompt": {
+        "input_language": "bilingual",
+        "translate_to": null,
+        "negative": "optional",
+        "negative_default": " ",
+        "negative_note": "官方 diffusers 基线负面串为单个空格，ComfyUI 模板留空；cfg=1（Lightning）时负面完全无效，要用负面需 cfg>=2.5；可复用 2512 官方中文负面串：低分辨率，低画质，肢体畸形，手指畸形，画面过饱和，蜡像感，人脸无细节，过度光滑，画面具有AI感。构图混乱。文字模糊，扭曲。",
+        "magic_suffix": {
+          "en": ", Ultra HD, 4K, cinematic composition.",
+          "zh": ", 超清，4K，电影级构图."
+        },
+        "text_in_image": "英文双引号逐字包裹、保持原文字符（中文写中文字符），写清载体（招牌/海报/屏幕）、字体风格与位置",
+        "max_prompt_tokens": 512,
+        "structure_notes": "diffusers 管线 512 token 静默截断（可配 1024）；ComfyUI 原生不截断但超长丢尾，正文控制 ~500 token、重要内容前置；短提示词先过官方 Prompt Enhance 扩写"
+      },
+      "limits": {
+        "resolutions": [
+          "1328x1328",
+          "1664x928",
+          "928x1664",
+          "1472x1104",
+          "1104x1472",
+          "1584x1056",
+          "1056x1584"
+        ],
+        "multi_image_max": null,
+        "32_align": true,
+        "note": "官方 7 档约 1.3~1.7MP；4:3 比例 README(1472x1104) 与模板 note(1472x1140) 不一致，以 README 为准"
+      },
+      "presets": {
+        "speed": {
+          "steps": 8,
+          "cfg": 1.0,
+          "sampler": "euler",
+          "scheduler": "simple",
+          "shift": 3.1,
+          "lora": "Qwen-Image-Lightning-8steps-V2.0-bf16.safetensors"
+        },
+        "quality": {
+          "steps": 50,
+          "cfg": 4.0,
+          "sampler": "euler",
+          "scheduler": "simple",
+          "shift": 3.1
+        }
+      },
+      "workflow": "workflows/qwen-image-t2i-official.json",
+      "upgrade": {
+        "status": "upgrade_available",
+        "note": "可选补装 Qwen-Image-2512 fp8（2025-12-31），本地已有 2512 Lightning/Turbo LoRA 缺底座"
+      },
+      "pitfalls": [
+        "Lightning 8 步 LoRA 与社区 15 步蒸馏版不要叠加（官方明示兼容性未验证）",
+        "cfg=1 时负面词无效",
+        "diffusers 超长提示词静默截断",
+        "shift=3.1 是官方模板值（增大更锐、减小更柔）"
+      ]
+    },
+    "qwen_image_edit_2509": {
+      "label": "Qwen-Image-Edit-2509 图编/换装",
+      "instance": 8188,
+      "scenarios": [
+        "image_edit",
+        "costume_change",
+        "multi_ref",
+        "text_edit"
+      ],
+      "weights": {
+        "unet": "qwen_image_edit_2509_fp8_e4m3fn.safetensors",
+        "clip": "qwen_2.5_vl_7b_fp8_scaled.safetensors",
+        "clip_type": "qwen_image",
+        "vae": "qwen_image_vae.safetensors"
+      },
+      "nodes": [
+        "TextEncodeQwenImageEditPlus",
+        "FluxKontextImageScale",
+        "ModelSamplingAuraFlow",
+        "CFGNorm"
+      ],
+      "prompt": {
+        "input_language": "bilingual",
+        "translate_to": null,
+        "negative": "none",
+        "negative_default": null,
+        "negative_note": "官方 diffusers 固定 negative_prompt 为单个空格 + true_cfg 4.0；模板留空；Lightning cfg=1 时无效",
+        "rewrite_required": true,
+        "rewrite_note": "官方强烈建议编辑任务先做 prompt rewriting（polish_edit_prompt），否则编辑结果不稳定",
+        "text_in_image": "目标文字逐字写出+引号包裹+指明载体与位置；指令式写法=操作+显式声明保持不动的部分",
+        "max_prompt_tokens": null,
+        "structure_notes": "换装/换物指令必须显式写 preservation 从句（保持面部、发型、体型、姿势不变），否则身份漂移"
+      },
+      "limits": {
+        "multi_image_max": 3,
+        "multi_image_note": "官方甜蜜点 1~3 张（节点 image1/2/3 三槽）；4 张以上需串联 ReferenceLatent 且无官方保证；4~5 图用第三方 TextEncodeQwenImageEditPlusPro",
+        "input_total_pixels": "约 1MP（FluxKontextImageScale 缩放，16 倍数对齐）——编辑后变糊的常见原因",
+        "output_size": "跟随输入图（经缩放后）",
+        "32_align": false
+      },
+      "presets": {
+        "speed": {
+          "steps": 4,
+          "cfg": 1.0,
+          "sampler": "euler",
+          "scheduler": "simple",
+          "shift": 3.0,
+          "lora": "Qwen-Image-Edit-2509-Lightning-4steps-V1.0-bf16.safetensors",
+          "extra": "CFGNorm strength=1"
+        },
+        "quality": {
+          "steps": 20,
+          "cfg": 2.5,
+          "sampler": "euler",
+          "scheduler": "simple",
+          "shift": 3.0,
+          "extra": "CFGNorm strength=1；Qwen Team 官方为 50 步 cfg 4.0"
+        }
+      },
+      "workflow": "workflows/qwen-image-edit-2509-official.json",
+      "upgrade": {
+        "status": "upgrade_available",
+        "note": "可选换 Edit-2511 fp8（本地已有 2511 Lightning LoRA），优先级低；实质性升级已由 Qwen-Image 2.1 覆盖"
+      },
+      "pitfalls": [
+        "不改写提示词编辑结果不稳定（官方原话）",
+        "输入图被压到约 1MP 总像素，细节会糊",
+        "超过 3 图无官方保证",
+        "不写 preservation 从句身份必漂移"
+      ]
+    },
+    "qwen_image_2_1": {
+      "label": "Qwen-Image 2.1（7B 统一生成+编辑）",
+      "instance": 8190,
+      "scenarios": [
+        "t2i",
+        "keyframe",
+        "poster",
+        "text_in_image",
+        "image_edit",
+        "multi_ref",
+        "transparent"
+      ],
+      "weights": {
+        "unet": "qwen_image_2.1_int8_convrot.safetensors",
+        "unet_gguf": [
+          "qwen_image_2.1-Q4_K.gguf",
+          "qwen_image_2.1-Q8_0.gguf"
+        ],
+        "clip": "qwen3vl_8b_fp8_scaled.safetensors",
+        "vae": "qwen_image_2.1_vae_bf16.safetensors"
+      },
+      "nodes": [
+        "TextEncodeQwenImage21",
+        "QwenImage21Cache"
+      ],
+      "prompt": {
+        "input_language": "bilingual",
+        "translate_to": "en",
+        "translate_note": "官方 PE-T2I 固定输出英文长提示词，图中文字保留原语言；编辑（PE-I2I）正文跟随用户指令语言，图中文字：用户指定照写，否则跟随图片已有文字主语言；引号内禁止中英混杂",
+        "negative": "none",
+        "negative_default": null,
+        "negative_note": "官方路径 cfg=1 负面完全无效（跳过负面条件计算）；不要 X 必须改写进正向提示词；要负面需抬 cfg（cfg2 边缘过锐、cfg5 严重劣化、cfg0.5 崩图）",
+        "text_in_image": "每条文字英文直双引号包裹、逐字符照抄、保持原书写系统；写清字重/颜色/大小写/相对大小/位置；换行用文字描述而非引号内真换行；不想被读出的文字明说 blurred/indistinct/too small to read；透明图固定咒语：This is an RGBA image with transparency. <描述>. The image has alpha channel and the background is transparent.",
+        "max_prompt_tokens": null,
+        "structure_notes": "改写后预期 400~500 词约 20 句；多参考图用 <image1>~<image10> 按槽位引用，禁止「图1」等自然语言指代；image_1 是被编辑画布；多图时逐图描述角色分工，禁止合并指代"
+      },
+      "limits": {
+        "resolutions": [
+          "2048x2048",
+          "2400x1792",
+          "1792x2400",
+          "2528x1696",
+          "1696x2528",
+          "2752x1536",
+          "1536x2752"
+        ],
+        "multi_image_max": 10,
+        "multi_image_note": "官方保证 10 张，节点 16 槽（image_1~image_16）",
+        "max_native": "2K；远超 2K（如 4K）掉 prompt adherence（官方教程原话）",
+        "edit_resolution_param": "总像素预算 0~4096 步进 32，默认 1024，0=跟随 image_1 原尺寸；编辑输出默认跟随 image_1（32 倍数对齐）",
+        "32_align": true
+      },
+      "presets": {
+        "speed": {
+          "steps": 8,
+          "cfg": 1.0,
+          "sampler": "euler",
+          "scheduler": "simple",
+          "lora": "p_qwen_image_2.1_8step_v0.1.safetensors",
+          "note": "另有官方 4 步 Turbo GGUF（viggle）可选"
+        },
+        "quality": {
+          "steps": 25,
+          "cfg": 1.0,
+          "sampler": "euler",
+          "scheduler": "simple",
+          "note": "官方模板值；diffusers/vLLM/SGLang 官方示例 40 步；顽固细节（手部）约 30 步收敛"
+        }
+      },
+      "workflow": "workflows/qwen-image-2.1-t2i-official.json",
+      "workflow_edit": "workflows/qwen-image-2.1-edit-official.json",
+      "upgrade": {
+        "status": "latest",
+        "note": "2.1（2026-09-20）即最新；8190 可择期升 ComfyUI 0.38.x 拿 tiny VAE/union controlnet/编译优化"
+      },
+      "pitfalls": [
+        "thinking_mode 必须和 PE 改写一起开，关了掉质量",
+        "多张大图参考显著拖慢，开 QwenImage21Cache 缓存 KV 前缀",
+        "EmptyLatentImage 通道/压缩比不同，依赖 ComfyUI 0.37.0+ 自动修正，旧版双倍尺寸",
+        "GGUF 为社区量化，文字渲染小细节随档位下降",
+        "架构与前代完全不同，1.x/2509 节点与工作流不通用"
+      ]
+    },
+    "krea2_turbo": {
+      "label": "Krea 2 Turbo 美学文生图",
+      "instance": 8188,
+      "scenarios": [
+        "t2i",
+        "keyframe",
+        "aesthetic"
+      ],
+      "license": "Krea 2 Community License（非 Apache，商用需读许可证文本）",
+      "weights": {
+        "unet": "krea2_turbo_fp8_scaled.safetensors",
+        "clip": "qwen3vl_4b_fp8_scaled.safetensors",
+        "clip_type": "krea2",
+        "vae": "qwen_image_vae.safetensors"
+      },
+      "prompt": {
+        "input_language": "en",
+        "translate_to": "en",
+        "translate_note": "官方要求英文自然语言整句；中文提示词无官方依据，策略层应翻译为英文；官方 expansion.txt 可作 LLM 扩写 system prompt",
+        "negative": "none",
+        "negative_default": null,
+        "negative_note": "官方 steps 8 cfg 0.0（ComfyUI 写 1.0），负面无效；唯一有据的负面路线是社区 ComfyUI-Krea2-NAG 节点",
+        "text_in_image": "要渲染的文字加英文引号；招牌级可用、海报标题级不可靠",
+        "max_prompt_tokens": null,
+        "structure_notes": "禁止 CLIP 时代关键词条+(word:1.2) 权重语法（>1.2 画面崩）；用语序前置、同义复述、具体词汇；公式：主体+一个动作+光源+一两个质感词；风格 LoRA 必须带触发词且其余部分不再写风格词"
+      },
+      "limits": {
+        "resolutions": [
+          "1024x1024 ~ 2048x2048 区间任选"
+        ],
+        "multi_image_max": null,
+        "32_align": false,
+        "align": 16,
+        "note": "官方 1K~2K，自动 pad 到 16 倍数；社区共识直接原生 2K 出图"
+      },
+      "presets": {
+        "speed": {
+          "steps": 8,
+          "cfg": 1.0,
+          "sampler": "euler",
+          "scheduler": "simple",
+          "mu": 1.15
+        },
+        "quality": {
+          "steps": 8,
+          "cfg": 1.0,
+          "sampler": "euler",
+          "scheduler": "simple",
+          "mu": 1.15,
+          "note": "Turbo 本身即官方 8 步蒸馏，速度档=质量档；RAW 52 步 cfg 3.5 未装"
+        }
+      },
+      "workflow": "workflows/krea2-turbo-official.json",
+      "upgrade": {
+        "status": "latest",
+        "note": "Krea 2（2026-06-22）即最新，无 Krea 3"
+      },
+      "pitfalls": [
+        "9 个官方风格 LoRA 触发词与文件名不对应，且提示词其余部分不要再写风格词",
+        "单词权重语法会崩画面",
+        "直接开 sage attention 有 shape bug，需 guard 补丁",
+        "中文表现无官方背书"
+      ]
+    },
+    "flux1_dev": {
+      "label": "FLUX.1-dev 通用文生图底座",
+      "instance": 8188,
+      "scenarios": [
+        "t2i",
+        "keyframe"
+      ],
+      "license": "FLUX.1 dev 非商用许可",
+      "weights": {
+        "unet": "flux1-dev-fp8.safetensors",
+        "clip": [
+          "clip_l.safetensors",
+          "t5xxl_fp8_e4m3fn.safetensors"
+        ],
+        "clip_type": "flux",
+        "vae": "ae.safetensors"
+      },
+      "prompt": {
+        "input_language": "en",
+        "translate_to": "en",
+        "translate_note": "官方推荐英文；FLUX.1 无官方多语言依据，中文表现无背书",
+        "negative": "zero_out",
+        "negative_default": null,
+        "negative_note": "官方明确反对负面提示词；guidance-distilled 模型 cfg=1 负面不生效，官方模板用 ConditioningZeroOut 清零",
+        "text_in_image": "引号包裹精确文字+描述字体特征（粗细/大小写/颜色/对齐）；文字内容保持短；文字能力一般，海报排版非强项",
+        "max_prompt_tokens": null,
+        "structure_notes": "官方四件套：主体前置、写光线、颜色用 hex（#FF6B6B (coral pink)）、文字加引号；摄影感用相机/胶片/焦段/光圈词汇"
+      },
+      "limits": {
+        "resolutions": [
+          "256~1440 像素区间，默认 1024x1024（BFL API 默认 1024x768）"
+        ],
+        "multi_image_max": null,
+        "32_align": true,
+        "note": "甜点约 1MP；超 1440 偏离训练分布构图变差"
+      },
+      "presets": {
+        "speed": {
+          "steps": 8,
+          "cfg": 1.0,
+          "sampler": "euler",
+          "scheduler": "simple",
+          "lora": "Hyper-FLUX.1-dev-8steps-lora.safetensors"
+        },
+        "quality": {
+          "steps": 20,
+          "cfg": 1.0,
+          "guidance": 3.5,
+          "sampler": "euler",
+          "scheduler": "simple",
+          "note": "BFL API 默认 28 步 guidance 3.0；社区惯例 FluxGuidance 3.5"
+        }
+      },
+      "workflow": "workflows/flux1-dev-official.json",
+      "upgrade": {
+        "status": "watch",
+        "note": "不升级 dev（FLUX.2 dev 32B 跑不动且非商用）；可选装 FLUX.2 klein-4B（Apache 2.0，8GB 级）"
+      },
+      "pitfalls": [
+        "负面词机制上无效，别写",
+        "超 1440 构图劣化",
+        "guidance 过高过饱和、过低发灰",
+        "文字渲染弱于 Qwen/Z-Image"
+      ]
+    },
+    "z_image_turbo": {
+      "label": "Z-Image Turbo / base（通义 6B）",
+      "instance": 8188,
+      "scenarios": [
+        "t2i",
+        "keyframe",
+        "text_in_image",
+        "poster"
+      ],
+      "license": "Apache-2.0",
+      "weights": {
+        "unet": "z_image_turbo_bf16.safetensors",
+        "unet_base": "z_image_bf16.safetensors",
+        "clip": "qwen_3_4b.safetensors",
+        "clip_type": "lumina2",
+        "vae": "ae.safetensors"
+      },
+      "prompt": {
+        "input_language": "bilingual",
+        "translate_to": null,
+        "translate_note": "官方双语，中文直接写无需翻译；官方配套 Prompt Enhancer 扩写器",
+        "negative": "none",
+        "negative_default": null,
+        "negative_note": "Turbo 官方 guidance_scale=0.0 负面无效（模型 zoo CFG 列 ❌）；base 官方明确支持负面（50 步，具体 cfg 数值无官方依据）；中文社区「Turbo 加中文负面词库」说法与机制矛盾，不采信",
+        "text_in_image": "中英双语文字渲染是官方主打卖点；引号包裹目标文字+描述字体/颜色/位置，中文直接写中文",
+        "max_prompt_tokens": null,
+        "structure_notes": "Turbo 参数不要动：steps 8（可接受 6~11）、cfg 锁 1.0 即最优；勿超 ~12 步（蒸馏模型多步反劣化），cfg 调高过饱和烧图"
+      },
+      "limits": {
+        "resolutions": [
+          "1024x1024（官方示例）；社区实测原生到 2048x2048"
+        ],
+        "multi_image_max": null,
+        "32_align": true
+      },
+      "presets": {
+        "speed": {
+          "steps": 8,
+          "cfg": 1.0,
+          "sampler": "res_multistep",
+          "scheduler": "simple",
+          "shift": 3.0
+        },
+        "quality": {
+          "steps": 8,
+          "cfg": 1.0,
+          "sampler": "res_multistep",
+          "scheduler": "simple",
+          "shift": 3.0,
+          "note": "蒸馏模型速度档=质量档；base 版 50 步支持 CFG（数值无官方依据）"
+        }
+      },
+      "workflow": "workflows/z-image-turbo-official.json",
+      "upgrade": {
+        "status": "latest",
+        "note": "Turbo 2025-11-26 / base 2026-01-27 即最新；观望 Z-Image-Edit"
+      },
+      "pitfalls": [
+        "Turbo 不要加步数/抬 cfg",
+        "负面词对 Turbo 是摆设",
+        "训练 LoRA 用 base/De-Turbo，推理用 Turbo",
+        "需 ModelSamplingAuraFlow shift=3"
+      ]
+    },
+    "boogu_edit": {
+      "label": "Boogu Edit / Turbo（10B 统一理解-生成）",
+      "instance": 8188,
+      "scenarios": [
+        "image_edit",
+        "text_edit",
+        "t2i",
+        "poster"
+      ],
+      "license": "Apache-2.0",
+      "weights": {
+        "unet": "boogu_image_edit_int8_convrot.safetensors",
+        "unet_turbo": "boogu_image_turbo_fp8_scaled.safetensors",
+        "clip": "qwen3vl_8b_fp8_scaled.safetensors",
+        "clip_type": "boogu",
+        "vae": "ae.safetensors"
+      },
+      "nodes": [
+        "TextEncodeBooguEdit"
+      ],
+      "prompt": {
+        "input_language": "bilingual",
+        "translate_to": null,
+        "translate_note": "官方双语，中文长提示词直接可用；文字渲染只优化中英，其他语言明显退化",
+        "negative": "optional",
+        "negative_default": "",
+        "negative_note": "Edit/Base 支持负面（CFG 2.0~5.0，模板留空）；Turbo/Edit-Turbo cfg=1 负面无效",
+        "text_in_image": "双语文字渲染是核心卖点，支持图内文字增删改（字体/字重/颜色/版式适配）；建议引号包裹（官方未明文）；密集文字官方分级 Turbo ⭐⭐⭐ / Base ⭐⭐⭐⭐",
+        "max_prompt_tokens": null,
+        "structure_notes": "官方 rewriter 最小改写原则：prompt 已清晰就几乎不改；版式/图文类（流程图/信息图/海报/UI）反向极致详尽；编辑指令自然语言直述"
+      },
+      "limits": {
+        "resolutions": [
+          "1K",
+          "1.5K",
+          "2K"
+        ],
+        "ratios": [
+          "1:1",
+          "2:3",
+          "3:2",
+          "3:4",
+          "4:3",
+          "1:2",
+          "2:1",
+          "9:16",
+          "16:9"
+        ],
+        "multi_image_max": 1,
+        "multi_image_note": "Edit 官方明示 Only support 1 reference image for now；Edit latent 画布匹配输入图尺寸保持构图",
+        "32_align": false,
+        "note": "Turbo 仅 1K；Base/Edit 1K~2K 但 Edit 1K 更稳定（官方原话）；密集文字官方推荐 Base+2K"
+      },
+      "presets": {
+        "speed": {
+          "steps": 4,
+          "cfg": 1.0,
+          "sampler": "lcm",
+          "scheduler": "sgm_uniform",
+          "variant": "turbo_t2i",
+          "lora": "boogu_image_turbo_lora_rank_128_bf16（必须挂；147 loras 盘点未见此文件，需确认/下载）"
+        },
+        "quality": {
+          "steps": 25,
+          "cfg": 3.5,
+          "sampler": "dpmpp_2m",
+          "scheduler": "simple",
+          "shift": 3.16,
+          "variant": "edit",
+          "note": "官方区间 Edit 25~50 步 cfg 2~5"
+        }
+      },
+      "workflow": "workflows/boogu-edit-int8-official.json",
+      "workflow_extra": [
+        "workflows/boogu-edit-official.json",
+        "workflows/boogu-turbo-official.json"
+      ],
+      "upgrade": {
+        "status": "watch",
+        "note": "0.1 即最新正式权重；Turbo-2K / Edit-Turbo 已宣布未放出，放出后直接换文件"
+      },
+      "pitfalls": [
+        "Turbo 必挂 rank-128 LoRA，147 loras 盘点中未见该文件",
+        "Edit 仅 1 张参考图",
+        "官方自报短板：真实世界知识、in-context 主体一致性、复杂姿势人体、小人脸小四肢",
+        "16G 需量化权重+CPU offload",
+        "旧自定义节点仓库 ComfyUI-Boogu 已 legacy，勿用"
+      ]
+    },
+    "wan21_t2v": {
+      "label": "Wan 2.1 T2V（1.3B 草稿 / 14B 画质）",
+      "instance": 8188,
+      "scenarios": [
+        "t2v",
+        "i2v",
+        "flf2v"
+      ],
+      "weights": {
+        "unet": "wan_1.3B_exp_e14.safetensors",
+        "unet_note": "147 在装为 NSFW 微调 e14 档；14B 走 GGUF（档案记录 wan2.1-i2v-14b-480p-Q4_K_M.gguf，本次盘点未见，见矛盾点）",
+        "clip": "umt5_xxl_fp8_e4m3fn_scaled_comfyorg.safetensors",
+        "clip_note": "必须用 comfyorg 版（412 张量），diffusers 格式（243 张量）加载失败——本地实测",
+        "vae": "wan_2.1_vae.safetensors"
+      },
+      "prompt": {
+        "input_language": "bilingual",
+        "translate_to": null,
+        "translate_note": "官方中英双语；官方 Prompt Extension 支持 zh|en 目标语言，6 套系统提示词（wan/utils/prompt_extend.py）可直接抄进策略层；例外：FLF2V 官方建议中文提示词",
+        "negative": "required",
+        "negative_default": "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走",
+        "negative_note": "官方默认中文串，ComfyUI 模板原样沿用；Wan2.2 模板在此串后追加「裸露，NSFW」",
+        "text_in_image": "首个能同时生成中英文画面文字的视频模型（官方）；引号/书名号内原文不翻译",
+        "max_prompt_tokens": 512,
+        "structure_notes": "text_len=512（umt5 token）；官方强烈建议开 prompt_extend 扩到 80~100 字：补全主体特征/风格/空间关系/景别、强调运动与镜头运镜、简单直接动词、未指定风格默认纪实摄影、古诗词强制中国古典元素"
+      },
+      "limits": {
+        "resolutions": [
+          "832x480",
+          "1280x720"
+        ],
+        "resolution_note": "1.3B 只支持 480P（官方明示 720P 不稳定）；14B 两档都支持；I2V 的 size 是画面面积，宽高比跟随输入图",
+        "fps": 16,
+        "frames": "4k+1（VAE 时序压缩 4×），官方示例 81 帧≈5 秒",
+        "multi_image_max": null,
+        "32_align": false
+      },
+      "presets": {
+        "speed": {
+          "steps": 30,
+          "cfg": 6.0,
+          "sampler": "uni_pc",
+          "scheduler": "simple",
+          "shift": 8.0,
+          "resolution": "832x480",
+          "note": "ComfyUI 模板值，147 实测 81 帧约 7 分钟；挂 lightx2v LoRA 可 4~6 步 cfg1"
+        },
+        "quality": {
+          "steps": 50,
+          "cfg": 5.0,
+          "sampler": "unipc",
+          "shift": "480P=3.0/720P=5.0（diffusers flow_shift）；ComfyUI 社区口径 480p=8/720p=12",
+          "resolution": "1280x720",
+          "variant": "14B"
+        }
+      },
+      "workflow": "workflows/wan21-t2v-official.json",
+      "upgrade": {
+        "status": "watch",
+        "note": "Wan 2.5/2.6/3.0 全部 API-only 无权重，Wan2.2 仍是最新开源主线"
+      },
+      "pitfalls": [
+        "umt5 只认 comfyorg 格式",
+        "Wan 要高 cfg（≈6），别学 Qwen 的 cfg1",
+        "1.3B 勿上 720P",
+        "TeaCache 可再加速约 2×"
+      ]
+    },
+    "wan22_animate": {
+      "label": "Wan2.2-Animate 动作迁移/角色动画",
+      "instance": 8188,
+      "scenarios": [
+        "motion_transfer",
+        "character_replacement",
+        "dance"
+      ],
+      "weights": {
+        "unet": "Wan22Animate/Wan2_2-Animate-14B_fp8_scaled_e4m3fn_KJ_v2.safetensors",
+        "unet_gguf": "Wan2_2_Animate_14B_Q4_K_M.gguf",
+        "clip": "umt5_xxl_fp8_e4m3fn_scaled_comfyorg.safetensors",
+        "vae": null,
+        "lora_relight": "WanAnimate_relight_lora_fp16.safetensors（replacement 模式必需）"
+      },
+      "prompt": {
+        "input_language": "bilingual",
+        "translate_to": null,
+        "translate_note": "沿用 Wan 双语 umt5；提示词是辅助项——官方模板示例仅一句 The character is dancing in the room；背景/服装/长相由参考图决定，要换场景换服装换参考图，不改 prompt",
+        "negative": "optional",
+        "negative_default": "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走",
+        "negative_note": "官方模板沿用 Wan2.1 中文串；加速档 cfg=1 时负面不生效",
+        "text_in_image": null,
+        "max_prompt_tokens": 512,
+        "structure_notes": "一句话描述人在做什么即可；Move（姿态迁移，断开 Background_video/Character_mask）/ Mix（角色替换，接上两者）两种模式，SAM2 点选跟踪对象"
+      },
+      "limits": {
+        "resolutions": [
+          "预处理按面积 1280x720"
+        ],
+        "align": 16,
+        "align_note": "WanAnimateToVideo 节点宽高必须 16 倍数（官方模板注）",
+        "fps": 16,
+        "fps_note": "官方模板 CreateVideo fps=16；diffusers 导出 30",
+        "frames": "单段 77 帧（clip_len），段间 refert_num（默认 1 帧）衔接；长视频复制 Extend 子图串联",
+        "multi_image_max": null,
+        "32_align": false
+      },
+      "presets": {
+        "speed": {
+          "steps": 6,
+          "cfg": 1.0,
+          "sampler": "euler",
+          "scheduler": "simple",
+          "shift": 8.0,
+          "lora": "lightx2v 4-step 蒸馏 LoRA",
+          "note": "4 步档皮肤塑料感已被否决"
+        },
+        "quality": {
+          "steps": 20,
+          "cfg": 4.0,
+          "note": "5060 实测 HQ 档（去蒸馏 LoRA，约 1h/条）；官方 diffusers 20 步 cfg 1.0"
+        }
+      },
+      "workflow": "workflows/wan22-animate-official.json",
+      "upgrade": {
+        "status": "upgrade_available",
+        "note": "建议升级 Wan2.2-Animate-2-14B（2026-08 开源，同 14B 规模，ComfyUI ≥0.31 原生支持；命名陷阱：Animate-14B=一代，Animate-2-14B=二代）"
+      },
+      "pitfalls": [
+        "官方警告勿给 Wan-Animate 挂 Wan2.2 系 LoRA",
+        "蒸馏 4 步档一眼假，交付默认 20 步 HQ",
+        "33 帧滑窗衔接处闪烁",
+        "模板含 subgraph 不能原样 POST /prompt，需展平",
+        "5060 实测两档均被用户否决，主力已换 SCAIL-2"
+      ]
+    },
+    "scail2": {
+      "label": "SCAIL-2 舞蹈/动作复刻主力",
+      "instance": 8188,
+      "scenarios": [
+        "motion_transfer",
+        "character_replacement",
+        "dance"
+      ],
+      "weights": {
+        "unet": "wan2.1_14B_SCAIL_2_fp8_scaled.safetensors",
+        "clip": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+        "clip_vision": "clip_vision_h.safetensors",
+        "vae": "Wan2_1_VAE_bf16.safetensors",
+        "sam": "sam3.1_multiplex_fp16.safetensors（放 checkpoints/）",
+        "lora_dpo": "wan2.1_SCAIL_2_DPO_lora_bf16.safetensors（官方，建议常开，改善手部畸变与唇眼同步）",
+        "lora_accel": "lightx2v rank64（速度档 @0.8）"
+      },
+      "prompt": {
+        "input_language": "bilingual",
+        "translate_to": "en",
+        "translate_note": "沿用 Wan 双语 umt5；官方模板示例为英文长段；官方 prompt_enhancer.py（Gemini 两段式 caption→合成，可换 OpenAI 兼容 VLM）输出英文一段 90~140 词",
+        "negative": "optional",
+        "negative_default": "",
+        "negative_note": "官方模板负面为空串（加速档 cfg=1 不生效）；非加速档（cfg 5.0）可沿用 Wan 中文串——无官方依据，按 Wan 系惯例",
+        "text_in_image": null,
+        "max_prompt_tokens": 512,
+        "structure_notes": "prompt 描述生成后的视频本身，不是对模型的指令；替换模式描述替换已发生之后的画面，禁出现 replace/swap/edit 字样；模型用长而详细的提示词训练，详细描述主体+运动效果更好（官方原话）；替换模式写替换角色可见服装外貌+交互物体；SAM3 跟踪文本（默认 human）与生成 prompt 无关"
+      },
+      "limits": {
+        "resolutions": [
+          "512p",
+          "704p（姿态驱动更好，如 704x1280）"
+        ],
+        "align": 32,
+        "align_note": "宽高 32 倍数（官方 README）；ComfyUI 教程说 16，模板内部按 32 取整——以 32 为准",
+        "frames": "帧长 ≡1 (mod 4)；分段块 81 帧，段间重叠 5 帧；不能自动排队，需逐段提交",
+        "fps": "跟随驱动视频",
+        "multi_image_max": null,
+        "32_align": true
+      },
+      "presets": {
+        "speed": {
+          "steps": 6,
+          "cfg": 1.0,
+          "sampler": "euler",
+          "scheduler": "simple",
+          "shift": 5.0,
+          "loras": [
+            "lightx2v rank64 @0.8",
+            "wan2.1_SCAIL_2_DPO_lora_bf16 @1.0"
+          ]
+        },
+        "quality": {
+          "steps": 40,
+          "cfg": 5.0,
+          "sampler": "unipc",
+          "shift": 3.0,
+          "loras": [
+            "wan2.1_SCAIL_2_DPO_lora_bf16 @1.0"
+          ],
+          "note": "官方 generate.py 默认；可选 dpm++"
+        }
+      },
+      "workflow": "workflows/scail2-character-replacement-official.json",
+      "upgrade": {
+        "status": "latest",
+        "note": "SCAIL-2（2026-06）即最新，无 SCAIL-3"
+      },
+      "pitfalls": [
+        "模板含 subgraph 需展平成原子图再 POST",
+        "掩码语义错了动画模式退化成替换行为（黑=背景不可见/白=可见/彩色=角色对应）",
+        "多参考为零样本能力，官方明示画质可能下降",
+        "逐段手动提交，不能自动排队",
+        "输出质量仍需逐帧验收"
+      ]
+    },
+    "minimax_h3": {
+      "label": "MiniMax H3 视频+音频联合生成（短剧主力）",
+      "instance": 8188,
+      "scenarios": [
+        "t2v",
+        "i2v",
+        "flf2v",
+        "ref2v",
+        "audio_video",
+        "dialogue"
+      ],
+      "license": "MiniMax H3 Community License（非 Apache，不覆盖美/欧/英/韩，商用前过法务）",
+      "weights": {
+        "unet": "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+        "unet_ref2va": "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+        "unet_note": "R2V 用 ref2va 权重，与 T2V/I2V 的 fl2va 不是同一套",
+        "clip": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+        "clip_type": "minimax",
+        "vae_video": "minimax_h3_video_vae_fp16.safetensors",
+        "vae_video_note": "inventory-api 盘点为 fp16；video-models.md 写 int8_convrot，两文档不一致（见矛盾点）",
+        "vae_audio": "minimax_h3_audio_vae_fp32.safetensors"
+      },
+      "nodes": [
+        "EmptyMiniMaxH3LatentAV",
+        "MiniMaxH3ImageToVideo",
+        "MiniMaxH3ReferenceToVideo",
+        "MiniMaxH3SigmaShift",
+        "MiniMaxH3AddGuide（≥0.34）"
+      ],
+      "prompt": {
+        "input_language": "zh",
+        "translate_to": "en",
+        "translate_note": "中文提示词即可（官方云端手册，上限 7000 字符）；官方改写规范要求改写正文用英文、字段名固定英文，台词/歌词/画面文字保留原语言",
+        "negative": "none",
+        "negative_default": null,
+        "negative_note": "没有负面字段（官方手册「负向词：无」）；负向约束并入正向句写避免/不要；不要 BGM 写 non_diegetic_music: N/A",
+        "text_in_image": "英文双引号包原文：A red neon sign reading \"营业中\"",
+        "max_prompt_tokens": null,
+        "max_prompt_chars": 7000,
+        "structure_notes": "固定字段结构：基础模式三字段固定顺序 integrated_multimodal_description / overall_soundscape / non_diegetic_music；I2VA/FL2VA/L2VA 第一行必须是关键帧对齐指令行（时间两位小数）；Ref2VA 六段固定顺序（subject_definitions → summary → retention_analysis → detailed_description 350~500 英文词 → soundscape → music）；台词说话人稳定 ID (S1)，内容 <d>[English] ...</d> 逐字不翻译；描述总时长必须等于目标视频时长；参考图/视频/音频用 <Picture 1> <Video 1> <Audio 1> 标签引用"
+      },
+      "limits": {
+        "resolutions": [
+          "短边 768 原生（16:9=1344x768）；竖屏 480x832 / 768x1344"
+        ],
+        "ratios": [
+          "21:9",
+          "16:9",
+          "4:3",
+          "1:1",
+          "3:4",
+          "9:16"
+        ],
+        "align": 32,
+        "fps": 24,
+        "frames": "17k+5 网格（5s=124、10s=243、15s=363），官方 4~15 秒；16G 卡 5 秒稳档、15 秒易卡死（实测）",
+        "ref_limits": "Ref2VA：参考图 ≤9 + 参考视频 ≤3 + 参考音频 ≤3",
+        "multi_image_max": 9,
+        "32_align": true,
+        "note": "1440p 147 跑不了，高清走超分"
+      },
+      "presets": {
+        "speed": {
+          "steps": 8,
+          "cfg": 1.0,
+          "sampler": "res_multistep",
+          "scheduler": "simple",
+          "shift_video": 6,
+          "shift_audio": 3,
+          "lora": "H3 Turbo 8 步（ModelTC 官方推荐 8 NFE, video shift 6, audio shift 3）",
+          "note": "4 步 LoRA 档运动/口型略降；ref2v 8 步 768p 质量档更好"
+        },
+        "quality": {
+          "steps": 20,
+          "cfg": 6.0,
+          "sampler": "res_multistep",
+          "scheduler": "simple",
+          "shift_node": "MiniMaxH3SigmaShift",
+          "note": "ComfyUI 官方模板值；可升 25 步改善运动"
+        }
+      },
+      "workflow": "workflows/minimax-h3-t2va-official.json",
+      "workflow_i2v": "workflows/minimax-h3-i2va-official.json",
+      "upgrade": {
+        "status": "latest",
+        "note": "H3（2026-07-31 发布/08-03 开权重）即最新；H3 Max 为 fal 托管 API，观望是否放权重"
+      },
+      "pitfalls": [
+        "模板含 subgraph 需展平再 POST",
+        "LoRA 兼容看 safetensors 头：time_embedder 适配器只能挂完整底模，adaln 输入维度 8 只能挂 pruned",
+        "版本墙：≥0.34 才有 AddGuide，≥0.35 才支持 DiffSynth/PDD LoRA",
+        "不自动硬切镜，多场景拆 2~3 秒段 ffmpeg 拼接",
+        "15 秒档 16G 易卡死"
+      ]
+    },
+    "ltx23": {
+      "label": "LTX-2.3 22B 视频（dev/distilled）",
+      "instance": 8188,
+      "scenarios": [
+        "t2v",
+        "i2v",
+        "flf2v"
+      ],
+      "weights": {
+        "checkpoint": [
+          "ltx-2.3-22b-dev-fp8.safetensors",
+          "ltx-2.3-22b-distilled-fp8.safetensors"
+        ],
+        "vae": "ltx-2.3-22b-dev_video_vae.safetensors",
+        "clip": "gemma_3_12B_it_fp4_mixed.safetensors"
+      },
+      "prompt": {
+        "input_language": null,
+        "translate_to": null,
+        "negative": null,
+        "negative_default": null,
+        "text_in_image": null,
+        "max_prompt_tokens": null,
+        "structure_notes": "源文档未覆盖 LTX-2.3 提示词规范（语言/负面/结构均无官方依据），策略层接入前需补调研"
+      },
+      "limits": {
+        "resolutions": null,
+        "multi_image_max": null,
+        "32_align": null
+      },
+      "presets": {
+        "speed": {
+          "steps": 8,
+          "cfg": 1.0,
+          "variant": "distilled"
+        },
+        "quality": {
+          "steps": 15,
+          "sampler": "res2s",
+          "note": "官方两段式工作流（distilled+dev 同跑）质量更好；dev 版 20~50 步 cfg 3~3.5"
+        }
+      },
+      "workflow": null,
+      "workflow_note": "本地未下载官方模板；8188 实例内有 WhatDreamsCost 插件 5 个 LTX 模板（I2V FFLF / First Last Frame / LTX_Director_2 等）",
+      "upgrade": {
+        "status": "upgrade_available",
+        "note": "建议升级 LTX-2.5（2026-08-11，视频+同步音频、720p~4K，官方自述推荐；GGUF Q4+distilled 可在 16G 跑，ComfyUI ≥0.32 原生支持；VAE/encoder 不通用需新增 20~30GB 磁盘）"
+      },
+      "pitfalls": [
+        "fp8 全质量需 ~32GB VRAM，16G 必须 GGUF+CPU offload",
+        "2.3 与 2.5 的 VAE/encoder 不通用",
+        "提示词规范未调研"
+      ]
+    },
+    "upscale_4x_ultrasharp": {
+      "label": "4x-UltraSharp 图像放大（ESRGAN）",
+      "instance": 8188,
+      "scenarios": [
+        "upscale"
+      ],
+      "license": "CC-BY-NC-SA-4.0（非商用）——商用交付需换模型或取得授权，策略层必须标注",
+      "weights": {
+        "upscale_model": "4x-UltraSharp.pth"
+      },
+      "prompt": {
+        "input_language": null,
+        "translate_to": null,
+        "negative": null,
+        "negative_default": null,
+        "text_in_image": null,
+        "max_prompt_tokens": null,
+        "structure_notes": "不涉及提示词；GAN 只提锐度不补语义细节，要补细节接 img2img 低 denoise 重采样：像素放大后 denoise 0.25~0.5，模型放大器（已锐化）用 0.2~0.35；低于 ~0.3 糊、高于 0.5 改图；大图走 TTP Smart Tile 分块"
+      },
+      "limits": {
+        "scale_factor": 4,
+        "note": "H3 768p 出片 4× 后短边过大，通常缩回 1440p/1080p"
+      },
+      "presets": null,
+      "chain": "UpscaleModelLoader → ImageUpscaleWithModel → ImageScale（lanczos）；视频逐帧同理；视频超分主线 SeedVR2（16G 配 FP8+BlockSwap16）",
+      "workflow": "workflows/upscale-model-official.json",
+      "upgrade": {
+        "status": "latest",
+        "note": "多年无更新、不升级；新工作流优先 SeedVR2，4x-UltraSharp 保留兼容旧链路"
+      },
+      "pitfalls": [
+        "非商用许可 CC-BY-NC-SA-4.0",
+        "只提锐度不补语义细节",
+        "SeedVR2 在 5060 实测有涂抹感，按需选型"
+      ]
+    }
+  },
+  "not_recommended": [
+    {
+      "key": "zImageTurboNSFW_v10_fp8",
+      "reason": "社区 NSFW merge，无官方升级线，非生产优先验证再替换"
+    },
+    {
+      "key": "wan_1.3B_exp_e14 / nsfw_wan_14b_e15 / wan2.2-rapid-mega-aio-nsfw-v12.1",
+      "reason": "社区 merge/微调，按作者页手动跟踪"
+    },
+    {
+      "key": "BEYOND_REALITY_3.0_BF16",
+      "reason": "Civitai 社区写实 checkpoint，无官方版本线"
+    },
+    {
+      "key": "v1-5-pruned-emaonly",
+      "reason": "SD1.5 老底座，仅旧工作流/controlnet 兼容用"
+    },
+    {
+      "key": "wan2.2_ti2v_5B_fp16",
+      "reason": "已装但源文档未做提示词规范调研，用前补"
+    },
+    {
+      "key": "sam3.1-multiplex-fp16 + sam3.1_multiplex_fp16",
+      "reason": "疑似同权重重复（文件名不同），建议核对哈希去重"
+    }
+  ],
+  "rewriter_assets": [
+    {
+      "name": "Wan prompt_extend",
+      "source": "Wan2.1 repo wan/utils/prompt_extend.py",
+      "backend": "qwen-plus / qwen-vl-max / 本地 Qwen2.5(VL)",
+      "rule": "6 套系统提示词（中英×LM/VL/双图VL）；80~100 字；强调运动与运镜；保留引号书名号原文",
+      "reuse": "抄系统提示词+选模型逻辑接自有 LLM；适用 Wan 全系/SCAIL-2/WanAnimate"
+    },
+    {
+      "name": "Qwen-Image T2I/Edit 改写",
+      "source": "Qwen-Image repo src/examples/tools/prompt_utils.py",
+      "backend": "qwen-plus / qwen-vl-max",
+      "rule": "T2I <200 词+magic prompt；Edit 输出 JSON {\"Rewritten\": ...} 按任务类型分治",
+      "reuse": "抄系统提示词+Edit JSON 输出协议"
+    },
+    {
+      "name": "Qwen-Image 2.1 PE 权重",
+      "source": "官方 PE-T2I/PE-I2I（Qwen3.5-VL 9B 微调）",
+      "backend": "专用权重",
+      "rule": "任意语言→英文长 prompt（400~500 词）+宽高比建议；系统提示词全文在本地 2.1 模板 JSON 里",
+      "reuse": "装 ComfyUI-Prompt-Enhancer（GGUF 路径快约 5×）到 8190（未装，优先级高）"
+    },
+    {
+      "name": "Boogu rewriter",
+      "source": "Boogu-Image repo utils/t2i_external_prompt_rewriter.py",
+      "backend": "本地 Qwen3-VL 2B~32B",
+      "rule": "最小改写原则；版式/图文类反向极致详尽；具名风格只留名称；无否定词；默认中国语境",
+      "reuse": "抄原则作通用改写器基线；可复用 147 已有 qwen3vl 权重",
+      "warning": "第 14 条含安全合规改写条款，与项目内容创作规范冲突——复用时必须剔除，只作风险提示不改稿，交给用户决定"
+    },
+    {
+      "name": "SCAIL-2 enhancer",
+      "source": "SCAIL-2 repo prompt_enhancer.py（wan-scail2 分支）",
+      "backend": "Gemini（可换 OpenAI 兼容 VLM）",
+      "rule": "两段式抽帧 caption→合成；描述替换已完成后的视频，禁 replace/swap/edit 字样；英文一段 90~140 词",
+      "reuse": "抄两段式结构与两个提示词"
+    }
+  ],
+  "h3_prompt_protocols": {
+    "default": "local_fields",
+    "note": "本地字段口径与云端中文手册三段式都保留、可互换；本地默认走 local_fields。依据 research/win147-comfyui/sources/video-models.md:149-165。",
+    "local_fields": {
+      "label": "本地字段口径（本地默认）",
+      "source": "sources/video-models.md:149-165（官方 Video Prompt Writing Guide，本地存档 /root/.agents/skills/h3-prompt-writing/references/）",
+      "applies_to": [
+        "T2VA",
+        "I2VA",
+        "FL2VA",
+        "L2VA",
+        "Ref2VA"
+      ],
+      "keyframe_alignment_line": {
+        "required_for": [
+          "I2VA",
+          "FL2VA",
+          "L2VA"
+        ],
+        "absent_for": [
+          "T2VA"
+        ],
+        "rule": "必须是提示词第一行，且其后空一行（T2VA 无此行）。时间精确到两位小数。",
+        "i2va_example": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.",
+        "fl2va_l2va_example": "How the reference pictures align with the target video — Picture 1 (from Shot 1) aligns with the 0.00-second mark ..."
+      },
+      "fields_fixed_order": [
+        "integrated_multimodal_description",
+        "overall_soundscape",
+        "non_diegetic_music"
+      ],
+      "field_notes": {
+        "integrated_multimodal_description": "[Shot 1] ... [Shot 2] At 00:03.500, the camera cuts to ...",
+        "overall_soundscape": "1–4 句，环境声+动作声+非语言人声，不含台词",
+        "non_diegetic_music": "1–3 句，只有观众能听到的配乐；没有写 N/A"
+      },
+      "reference_material_tags": "<Picture 1> <Video 1> <Audio 1>（不是 @图片1；Ref2VA 用这些标签引用参考素材）",
+      "no_bgm_rule": "不要 BGM 写 non_diegetic_music: N/A",
+      "camera_vocab": {
+        "types": [
+          "Zoom",
+          "Push",
+          "Pan",
+          "Truck",
+          "Tilt",
+          "Pedestal",
+          "Arc",
+          "Tracking",
+          "Static",
+          "Shake",
+          "POV",
+          "Roll"
+        ],
+        "amplitude": "with small|large amplitude",
+        "speed": "at slow|fast speed",
+        "rule": "类型+幅度+速度三维；写成自然句式而非堆标签。"
+      },
+      "dialogue": {
+        "speaker_id": "说话人稳定 ID (S1)(S2)",
+        "content": "台词内容 <d>[English] ...</d> 逐字保留不翻译",
+        "voiceover": "画外音必须写 says in an off-screen voiceover，且紧跟「嘴唇保持闭合」",
+        "cross_cut": "跨切镜台词用 <scenetrans>",
+        "truncated": "被结尾截断用 <cutoff>"
+      },
+      "image_text": "画面文字用英文双引号包原文（例：A red neon sign reading \"营业中\"）",
+      "ref2va_six_fields": [
+        "subject_definitions",
+        "summary（带 [任务类型] 前缀）",
+        "retention_analysis（关系标记 fully_preserved/partially_preserved/attribute_transfer/weak_reference；音频 fully_copy/partially_copy/reference）",
+        "detailed_description（350–500 英文词）",
+        "overall_soundscape",
+        "non_diegetic_music"
+      ],
+      "iron_rules": [
+        "少写比喻多写看得见的画面",
+        "台词长短与镜头时长对齐",
+        "描述总时长必须等于目标视频时长"
+      ]
+    },
+    "cloud_manual_markdown": {
+      "label": "云端口径中文三段式（可与本地字段口径互换）",
+      "source": "sources/video-models.md:163（官方中文手册三段式公式）",
+      "sections": [
+        "参考素材说明",
+        "核心创意（主体+地点+事件+风格+运镜一句话）",
+        "画面过程说明（按时间轴分段，每段写\"想要/不想要\"）"
+      ]
+    }
+  }
+}
