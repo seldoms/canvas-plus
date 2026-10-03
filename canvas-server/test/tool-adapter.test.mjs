@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -117,7 +117,10 @@ test("analyzeTemplate: 占位符存在但无 LoadImage 节点，不算支持参�
 // ── 9. scanTemplateDir：扫出全部模板且结构完整 ────────────────────────────────
 test("scanTemplateDir: 扫出 workflows 下全部模板，逐个带能力声明", () => {
     const names = Object.keys(CATALOG).sort();
-    assert.equal(names.length, 16, `实际模板数 ${names.length}`);
+    // 与目录里真实的 *.json 数对齐：模板会随功能新增，写死数字会在每次加模板时假红。
+    const files = readdirSync(WORKFLOWS_DIR).filter((file) => file.endsWith(".json"));
+    assert.equal(names.length, files.length, `扫出 ${names.length} 个，目录里 ${files.length} 个`);
+    assert.ok(names.length >= 16, `模板数不得少于基线 16，实际 ${names.length}`);
     for (const [name, info] of Object.entries(CATALOG)) {
         assert.equal(typeof info.supportsReference, "boolean", name);
         assert.equal(typeof info.maxReferenceImages, "number", name);
@@ -128,6 +131,9 @@ test("scanTemplateDir: 扫出 workflows 下全部模板，逐个带能力声明"
     assert.equal(CATALOG.img_qwen21_t2i.supportsReference, false);
     assert.equal(CATALOG.img_qwen21_edit.supportsReference, true);
     assert.equal(CATALOG.upscale_4x.capability, "image");
+    // 新增的 TTS 模板与命名规律一致：不吃图、不吃视频，归 other。
+    assert.equal(CATALOG.audio_qwen3_tts.capability, "other");
+    assert.equal(CATALOG.audio_qwen3_tts.supportsReference, false);
 });
 
 // ── 10. scanTemplateDir：目录不存在返回空对象，不抛错 ──────────────────────────

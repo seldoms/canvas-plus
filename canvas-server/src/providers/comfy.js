@@ -33,6 +33,7 @@ const TITLES = {
     video_h3_talk: "H3 台词对口型",
     video_wan_animate: "Wan 动画驱动",
     scail2_action_transfer: "Scail2 动作迁移",
+    audio_qwen3_tts: "Qwen3-TTS 语音合成",
 };
 
 function tokensIn(text) {
