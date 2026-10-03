@@ -151,7 +151,7 @@ function fillTemplate(text, context) {
  * assemble 是「片段 → 成片」的后期执行体，默认用 delivery.js 的 assembleEpisode；
  * 编排器只负责判定何时拼接、把清单与参数交给它，ffmpeg 命令构造与执行都留在 delivery.js。
  */
-export function createPipeline({ config, skillsDir, jobs, comfy, llm, runJob, assemble = assembleEpisode, getProject, applyPlanSuggestion, registerAssetRef } = {}) {
+export function createPipeline({ config, skillsDir, jobs, comfy, llm, runJob, assemble = assembleEpisode, getProject, applyPlanSuggestion, applyScriptProjection, attachProjectRun, registerAssetRef } = {}) {
     const pipelineConfig = config?.pipeline || {};
     // 半自动总开关：注入 getProject（项目化模式）时才启用「单镜失败自动重试」。
     // 未注入时一律保持旧的「失败即止」行为；plan 驱动参数靠 projectOf 返回 null 自然回落，不需要额外开关。
@@ -289,6 +289,70 @@ export function createPipeline({ config, skillsDir, jobs, comfy, llm, runJob, as
     }
 
     /**
+     * 上游阻断判定：基于上游阶段的**真实产物与状态**给出可解释原因（不再只看一个状态码）。
+     * 覆盖：缺上游阶段 / 未产出 / error / partial / running / canceled；产物齐且状态 done 才通过。
+     */
+    function upstreamBlock(depId, dep) {
+        const title = dep?.title || depId;
+        if (!dep) return { type: "missing", stageId: depId, message: `请先完成 ${title}（流水线里没有这个阶段）` };
+        const prefix = `请先完成 ${title}`;
+        if (dep.status === "done" && dep.output !== undefined && dep.output !== null) return null;
+        if (dep.status === "error") return { type: "upstream", stageId: depId, message: `${prefix}（上游运行失败：${dep.error || "原因未知"}；请先修复或重跑）` };
+        if (dep.status === "partial") return { type: "upstream", stageId: depId, message: `${prefix}（上游仅部分完成，存在失败条目；请先处理）` };
+        if (dep.status === "running") return { type: "upstream", stageId: depId, message: `${prefix}（上游仍在运行中，请等它结束）` };
+        if (dep.status === "canceled") return { type: "upstream", stageId: depId, message: `${prefix}（上游已取消）` };
+        if (dep.output === undefined || dep.output === null) return { type: "upstream", stageId: depId, message: `${prefix}（上游尚未产出产物，当前状态：${dep.status || "pending"}）` };
+        return { type: "upstream", stageId: depId, message: `${prefix}（上游状态异常：${dep.status}）` };
+    }
+
+    /**
+     * 阶段门禁：基于真实产物判定某阶段能否进入，返回 `{ stageId, title, ready, reason, blockedBy }`。
+     * - 缺源：入口阶段（requires 为空，即剧本）必须有小说原文 novel；
+     * - 上游未产出 / error / partial / running / canceled 一律阻断，并给出可读原因。
+     */
+    function stageGate(run, stageId) {
+        const def = stageDefs.get(String(stageId));
+        if (!def) return { stageId: String(stageId), title: String(stageId), ready: false, reason: `未知阶段：${stageId}`, blockedBy: [{ type: "unknown", message: `未知阶段：${stageId}` }] };
+        const blockedBy = [];
+        if (!def.requires.length && !String(run?.novel ?? "").trim()) blockedBy.push({ type: "source", message: "缺少小说原文（novel），无法开始剧本阶段" });
+        for (const depId of def.requires) {
+            const block = upstreamBlock(depId, run?.stages?.[depId]);
+            if (block) blockedBy.push(block);
+        }
+        const ready = blockedBy.length === 0;
+        return { stageId: def.id, title: def.title, ready, reason: ready ? "可运行（上游已就绪）" : blockedBy.map((item) => item.message).join("；"), blockedBy };
+    }
+
+    /** 流水线全阶段门禁视图（纯推导，不落盘）：供 GET /runs/:id/gates，项目页据此不必再靠 runIds[0] 猜。 */
+    function stageGates(runId) {
+        const run = requireRun(runId);
+        return registry.stages.map((def) => stageGate(run, def.id));
+    }
+
+    /**
+     * 分镜定点编辑：按 shotId 局部更新 storyboard 阶段产物里的单个 shot，而不是整段 setStageInput 替换 JSON。
+     * 只合并传入字段、保留 shot.id（契约 §3.4：Shot.id 稳定不可改）；其它 shot 与阶段其余字段一律不动。
+     */
+    function patchStageShot(runId, stageId, shotId, patch = {}) {
+        const run = requireRun(runId);
+        const def = requireStageDef(stageId);
+        if (def.id !== "storyboard") throw gateError(`只有分镜（storyboard）阶段支持按镜头定点编辑，当前阶段：${def.title}`);
+        const stage = requireStage(run, def);
+        const shots = stage.output?.shots;
+        if (!Array.isArray(shots) || !shots.length) throw gateError("分镜阶段还没有产物，无法定点编辑");
+        const id = String(shotId ?? "");
+        const index = shots.findIndex((shot) => shot && shot.id === id);
+        if (index < 0) throw gateError(`分镜里没有镜头：${id}`, 404);
+        const body = patch && typeof patch === "object" ? patch : {};
+        if (body.id !== undefined && String(body.id) !== id) throw gateError("镜头 id 稳定不可改");
+        const merged = { ...shots[index], ...body, id };
+        shots[index] = merged;
+        saveOutput(run.id, def.id, stage.output);
+        saveRun(run);
+        return { run, shot: merged };
+    }
+
+    /**
      * 开跑前就能给出的成本预估。口径必须与 composeWithLlm 的分块判定完全一致 ——
      * 那边比的是**填充后的 prompt 长度**（含 SKILL.md 模板），不是小说字数。
      * estSecondsPerChunk 默认 31：实测 222 万字 / 163 块 / 83 分钟 ≈ 30.5s/块（deepseek-flash）。
@@ -327,11 +391,16 @@ export function createPipeline({ config, skillsDir, jobs, comfy, llm, runJob, as
         if (!text) throw new Error("缺少小说正文 novel");
         const id = `run-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
         const now = nowIso();
+        const opts = options && typeof options === "object" ? options : {};
+        const projectId = String(opts.projectId ?? "").trim();
+        // 建 run 时快照项目当前源版本（sourceRevisionId）：任何时候都能追溯「这条 run 用的是哪一版原文」。
+        const project = projectId ? projectById(projectId) : null;
         const run = {
             id,
             title: String(title ?? "").trim() || "未命名流水线",
             novel: text,
-            options: options && typeof options === "object" ? options : {},
+            options: opts,
+            sourceRevisionId: project?.sourceRevisionId ?? null,
             createdAt: now,
             updatedAt: now,
             stages: {},
@@ -341,7 +410,10 @@ export function createPipeline({ config, skillsDir, jobs, comfy, llm, runJob, as
         }
         // 创建时就算好成本预估：163 块 / 83 分钟这种量级必须让用户在点「开始」之前看到
         run.estimate = estimateFor(run);
-        return saveRun(run);
+        const saved = saveRun(run);
+        // 服务端幂等把 run 追加进项目 runIds（未注入/未绑项目时为空操作）：修掉「从流水线页建的 run 不进 runIds」的缺口。
+        if (projectId) attachRunToProject(projectId, saved.id);
+        return saved;
     }
 
     /** 人工修订产物：body `{ output: <该阶段产物 JSON> }` 时置为 done 并落盘，下游立即可用；其余键合并进 inputs。 */
@@ -936,16 +1008,30 @@ ${JSON.stringify(partials, null, 2)}
         if (TERMINAL_JOB.has(stage.status)) stage.finishedAt = stage.finishedAt || nowIso();
     }
 
-    /** 取 run 绑定的项目（run.options.projectId 是契约认可的过渡位）；未注入 getProject 或查不到时返回 null。 */
-    function projectOf(run) {
+    /** 按 id 取项目（未注入 getProject / 查不到 / 抛错一律 null，永不抛）。 */
+    function projectById(projectId) {
         if (typeof getProject !== "function") return null;
-        const projectId = run?.options?.projectId;
         if (!projectId) return null;
         try {
             const project = getProject(projectId);
             return project && typeof project === "object" ? project : null;
         } catch {
             return null;
+        }
+    }
+
+    /** 取 run 绑定的项目（run.options.projectId 是契约认可的过渡位）；未注入 getProject 或查不到时返回 null。 */
+    function projectOf(run) {
+        return projectById(run?.options?.projectId);
+    }
+
+    /** 建 run 时把 runId 幂等追加进项目 runIds；未注入 / 未绑项目为空操作，失败只告警，绝不让建 run 失败。 */
+    function attachRunToProject(projectId, runId) {
+        if (typeof attachProjectRun !== "function") return;
+        try {
+            attachProjectRun(projectId, runId);
+        } catch (error) {
+            console.warn(`[pipeline] run 关联项目失败（不影响流水线）：${error.message}`);
         }
     }
 
@@ -976,6 +1062,22 @@ ${JSON.stringify(partials, null, 2)}
             applyPlanSuggestion(projectId, suggestion);
         } catch (error) {
             console.warn(`[pipeline] planSuggestion 回填失败（不影响剧本阶段）：${error.message}`);
+        }
+    }
+
+    /**
+     * 脚本事实链（§12 第 1 优先级）：剧本阶段产出后，把 logline/synopsis/characters/scenes/episodes
+     * 投影进 Project.script（只填空/幂等判定都在注入的 applyScriptProjection 里，本模块不 import projects.js）。
+     * 未注入 / 未绑项目 / 无产物时为空操作；失败只告警，绝不把已成功的剧本阶段拖成 error。
+     */
+    function projectScriptFacts(run, output) {
+        if (typeof applyScriptProjection !== "function") return;
+        const projectId = run?.options?.projectId;
+        if (!projectId || !output || typeof output !== "object") return;
+        try {
+            applyScriptProjection(projectId, output);
+        } catch (error) {
+            console.warn(`[pipeline] 剧本事实投影失败（不影响剧本阶段）：${error.message}`);
         }
     }
 
@@ -1303,12 +1405,10 @@ ${JSON.stringify(partials, null, 2)}
             if (!/^https?:\/\//i.test(baseUrl)) throw new Error("provider.baseUrl 必须是 http(s) 地址");
             provider = { baseUrl, apiKey: String(runOptions.provider.apiKey || "") };
         }
-        for (const depId of def.requires) {
-            const dep = run.stages?.[depId];
-            if (!dep || dep.status !== "done" || dep.output === undefined || dep.output === null) {
-                throw new Error(`请先完成 ${dep?.title || depId}`);
-            }
-        }
+        // 真实产物门禁：基于上游产物与状态给可解释原因（缺源 / 未产出 / error / partial / running / canceled），
+        // 不再用一个笼统的「请先完成 X」盖掉失败原因。通过后才标记 running。
+        const gate = stageGate(run, def.id);
+        if (!gate.ready) throw gateError(gate.reason, 409);
         stage.status = "running";
         stage.error = undefined;
         stage.startedAt = nowIso();
@@ -1346,8 +1446,11 @@ ${JSON.stringify(partials, null, 2)}
                 stage.status = "done";
                 stage.finishedAt = nowIso();
             }
-            // 剧本阶段产出即回填 01 的设定建议（只填空字段、幂等；未绑项目时为空操作）。
-            if (def.id === "script") backfillPlanSuggestion(run, stage.output);
+            // 剧本阶段产出即回填 01 的设定建议，并把剧本事实投影进 Project.script（都幂等；未绑项目时为空操作）。
+            if (def.id === "script") {
+                backfillPlanSuggestion(run, stage.output);
+                projectScriptFacts(run, stage.output);
+            }
             if (stage.output !== undefined && stage.output !== null) saveOutput(run.id, def.id, stage.output);
             // 成功也保留一条进度：只有真正 done 才写 phase:"done"，生成型阶段等 Job 终态时写 running，
             // 否则前端会误判「跑完了」而停止轮询一个还在生成的任务。
@@ -1502,5 +1605,5 @@ ${JSON.stringify(partials, null, 2)}
         return fixed;
     }
 
-    return { stages, list, get, create, estimate: estimateFor, runStage, beginStage, executeStage, stageProgress, reconcileRunning, setStageInput, projectJob, bindJobs, cancelStage, beginAssemble, executeAssemble, assembleStage, beginRegenerate, executeRegenerate };
+    return { stages, list, get, create, estimate: estimateFor, runStage, beginStage, executeStage, stageProgress, reconcileRunning, setStageInput, projectJob, bindJobs, cancelStage, beginAssemble, executeAssemble, assembleStage, beginRegenerate, executeRegenerate, stageGate, stageGates, patchStageShot };
 }

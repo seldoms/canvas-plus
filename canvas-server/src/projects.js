@@ -81,6 +81,22 @@ function normalizePlan(plan) {
     return merged;
 }
 
+/**
+ * 01 剧本阶段产物 → Project.script 的事实投影（契约 §3.1：Project.script 是「01 阶段产物的权威副本」）。
+ * 只取契约冻结的五个字段，统一成稳定形状，供幂等比较（同产物重复投递不重复写盘）。
+ */
+function normalizeScript(output) {
+    const source = output && typeof output === "object" ? output : {};
+    const list = (value) => (Array.isArray(value) ? value : []);
+    return {
+        logline: String(source.logline ?? ""),
+        synopsis: String(source.synopsis ?? ""),
+        characters: list(source.characters),
+        scenes: list(source.scenes),
+        episodes: list(source.episodes),
+    };
+}
+
 function httpError(status, message) {
     const error = new Error(message);
     error.status = status;
@@ -148,6 +164,16 @@ export function createProjects({ dataDir } = {}) {
     const persistProject = (dir, project) => {
         project.updatedAt = nowIso();
         project.version += 1;
+        writeJsonAtomic(projectFile(dir), project);
+        return project;
+    };
+    /**
+     * 服务端派生写入（run 关联、剧本事实投影）：更新 updatedAt 但**不改 version**。
+     * 这两类写入不是用户编辑，而是流水线把事实落回项目的记账行为；若递增 version 会平白
+     * 触发 D7 乐观并发冲突（客户端拿着旧 expectedVersion 做用户编辑反被拦），也污染「写入归属」语义。
+     */
+    const persistDerived = (dir, project) => {
+        project.updatedAt = nowIso();
         writeJsonAtomic(projectFile(dir), project);
         return project;
     };
@@ -253,6 +279,23 @@ export function createProjects({ dataDir } = {}) {
     }
 
     /**
+     * 把一条 run 关联进项目 runIds（P0-a 缺口：从流水线页建的 run 此前不会出现在 runIds）。
+     * 幂等：已在 runIds 里直接返回不写盘；项目不存在返回 null（调用方不因此让建 run 失败）。
+     * 这是服务端派生写入，走 persistDerived（不改 version），避免污染 D7 乐观并发。
+     */
+    function attachRun(id, runId) {
+        const value = String(runId ?? "").trim();
+        if (!value) throw badRequest("缺少 runId");
+        const dir = locate(id);
+        const project = dir ? readProject(dir) : null;
+        if (!project) return null;
+        const runIds = Array.isArray(project.runIds) ? project.runIds : [];
+        if (runIds.includes(value)) return project;
+        project.runIds = [...runIds, value];
+        return persistDerived(dir, project);
+    }
+
+    /**
      * 把 01 剧本阶段产出的 planSuggestion 回填到项目 plan，只填「用户尚未填写」的字段：
      * 未填写 = 仍是 PLAN_DEFAULTS 的占位值（或空串/缺省）；已有值一律不动。ratio / styleAnchor 不在建议范围内，不碰。
      * 回填走 update()：原子写 + version 自增。幂等：建议值与现值相同则跳过，重启重放不会反复覆盖。
@@ -276,6 +319,23 @@ export function createProjects({ dataDir } = {}) {
         }
         if (Object.keys(patch).length === 0) return { project, applied: false };
         return { project: update(id, { plan: patch }), applied: true };
+    }
+
+    /**
+     * 脚本事实链（§12 第 1 优先级）：把 01 剧本阶段产物投影进 Project.script。
+     * 幂等：归一化后与现有 project.script 深比较，相同则跳过（不写盘、不改 updatedAt）。
+     * 「旧数据不动」：只写 script 这一个契约字段，不动 episodes 索引 / assetRefs / plan 等其它事实。
+     * 走 persistDerived（不改 version）——这是流水线的派生记帐，不该触发 D7 用户编辑冲突。
+     * 项目不存在返回 { project: null, applied: false }，调用方（pipeline）据此静默跳过。
+     */
+    function applyScriptProjection(id, output) {
+        const dir = locate(id);
+        const project = dir ? readProject(dir) : null;
+        if (!project) return { project: null, applied: false };
+        const projection = normalizeScript(output);
+        if (JSON.stringify(normalizeScript(project.script)) === JSON.stringify(projection)) return { project, applied: false };
+        project.script = projection;
+        return { project: persistDerived(dir, project), applied: true };
     }
 
     /** 归档：项目目录移出活动区（列表不再出现，get/context 仍可读）；project.json 字段不变。 */
@@ -323,7 +383,7 @@ export function createProjects({ dataDir } = {}) {
     const getSource = (projectId, revisionId) => sources.get(projectId, revisionId);
 
     return {
-        create, get, list, update, archive, context, gates, applyPlanSuggestion,
+        create, get, list, update, archive, context, gates, applyPlanSuggestion, attachRun, applyScriptProjection,
         saveEpisode, getEpisode, saveSource, getSource,
         episodes, sources, assets,
         ulid, ULID_PATTERN,
