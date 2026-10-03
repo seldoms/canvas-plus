@@ -422,3 +422,29 @@
 ### 8.3 仍未冻结、留待 P0-a 回填的内部形态
 
 `Project.script` 结构、`ChecklistItem`、`Shot.storyboard`、集/镜 `status` 枚举、`GenerationSlot.role` 枚举、`Artifact.type` 枚举、`Workflow.version` 类型、`ReviewNote.level = block` 是否作为阶段门禁。
+
+---
+
+## 9. StageProgress（阶段进度，P1 追加：多步可见）
+
+> 本节为追加冻结（只增不改）：`stage.output` 的形状不变，新增的是**进度**与**子步骤产物**的可读结构。
+> 落点：`canvas-server/src/pipeline.js` 的 `composeScriptSteps`（01 剧本 analyze→outline→script）。
+
+`GET /api/pipeline/runs/:id/progress` 返回的 `progress` 在原有字段（`runId` / `stage` / `phase` / `done` / `total` / `label` / `reused` / `avgMsPerChunk` / `etaMs` / `error` / `startedAt` / `finishedAt`）**全部保留**的基础上，新增可选字段：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `steps` | `Step[]` | 否 | 多步阶段的步骤状态；仅多步阶段（当前为 01 剧本）给出，单次调用阶段没有该字段 |
+
+**Step**
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `id` | `string` | 是 | 步骤 id；01 剧本固定为 `analyze` / `outline` / `script` |
+| `title` | `string` | 是 | 步骤名（读原文 / 分集规划 / 逐集剧本） |
+| `status` | `pending / running / done / error` | 是 | 复用阶段状态机的词汇子集（不含 `partial` / `canceled`） |
+| `detail` | `string` | 否 | 人类可读的一句话明细（如「3 个角色 / 12 个场次」「第 2/2 集」） |
+
+**子步骤产物**：每步完成后落到 `run.stages.<stageId>.steps.<stepId>.output`（随 `run.json` 落盘、重载可重建、resume 时复用已 done 的前步）。整个阶段的合并产物仍在 `stage.output`。
+
+**向后兼容**：只读旧字段的前端不受影响；`steps` 为纯追加字段，缺失即表示该阶段不是多步阶段。

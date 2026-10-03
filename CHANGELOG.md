@@ -2,6 +2,8 @@
 
 ## Unreleased
 
++ [新增] 生成型阶段（关键帧 / 片段合成）的产物自动登记为项目 AssetRef：每生成一个产物即自动建一条引用（关键帧 → `keyframe`、片段/成片 → `clip`），以 `(projectId, runId, artifactUrl)` 幂等去重，同一产物重复回写或重启重放都不重复登记，补上「跑完图/视频还得手动逐个『登记引用』才能进资产库」的半自动缺口。登记走注入的 `registerAssetRef`（网关接 `projects.assets.create`），流水线不直接 import `assets.js`；未接线或 run 未绑 `options.projectId` 时静默跳过（行为与旧版逐字一致），登记失败只告警、绝不拖垮生成阶段。
++ [新增] 前端渠道模板库补齐 Qwen-Image 2.1 的「文生图」与「指令改图」两个定制脚本，并让「一键接入本地网关」把 `img_qwen21_t2i` / `img_qwen21_edit` 直接挂上这两个定制脚本（此前落到 `planGatewayChannel` 生成的通用兜底脚本，用不上尺寸换算、多图槽位映射与错误提示）。
 + [修复] 修复流水线「任务完成不回写」的断链：此前 `attachGeneration` 把 `item.artifactUrl` 置 null 后全仓再无写回，任务队列的 `change` 事件也没有订阅者，导致尾帧永远取不到首帧当参考图、`assembly` 阶段永不入队（clips 永远 `queued` / `jobId: null`）、`stage.artifacts` 恒为空 —— 五段流水线实际只有四段半。现在网关在模块初始化时订阅任务终态，并**重放** `jobs.json` 里的历史终态任务，按 `job.meta` 反查 run/阶段/条目幂等回写产物，重启后也能重建。真机验证：历史 run `run-muprxois-wvmqq` 的 keyframe 产物从 `artifacts: 0` 恢复为 2，`assembly` 阶段真正入队。
 + [调整] 生成型阶段的状态以任务终态为准，不再「入队即 done」：必需 Job 全部成功才 `done`，有任务仍在跑为 `running`，部分成功为 `partial`（新增），全失败为 `error`，取消为 `canceled`（新增）。取消阶段时一并取消该阶段已入队的图像/视频任务（沿 阶段→Job 传播），不再只 abort LLM。
 + [新增] 生图/生视频改为**候选活扣**：每个条目维护 `candidates[]`，换模型重跑只追加候选、保留全部历史产物，`jobId`/`artifactUrl`/`status` 保留为当前选中候选的派生别名。重跑不再清空上次结果，具备逐镜对比的基础。
