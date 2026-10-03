@@ -42,7 +42,7 @@ node src/index.js            # 默认 127.0.0.1:8788
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/api/health` | `{ ok, service: {ok, name, version, uptimeSec}, llm: {ok, baseUrl, source:"registry", probed:false, models: string[], error?}, comfy: {ok, baseUrl, error?}, runninghub: {ok, baseUrl, error?}, queue: {running, pending} }`。**`ok` 是存活语义**（本进程能应答即 true），不代表生产就绪；`llm` 段是注册表静态事实（`probed:false`，`ok` 只表示「已登记启用的文本模型」），`comfy`/`runninghub` 仍是真实探测 |
+| GET | `/api/health` | `{ ok, service: {ok, name, version, uptimeSec}, llm: {ok, baseUrl, source:"registry", probed:false, models: string[], error?}, comfy: {ok, baseUrl, error?}, runninghub: {ok, baseUrl, error?}, queue: {running, pending} }`。**`ok` 是存活语义**（本进程能应答即 true），不代表生产就绪；`llm` 段是注册表静态事实（`probed:false`，`ok` 只表示「已登记启用的文本模型」），`comfy`/`runninghub` 是**后台探测的缓存快照**（#68）：首次未就绪给 `{ ok:false, …, pending:true }`（字段名 `ok`/`baseUrl`/`devices`（comfy）/`error` 不变，前端无需改动），就绪后按 30s TTL 复用、过期后台刷新，单次探测硬超时 3s |
 | GET | `/api/backends` | `{ backends: BackendInfo[], defaultBackend, allowRunningHub }` |
 | GET | `/api/providers` | `{ llm: { models: string[] }, comfy: { templates: TemplateInfo[], models: {...} }, backends: BackendInfo[] }` |
 | GET | `/api/runninghub/models` | `{ image: RunningHubModel[], video: RunningHubModel[] }`，本地内置目录，不请求上游 |
@@ -224,6 +224,12 @@ body：`{ template, family, shot, scene?, characters?, style?, slots?, overlays?
 不收敛就会把那个阶段永久锁死。所以启动时 `reconcileRunning()` 把所有遗留 `running` 落成
 `status: "error"` + `服务重启导致中断；已完成的分块结果已保留，可用 resume 续跑`，并打一条告警。
 
+**启动不阻塞（#68）**：`server.listen()` 不等任何外部依赖，端口秒级就绪。历史上这里是两个同步瓶颈，现已拆开：
+
+- **外部探测（ComfyUI / RunningHub）**：改为 `src/probe-cache.js` 的**后台并发探测 + 短超时（3s）+ TTL 缓存（30s）**。`/api/health` 只读缓存快照、**永不 await 上游**，首次未就绪给 `{ ok:false, …, pending:true }`；`healthProbe.warmAll()` 在 listen 回调里触发首探，就绪后自动反映。
+- **历史任务重放**：旧实现直接在模块加载时 `pipeline.bindJobs()`，会**同步重放 jobs.json 里全部终态 Job**（实测 535 个、其中 350 个命中同一个数 MB 的 `run.json`，逐条读写 ≈ **104 秒纯 CPU**，把 listen 拖到 100 秒开外）。现在只保留廉价的 `jobs.on("change")` 订阅（模块加载即挂），重放改成 listen 之后的 `replayHistoricalJobs()`：**逐条 `setImmediate` 让出事件循环**，重放期间 `/api/health`、`/api/jobs` 全程可应答。
+- **各阶段计时**：被直接启动时打 `[startup] <阶段>: +Nms` 日志，一眼看出瓶颈在哪一段。
+
 ### 生成产物与前端的关系
 
 前端通过 `GET /api/jobs/:id` 轮询任务，`status === "done"` 后取 `outputs[].url`，URL 直接指向 `GET /api/artifacts/...`，可被 `<img>` / `<video>` 直接消费。
@@ -242,6 +248,7 @@ body：`{ template, family, shot, scene?, characters?, style?, slots?, overlays?
 | `src/llm-client.js` | `callLlm({ system, user, maxTokens?, timeoutMs?, model?, provider? })`, `llmCall({ system, user })`, `findProvider(name)`, `loadProviders()` | 服务端 LLM 客户端（提示词策略层的语言适配出口）。零依赖、用 `node:https` 不用 `fetch`（避开 undici 300s headersTimeout）；默认打 `data/llm-providers.json` 的 `deepseek` 渠道 + `deepseek-flash`；返回带 `finishReason`/`chars`；空内容/截断（`finish_reason=length`）抛错，绝不静默回退 |
 | `src/prompt-api.js` | `createPromptApi()`, `compilePromptForRequest(body, { callLlm })` | `POST /api/prompt/compile` 的业务 + 路由装配：按模板编译提示词 → `{ prompt, meta }`（见「提示词编译」节） |
 | `src/providers/comfy.js` | `createComfyClient(config)`, `probeComfy(config)`, `listComfyCapabilities(config)`, `listTemplates(workflowsDir)` | 见下 |
+| `src/probe-cache.js` | `createProbeCache({ ttlMs, timeoutMs, now })` | 外部依赖探测缓存（#68）：`define(name, { baseUrl, probe, pending })` / `get(name)`（同步读快照，未就绪给 pending、过期 stale-while-revalidate）/ `warmAll()` / `refreshAll()`。并发、短超时、永不阻塞调用方 |
 | `src/skills.js` | `loadSkills(skillsDir)`, `loadRegistry(skillsDir)`, `readSkill(skillsDir, id)` | 见下 |
 | `src/pipeline.js` | `createPipeline({ config, skillsDir, jobs, comfy, llm, llmCall, runJob })` | 见下 |
 | `src/model-registry.js` | `createModelRegistry({ dataDir })`（含 `textModels()`）, `computeAvailable()`, `textModelIds()`, `asModelIdList()`, `categoryForTemplate()`, `runtimeForProvider()`, `buildTemplateScript()`, `buildGroups()`, `composeAlias()`, `fallbackBaseTask()`, `DEFAULT_ALIASES`, `DEFAULT_BASE_TASK` | 模型注册表存储内核：CRUD + `sync`（含存量幂等回填、渠道 `meta.baseUrl`/`meta.models` 刷新）+ `available` + 分组聚合；**文本模型清单的唯一读源**（`textModelIds` → `渠道名::模型名`）；分类/runtime 映射与默认 base/task 别名表（契约 v1） |

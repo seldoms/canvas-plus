@@ -25,13 +25,25 @@ import { createPromptApi } from "./prompt-api.js";
 import { createImageEnqueue, filterJobs } from "./workbench-jobs.js";
 import { createLocalRunner } from "./generate.js";
 import { probeRunningHub, listRunningHubModels, runRunningHubJob } from "./providers/runninghub.js";
+import { createProbeCache } from "./probe-cache.js";
 import { plan as impactPlan } from "./impact.js";
 import { createModelRegistry } from "./model-registry.js";
 // 产物归档 / 彻底删除内核（索引落 data/artifacts-index.json，从 jobs.outputs[] 懒构建）。
 import { createArtifacts } from "./artifacts.js";
 import { scanTemplateDir } from "./tool-adapter.js";
 
+// 启动耗时探针：把「进程起来到监听端口」拆成各阶段计时，直接回答「这 100 秒花在哪」。
+// 仅在被直接执行时打印，被 import（测试/冒烟）时静默，避免污染测试输出。
+const isMain = Boolean(process.argv[1]) && import.meta.url === pathToFileURL(process.argv[1]).href;
+const startupT0 = process.hrtime.bigint();
+function startupMark(label, extra = "") {
+    if (!isMain) return;
+    const ms = Number(process.hrtime.bigint() - startupT0) / 1e6;
+    console.log(`[startup] ${label}: +${ms.toFixed(0)}ms${extra ? ` ${extra}` : ""}`);
+}
+
 const config = loadConfig();
+startupMark("config 加载");
 
 // 外部 LLM 渠道注册表：独立存 data/llm-providers.json，启动时并入 config.llm.providers，支持热更新。
 const llmProvidersFile = safeJoin(config.dataDir, "llm-providers.json");
@@ -123,6 +135,7 @@ for (const model of [...runninghubModels.image, ...runninghubModels.video]) {
         retryable: true,
     });
 }
+startupMark("registry 登记");
 
 const jobs = createJobQueue({
     dataDir: config.dataDir,
@@ -132,6 +145,7 @@ const jobs = createJobQueue({
     resolveDevice: (resourceClass) => registry.listDevices({ resourceClass })[0]?.id || null,
 });
 const local = createLocalRunner({ config, comfy, jobs });
+startupMark("jobs 队列加载");
 /** 后端分派：默认走本地 ComfyUI；只有显式指定 runninghub 且配置允许时才走云端。 */
 function backendOf(job) {
     return job.backend === "runninghub" ? "runninghub" : "local";
@@ -171,9 +185,52 @@ const pipeline = createPipeline({
     // 就地更新已存在的资产引用（参考图绑定走这条路：空引用自愈为已绑定，不产生重复引用）。
     updateAssetRef: (projectId, refId, patch) => projects.assets.update(projectId, refId, patch),
 });
-// 订阅一次任务队列的 change 事件：Job 落终态时把产物回写流水线条目；并重放 jobs.json 里的终态任务，
-// 让服务重启后能从任务队列重建流水线状态（幂等）。
-pipeline.bindJobs();
+startupMark("pipeline 创建");
+/**
+ * Job 终态投影接线：订阅 change 事件（廉价，模块加载即挂上；测试与生产都需要）。
+ *
+ * ⚠️ #68：历史重放（把 jobs.json 里全部终态 Job 重放一遍）**不再走启动关键路径**。
+ * 之前这里直接 `pipeline.bindJobs()`，它同步重放全部 535 个 Job；其中 350 个命中同一个巨型 run.json，
+ * 逐条 readFileSync+writeFileSync = 实测 104 秒纯 CPU，把「进程起来 → listen」拖到 100 秒开外
+ * （端口还没 LISTEN，前端/运维极易误判成服务崩了）。重放已改为 listen 之后的后台分批任务，见 replayHistoricalJobs()。
+ */
+function wireJobProjection() {
+    if (typeof jobs?.on !== "function") return;
+    jobs.on("change", (job) => {
+        try {
+            pipeline.projectJob(job);
+        } catch (error) {
+            console.error(`[pipeline] 任务回写失败 ${job?.id}：${error.message}`);
+        }
+    });
+}
+wireJobProjection();
+startupMark("pipeline 订阅");
+
+/**
+ * 历史任务重放：从 jobs.json 的终态 Job 重建流水线投影（= 旧 bindJobs 的「重放」那一步）。
+ * 在 listen 之后执行，且每条之间让出事件循环（setImmediate）→ 重放期间 /api/health、/api/jobs 仍随时应答。
+ * 幂等：projectJob 只做投影回写，重复执行结果不变（与旧 bindJobs 的重放语义一致）。
+ */
+async function replayHistoricalJobs() {
+    const all = jobs.list?.() || [];
+    if (!all.length) return;
+    let done = 0;
+    let failed = 0;
+    for (const job of all) {
+        try {
+            pipeline.projectJob(job);
+        } catch (error) {
+            failed += 1;
+            console.error(`[pipeline] 历史任务重放失败 ${job?.id}：${error.message}`);
+        }
+        done += 1;
+        // 让出事件循环：单条 projectJob 可能读/写数 MB 的 run.json（~0.3s），
+        // 每条之间让一次可把最长停顿压到「单条」量级，避免把存活接口卡住。
+        await new Promise((resolve) => setImmediate(resolve));
+    }
+    startupMark("历史任务重放完成", `${done}/${all.length}${failed ? `，失败 ${failed}` : ""}`);
+}
 
 // 模型注册表（契约 v1）：服务端唯一持有的模型清单，落 data/model-registry.json。
 const modelRegistry = createModelRegistry({ dataDir: config.dataDir });
@@ -190,6 +247,7 @@ function modelRegistrySources() {
 // 启动即同步一次：注册表是模型清单的唯一读源（`/v1/models`、`/api/providers`、`/api/health` 都读它），
 // 若只在用户点「同步」时才补齐，静态清单会一直是空的。sync 幂等、只读本地模板目录与渠道表，不发任何网络请求。
 modelRegistry.sync(modelRegistrySources());
+startupMark("model-registry.sync");
 
 /**
  * 产物归档 / 彻底删除内核（素材生命周期）。
@@ -214,6 +272,7 @@ const artifacts = createArtifacts({
     },
     resolveProjectName: (projectId) => projects.get(projectId)?.title || null,
 });
+startupMark("artifacts 内核");
 
 /** 入队入口：默认本地 ComfyUI，显式传 backend:"runninghub" 时才走云端。提交前按资源类别做 canRun 校验。 */
 function submitGeneration(kind, body) {
@@ -272,14 +331,32 @@ router.get("/", (req, res) => {
     sendJson(res, 200, serviceInfo);
 });
 
+// 外部依赖探测缓存（#68）：ComfyUI / RunningHub 在后台并发探测、短超时（3s）、TTL 缓存（30s）。
+// /api/health 只读快照 → 立即可答；就绪后自动反映。上游挂死最多按短超时降级，绝不拖住存活接口。
+const HEALTH_PROBE_TIMEOUT_MS = 3000;
+const HEALTH_PROBE_TTL_MS = 30000;
+const healthProbe = createProbeCache({ ttlMs: HEALTH_PROBE_TTL_MS, timeoutMs: HEALTH_PROBE_TIMEOUT_MS });
+healthProbe.define("comfy", {
+    baseUrl: config.comfy.baseUrl,
+    probe: () => probeComfy({ ...config, comfy: { ...config.comfy, timeoutMs: HEALTH_PROBE_TIMEOUT_MS } }),
+    // 未就绪快照必须保留 devices 字段（前端依赖 comfy.devices），给空数组 + pending:true 明确状态。
+    pending: () => ({ ok: false, baseUrl: config.comfy.baseUrl, devices: [], error: "探测中", pending: true }),
+});
+healthProbe.define("runninghub", {
+    baseUrl: config.runninghub.baseUrl,
+    probe: () => probeRunningHub({ ...config, runninghub: { ...config.runninghub, timeoutMs: HEALTH_PROBE_TIMEOUT_MS } }),
+    pending: () => ({ ok: false, baseUrl: config.runninghub.baseUrl, error: "探测中", pending: true }),
+});
+
 /**
  * 存活 + 依赖状态。三类信息严格分开，不再用一个 `ok` 冒充「生产就绪」：
  *   - `ok` / `service`：**本进程能应答**（存活语义），不等任何上游网络请求；
  *   - `llm`：静态注册表事实（`probed:false`）—— 清单只读注册表，网关不探测上游，`ok` 只表示「已登记启用的文本模型」；
- *   - `comfy` / `runninghub`：仍是真实探测结果（本轮未改）。
- * 因此死渠道、上游慢都不会再把存活接口拖住（旧实现要等 LLM 探测，一个连不上的渠道就吃满 8s）。
+ *   - `comfy` / `runninghub`：**后台探测的缓存快照**（#68）—— 首次未就绪给 `pending:true`，就绪后按 TTL 复用/后台刷新，
+ *     字段形状（`ok`/`baseUrl`/`devices`/`error`）与真实探测结果一致，前端无需改动。
+ * 由此死渠道、上游慢、Comfy 挂掉都不会再把存活接口拖住（旧实现每次都要同步 await 上游，且 comfy 探测会吃到任务级 2h 超时）。
  */
-router.get("/api/health", async (req, res) => {
+router.get("/api/health", (req, res) => {
     const llmModels = modelRegistry.textModels();
     const llmResult = {
         ok: llmModels.length > 0,
@@ -289,16 +366,12 @@ router.get("/api/health", async (req, res) => {
         models: llmModels,
         ...(llmModels.length ? {} : { error: "注册表里没有已启用的文本模型：请在渠道表声明 models 后同步模型注册表" }),
     };
-    const [comfyResult, runninghubResult] = await Promise.all([
-        probeComfy(config).catch((error) => ({ ok: false, baseUrl: config.comfy.baseUrl, error: error.message })),
-        probeRunningHub({ ...config, runninghub: { ...config.runninghub, timeoutMs: config.runninghub.probeTimeoutMs } }).catch((error) => ({ ok: false, baseUrl: config.runninghub.baseUrl, error: error.message })),
-    ]);
     sendJson(res, 200, {
         ok: true,
         service: { ok: true, name: serviceInfo.name, version: serviceInfo.version, uptimeSec: Math.round(process.uptime()) },
         llm: llmResult,
-        comfy: comfyResult,
-        runninghub: runninghubResult,
+        comfy: healthProbe.get("comfy"),
+        runninghub: healthProbe.get("runninghub"),
         queue: jobs.counts(),
     });
 });
@@ -1122,6 +1195,8 @@ router.get("/api/projects/:id/impact/options", routeHandler((req, res, { params 
     sendJson(res, 200, { projectId: view.id, sourceRevisionId: view.sourceRevisionId ?? null, assetRefs, shots, scenes, options });
 }));
 
+startupMark("路由注册完成");
+
 const server = createServer(async (req, res) => {
     applyCors(res);
     try {
@@ -1161,15 +1236,15 @@ const webDist = (() => {
     return existsSync(dir) ? dir : null;
 })();
 
-// 只有被直接执行时才监听端口；被 import（冒烟脚本、测试）时不产生副作用。
-const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
-
 if (isMain) {
     // 上次进程被杀时正在跑的阶段会永远停在 running，而 beginStage 拒绝在 running 阶段上重跑，
     // 不收敛就会把那个阶段永久锁死。分块结果仍在 chunks/ 里，可用 resume 续跑。
+    startupMark("router 就绪");
     const stale = pipeline.reconcileRunning();
+    startupMark("reconcileRunning", stale.length ? `收敛 ${stale.length} 条` : "");
     if (stale.length) console.warn(`[pipeline] 收敛了 ${stale.length} 条上次中断的运行：${stale.join("、")}（阶段标记为 error，分块结果已保留，可 resume 续跑）`);
     server.listen(config.port, config.host, () => {
+        startupMark("listen");
         console.log(`canvas-server 已启动：http://${config.host}:${config.port}`);
         console.log(`  LLM  : ${config.llm.baseUrl}`);
         console.log(`  Comfy: ${config.comfy.baseUrl}`);
@@ -1183,7 +1258,12 @@ if (isMain) {
             console.warn(`  ⚠ 监听 ${host}:${config.port} 不是回环地址，而网关没有鉴权：同网段任何人都能提交生成任务、消耗已注册 LLM 渠道的额度。`);
             console.warn(`    要公网访问请在前置反向代理上加鉴权，或把 host 改回 127.0.0.1 只经本机/隧道访问。`);
         }
+        // #68：端口就绪后才做「外部探测预热」与「历史任务重放」——listen 不再等任何上游/重放。
+        // 探测预热：并发发起 comfy/runninghub 探测写入缓存，后续 /api/health 读到就绪快照。
+        healthProbe.warmAll();
+        // 历史重放：后台分批执行（每条 setImmediate 让出事件循环），期间服务全程可应答。
+        void replayHistoricalJobs().catch((error) => console.error(`[pipeline] 历史任务重放异常：${error?.message || error}`));
     });
 }
 
-export { server, config, jobs, registry, pipeline, projects, bibles, comfy, llm, local, runJob, submitGeneration, backends, waitForJob, fileSize, artifactUrl, artifacts };
+export { server, config, jobs, registry, pipeline, projects, bibles, comfy, llm, local, runJob, submitGeneration, backends, waitForJob, fileSize, artifactUrl, artifacts, healthProbe };

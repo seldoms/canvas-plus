@@ -202,7 +202,8 @@ export function createComfyClient(config) {
                 devices: (stats?.devices || []).map((device) => ({ name: device.name, vramTotal: device.vram_total, vramFree: device.vram_free })),
             };
         } catch (error) {
-            return { ok: false, baseUrl: root, error: error.message };
+            // 失败也保留 devices:[] —— /api/health 的 comfy 段字段结构（ok/baseUrl/devices）是前端契约，失败时不能缺字段。
+            return { ok: false, baseUrl: root, devices: [], error: error.message };
         }
     }
 
