@@ -102,9 +102,6 @@ export function ProcessTimeline({
                         {t("projects.timeline.live")}
                     </span>
                 ) : null}
-                <Typography.Text type="secondary" className="!text-xs">
-                    {t("projects.timeline.hint")}
-                </Typography.Text>
             </div>
 
             {!stages.length ? (

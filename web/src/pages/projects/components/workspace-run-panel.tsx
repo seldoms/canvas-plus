@@ -68,10 +68,6 @@ export function WorkspaceRunPanel({
             </Typography.Title>
             <Card size="small">
                 <Space direction="vertical" size={12} className="w-full">
-                    <Typography.Text type="secondary" className="!text-xs">
-                        {t("projects.workspace.run.hint")}
-                    </Typography.Text>
-
                     {!allowed ? <Alert type="warning" showIcon message={t("projects.workspace.run.gateBlocked")} description={blockedReason()} /> : null}
 
                     {ownProgress && running ? (
@@ -104,9 +100,7 @@ export function WorkspaceRunPanel({
                                 {hasRun ? t("projects.workspace.run.run", { stage: stageName(workspace.stage) }) : t("projects.workspace.run.startNew")}
                             </Button>
                         )}
-                        <Typography.Text type="secondary" className="text-xs">
-                            {hasRun ? t("projects.workspace.run.hasRun") : t("projects.workspace.run.noRun")}
-                        </Typography.Text>
+                        {hasRun ? null : <Typography.Text type="secondary" className="text-xs">{t("projects.workspace.run.noRun")}</Typography.Text>}
                     </Space>
                 </Space>
             </Card>

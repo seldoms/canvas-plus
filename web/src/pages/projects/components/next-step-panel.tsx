@@ -42,11 +42,8 @@ export function NextStepPanel({ projectId, gates, gatesLoading, stageStatus }: {
                             type={next.runnable ? "success" : "warning"}
                             showIcon
                             message={t("projects.nextStep.action", { stage: stageName(next.stage) })}
-                            description={next.runnable ? t("projects.nextStep.runnable") : reason()}
+                            description={next.runnable ? undefined : reason()}
                         />
-                        <Typography.Text type="secondary" className="!text-xs">
-                            {t(next.source === "server" ? "projects.workspace.gate.sourceServer" : "projects.workspace.gate.sourceFallback")}
-                        </Typography.Text>
                         {workspaceKey ? (
                             <Button type="primary" size="small" icon={<ArrowRight className="size-4" />} onClick={() => navigate(workspacePath(projectId, workspaceKey as WorkspaceKey))}>
                                 {t("projects.nextStep.open", { stage: stageName(next.stage) })}

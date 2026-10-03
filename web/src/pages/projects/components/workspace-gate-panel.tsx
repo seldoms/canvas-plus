@@ -67,9 +67,6 @@ export function WorkspaceGatePanel({
                     ) : null}
                     {gate.state === "ready" ? <Alert type="success" showIcon message={t(workspace.editable ? "projects.workspace.gate.readyEditable" : "projects.workspace.gate.ready")} /> : null}
                     {gate.state === "unknown" ? <Alert type="info" showIcon message={t("projects.workspace.gate.unknown")} /> : null}
-                    <Typography.Text type="secondary" className="!text-xs">
-                        {t(gate.source === "server" ? "projects.workspace.gate.sourceServer" : "projects.workspace.gate.sourceFallback")}
-                    </Typography.Text>
                     {runsError ? <Alert type="warning" showIcon message={t("projects.workspace.gate.runsError")} description={runsError} /> : null}
                     {running.length ? <Typography.Text type="secondary">{t("projects.workspace.gate.running", { stages: running.map(stageName).join("、") })}</Typography.Text> : null}
                     {failed.length ? <Typography.Text type="warning">{t("projects.workspace.gate.failed", { stages: failed.map(stageName).join("、") })}</Typography.Text> : null}
@@ -77,9 +74,6 @@ export function WorkspaceGatePanel({
                         <Button type="primary" onClick={openPipeline} loading={runsLoading}>
                             {t("projects.workspace.actions.openPipeline")}
                         </Button>
-                        <Typography.Text type="secondary" className="text-xs">
-                            {t(workspace.editable ? "projects.workspace.actions.editing" : "projects.workspace.actions.pending")}
-                        </Typography.Text>
                     </Space>
                 </Space>
             </Card>
