@@ -143,6 +143,8 @@ const pipeline = createPipeline({
     applyPlanSuggestion: (projectId, suggestion) => projects.applyPlanSuggestion(projectId, suggestion),
     // 剧本阶段完成后把 logline/synopsis/characters/scenes/episodes 投影进 Project.script（幂等、不改 version）。
     applyScriptProjection: (projectId, output) => projects.applyScriptProjection(projectId, output),
+    // 剧本阶段完成后把 episodes[]/scenes[] 投影进 Project.episodes（幂等、不改 version），供 storyboard 门禁判 done。
+    applyEpisodeProjection: (projectId, output) => projects.applyEpisodeProjection(projectId, output),
     // 建 run 时按 options.projectId 幂等把 runId 追加进项目 runIds（覆盖「从流水线页建的 run」）。
     attachProjectRun: (projectId, runId) => projects.attachRun(projectId, runId),
     // 生成型阶段（关键帧/片段合成）产物自动登记为项目 AssetRef：幂等、解耦、失败不拖垮阶段。

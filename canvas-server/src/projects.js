@@ -97,6 +97,63 @@ function normalizeScript(output) {
     };
 }
 
+/** episode / scene id 定长序号（契约 §4：ep_/sc_ + 4 位序号）。 */
+function pad4(value) {
+    return String(value).padStart(4, "0");
+}
+
+/**
+ * 脚本分集产物 → Project.episodes 的事实投影（契约 §3.2 Episode / §3.3 Scene）。
+ * 把 01 剧本阶段的 episodes[] 落成项目里的 Episode，并把每集引用的 scenes 内嵌为 scenes[]（至少 id/title），
+ * 供阶段门禁 storyboard（判据 episode.scenes.length>0）与项目页直接消费；结构稳定、可 JSON 深比较（幂等）。
+ * 只投影 episodes 非空的情形；没有分集时返回空数组（调用方据此跳过，不写盘、保持旧行为）。
+ * 场 id 序号在项目内全局连续（契约 §4），集内 index 单独记序。
+ */
+function normalizePlayEpisodes(output, projectId) {
+    const source = output && typeof output === "object" ? output : {};
+    const sceneRows = Array.isArray(source.scenes) ? source.scenes : [];
+    const sceneById = new Map(sceneRows.map((scene) => [String(scene?.id ?? ""), scene]));
+    const rows = (Array.isArray(source.episodes) ? source.episodes : [])
+        .map((row, position) => ({ row, index: Number(row?.index) > 0 ? Number(row.index) : position + 1 }))
+        .sort((a, b) => a.index - b.index);
+    let sceneSeq = 0;
+    return rows.map(({ row, index }) => {
+        const id = `${ID_PREFIX.episode}${pad4(index)}`;
+        const refs = Array.isArray(row?.sceneIds) ? row.sceneIds.map(String) : [];
+        // 集未给 sceneIds 但整篇只有一集时，把全部场次归入这一集（短篇常见）。
+        const picks = refs.length || rows.length !== 1 ? refs : sceneRows.map((scene) => String(scene?.id ?? ""));
+        const scenes = picks
+            .map((sceneId) => sceneById.get(sceneId))
+            .filter(Boolean)
+            .map((scene, position) => {
+                sceneSeq += 1;
+                return {
+                    id: `${ID_PREFIX.scene}${pad4(sceneSeq)}`,
+                    episodeId: id,
+                    index: position + 1,
+                    title: String(scene?.title ?? ""),
+                    locationId: String(scene?.location ?? scene?.locationId ?? ""),
+                    time: String(scene?.time ?? ""),
+                    intent: String(scene?.intent ?? ""),
+                    beatIds: [],
+                };
+            });
+        return {
+            id,
+            projectId,
+            index,
+            title: String(row?.title ?? ""),
+            logline: String(row?.synopsis ?? ""),
+            plan: {},
+            sceneIds: scenes.map((scene) => scene.id),
+            canvasIds: [],
+            status: "pending",
+            deliverableIds: [],
+            scenes,
+        };
+    });
+}
+
 function httpError(status, message) {
     const error = new Error(message);
     error.status = status;
@@ -338,6 +395,26 @@ export function createProjects({ dataDir } = {}) {
         return { project: persistDerived(dir, project), applied: true };
     }
 
+    /**
+     * 分集事实链（§12 第 1 优先级）：把 01 剧本阶段的 episodes[]/scenes[] 投影进 Project.episodes。
+     * 幂等：归一化后与现有 project.episodes 深比较，相同则跳过（不写盘、不改 updatedAt）。
+     * 「旧数据不动」：已有非投影的真实集（project.episodes 非空）一律不覆盖——绝不冲掉用户手动建的集。
+     * 走 persistDerived（不改 version）——派生记帐，不触发 D7 用户编辑冲突。
+     * 项目不存在返回 { project: null, applied: false }，调用方据此静默跳过。
+     */
+    function applyEpisodeProjection(id, output) {
+        const dir = locate(id);
+        const project = dir ? readProject(dir) : null;
+        if (!project) return { project: null, applied: false };
+        const projection = normalizePlayEpisodes(output, project.id);
+        if (!projection.length) return { project, applied: false };
+        const current = Array.isArray(project.episodes) ? project.episodes : [];
+        if (JSON.stringify(current) === JSON.stringify(projection)) return { project, applied: false };
+        if (current.length > 0) return { project, applied: false };
+        project.episodes = projection;
+        return { project: persistDerived(dir, project), applied: true };
+    }
+
     /** 归档：项目目录移出活动区（列表不再出现，get/context 仍可读）；project.json 字段不变。 */
     function archive(id) {
         const { project, dir } = requireProject(id);
@@ -349,6 +426,17 @@ export function createProjects({ dataDir } = {}) {
         ensureDir(dirname(target));
         renameSync(dir, target);
         return project;
+    }
+
+    /**
+     * 门禁判定用的集条目：优先取盘上的集详情（episodes/<id>.json，含 scenes/shots，权威）；
+     * 没有集详情文件时回落到 project.episodes（脚本投影把 scenes 内嵌在这里），
+     * 使「脚本投影后 storyboard done」「分镜 shots 落到集后 keyframe 可判」都能被门禁看见。
+     */
+    function gateEpisodes(id, project) {
+        const details = episodes.listDetails(id);
+        if (details.length) return details;
+        return Array.isArray(project.episodes) ? project.episodes : [];
     }
 
     /**
@@ -366,14 +454,14 @@ export function createProjects({ dataDir } = {}) {
             canvasIds: project.canvasIds || [],
         };
         if (!includeRefs) return base;
-        return { ...base, assetRefs: project.assetRefs || [], gates: deriveGates({ project, episodes: episodes.listDetails(id) }) };
+        return { ...base, assetRefs: project.assetRefs || [], gates: deriveGates({ project, episodes: gateEpisodes(id, project) }) };
     }
 
     /** 阶段门禁：据 Project + 各集详情纯推导（不落盘）；项目不存在返回 null。 */
     function gates(id) {
         const project = get(id);
         if (!project) return null;
-        return deriveGates({ project, episodes: episodes.listDetails(id) });
+        return deriveGates({ project, episodes: gateEpisodes(id, project) });
     }
 
     // 集/场/镜与源版本由独立存储模块实现；这里只做转发，保持「一个实体一个模块」。
@@ -383,7 +471,7 @@ export function createProjects({ dataDir } = {}) {
     const getSource = (projectId, revisionId) => sources.get(projectId, revisionId);
 
     return {
-        create, get, list, update, archive, context, gates, applyPlanSuggestion, attachRun, applyScriptProjection,
+        create, get, list, update, archive, context, gates, applyPlanSuggestion, attachRun, applyScriptProjection, applyEpisodeProjection,
         saveEpisode, getEpisode, saveSource, getSource,
         episodes, sources, assets,
         ulid, ULID_PATTERN,

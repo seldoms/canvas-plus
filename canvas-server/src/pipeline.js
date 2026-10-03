@@ -151,7 +151,7 @@ function fillTemplate(text, context) {
  * assemble 是「片段 → 成片」的后期执行体，默认用 delivery.js 的 assembleEpisode；
  * 编排器只负责判定何时拼接、把清单与参数交给它，ffmpeg 命令构造与执行都留在 delivery.js。
  */
-export function createPipeline({ config, skillsDir, jobs, comfy, llm, runJob, assemble = assembleEpisode, getProject, applyPlanSuggestion, applyScriptProjection, attachProjectRun, registerAssetRef } = {}) {
+export function createPipeline({ config, skillsDir, jobs, comfy, llm, runJob, assemble = assembleEpisode, getProject, applyPlanSuggestion, applyScriptProjection, applyEpisodeProjection, attachProjectRun, registerAssetRef } = {}) {
     const pipelineConfig = config?.pipeline || {};
     // 半自动总开关：注入 getProject（项目化模式）时才启用「单镜失败自动重试」。
     // 未注入时一律保持旧的「失败即止」行为；plan 驱动参数靠 projectOf 返回 null 自然回落，不需要额外开关。
@@ -1082,6 +1082,66 @@ ${JSON.stringify(partials, null, 2)}
     }
 
     /**
+     * 分集事实链（§12 第 1 优先级）：剧本阶段产出后，把 episodes[]/scenes[] 投影进 Project.episodes
+     * （幂等 / 不改 version 的判定与写入都在注入的 applyEpisodeProjection 里，本模块不 import projects.js）。
+     * 未注入 / 未绑项目 / 无产物时为空操作；失败只告警，绝不把已成功的剧本阶段拖成 error。
+     * 这条投影是 storyboard 门禁 done 判据（episode.scenes.length>0）能拿到场景的唯一来源。
+     */
+    function projectEpisodeFacts(run, output) {
+        if (typeof applyEpisodeProjection !== "function") return;
+        const projectId = run?.options?.projectId;
+        if (!projectId || !output || typeof output !== "object") return;
+        try {
+            applyEpisodeProjection(projectId, output);
+        } catch (error) {
+            console.warn(`[pipeline] 分集事实投影失败（不影响剧本阶段）：${error.message}`);
+        }
+    }
+
+    /**
+     * 服化道（design）阶段产物自动登记为项目 AssetRef，补上「design 无产物 → 项目门禁永远判不出 done」的缺口。
+     * 角色 → role=character、场景 → role=scene，bindingId 取剧本里的角色/场景 id（契约 §3.8：一致性锚点）。
+     * 走 registerArtifacts 同一套注入的 registerAssetRef + 幂等去重：按 (runId, stageId, bindingId) 命中即跳过，
+     * 重启重放读到旧引用同样不重复；登记失败只告警，绝不拖垮阶段。
+     * 不直接 import assets.js：真正写盘走注入的 registerAssetRef（index.js 接 projects.assets.create），保持解耦。
+     */
+    function registerDesignAssets(run, stage) {
+        if (typeof registerAssetRef !== "function") return;
+        const projectId = run?.options?.projectId;
+        if (!projectId || stage?.id !== "design") return;
+        const project = projectOf(run);
+        if (!project) return;
+        const output = stage.output && typeof stage.output === "object" ? stage.output : {};
+        const refs = Array.isArray(project.assetRefs) ? project.assetRefs : [];
+        // bindingId 是引用自身字段（不是 metadata），按 (runId, stageId, bindingId) 去重。
+        const seen = new Set(
+            refs.filter((ref) => ref?.metadata?.runId === run.id && ref?.metadata?.stageId === "design").map((ref) => ref.bindingId),
+        );
+        const groups = [
+            ["characters", ASSET_ROLE.CHARACTER],
+            ["locations", ASSET_ROLE.SCENE],
+        ];
+        for (const [key, role] of groups) {
+            for (const item of Array.isArray(output[key]) ? output[key] : []) {
+                const bindingId = String(item?.id ?? "").trim();
+                if (!bindingId || seen.has(bindingId)) continue;
+                try {
+                    registerAssetRef(projectId, {
+                        role,
+                        bindingId,
+                        artifactIds: [],
+                        selectedArtifactId: null,
+                        metadata: { source: "pipeline", runId: run.id, stageId: stage.id, kind: key, name: String(item?.name ?? "") },
+                    });
+                    seen.add(bindingId);
+                } catch (error) {
+                    console.warn(`[pipeline] 服化道产物自动登记资产失败（不影响阶段）：${error.message}`);
+                }
+            }
+        }
+    }
+
+    /**
      * 生成型阶段产物自动登记为项目 AssetRef（补上「跑完图/视频还得手动逐个登记引用」的半自动缺口）。
      * 只做「何时登记」：只在应注入 registerAssetRef、run 绑了项目、且阶段是生成型阶段时登记；
      * 一条产物一条引用（role 见 GENERATIVE_STAGE_ASSET_ROLE），幂等依据 (projectId, runId, artifactUrl)——
@@ -1446,11 +1506,14 @@ ${JSON.stringify(partials, null, 2)}
                 stage.status = "done";
                 stage.finishedAt = nowIso();
             }
-            // 剧本阶段产出即回填 01 的设定建议，并把剧本事实投影进 Project.script（都幂等；未绑项目时为空操作）。
+            // 剧本阶段产出即回填 01 的设定建议，并把剧本事实（script + episodes/scenes）投影进 Project（都幂等；未绑项目时为空操作）。
             if (def.id === "script") {
                 backfillPlanSuggestion(run, stage.output);
                 projectScriptFacts(run, stage.output);
+                projectEpisodeFacts(run, stage.output);
             }
+            // 服化道阶段产出即把角色/场景登记为项目 AssetRef（幂等；未接线时为旧行为），供 design 门禁判 done。
+            if (def.id === "design") registerDesignAssets(run, stage);
             if (stage.output !== undefined && stage.output !== null) saveOutput(run.id, def.id, stage.output);
             // 成功也保留一条进度：只有真正 done 才写 phase:"done"，生成型阶段等 Job 终态时写 running，
             // 否则前端会误判「跑完了」而停止轮询一个还在生成的任务。
