@@ -2,6 +2,27 @@
 
 本文档用于约束本项目中的 AI / 自动化开发行为。开发时优先遵循本文件，其次遵循用户当前消息。
 
+## 动手前必读（路由表）
+
+本节**只放指针**：改哪块之前，先去读哪份文档。**规则细节写在被指向的文档里，本节不重复**，
+避免同一件事两处写、两处漂移。找不到对应条目时，按「先读现有代码，沿用它已有的写法」处理。
+
+| 要改的东西 | 动手前必读 |
+|---|---|
+| 服务端分层 / 新模块该放哪 | 本文件「解耦与职责边界」 |
+| 项目、剧集、分镜、生成槽位的**数据契约与字段** | `docs/content/docs/progress/domain-contract.md` |
+| 流水线阶段、门禁、阶段产物 | `docs/content/docs/progress/domain-contract.md` + `development-plan.md` |
+| **模型清单 / 别名 / 分类 / 启用**（模型注册表） | `docs/content/docs/progress/model-registry-contract.md` |
+| 前端页面 / 组件 / 状态 / 主题 | 本文件「前端规范」 |
+| 画布相关 UI | 本文件「画布 UI 规范」 |
+| 技能（`skills/`）与提示词模板的**内容取向** | 本文件「内容创作规范」 |
+| 文档 / CHANGELOG / todo / pending-test | 本文件「文档规范」 |
+| **产品边界**（哪些自己做、哪些交剪映/达芬奇等外部工具） | `docs/content/docs/progress/production-boundary-and-roadmap.md` |
+| 已登记问题与拍板记录 | `docs/content/docs/progress/pilot-issues.md` |
+| **给子 agent 派活与验收** | `docs/content/docs/progress/subagent-acceptance-checklist.md` |
+| 借鉴外部先进经验 | `docs/content/docs/progress/spec-kit-adoption-plan.md` |
+
+
 ## 基本原则
 
 - 先读现有代码，再动手修改，优先沿用项目已有结构和写法。
