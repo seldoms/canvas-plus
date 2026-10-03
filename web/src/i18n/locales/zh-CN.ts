@@ -841,6 +841,8 @@ export default {
             loadFailed: "读取模型注册表失败",
             saveFailed: "保存失败",
             stale: "已消失",
+            basePlaceholder: "基座名",
+            taskPlaceholder: "能力名",
             categories: {
                 text: "文字",
                 image: "生图",

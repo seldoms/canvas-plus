@@ -29,6 +29,10 @@ export type ModelRegistryMeta = {
 export type ModelRegistryEntry = {
     id: string;
     name: string;
+    /** §2.4 分组键（基座/模型名，如「千问2.1」「H3」）；同一 base 的条目归为一组，组头只显示一次。 */
+    base?: string | null;
+    /** §2.4 能力名（组内那一行的标题，如「文生图」「改图」）。 */
+    task?: string | null;
     alias?: string | null;
     category: ModelCategory;
     enabled: boolean;
@@ -90,8 +94,10 @@ export type ModelRegistryCreateInput = {
     channelId?: string;
 };
 
-/** §3 PATCH：只允许改 alias / enabled / category（name 不可改）。 */
+/** §3 PATCH：只允许改 base / task / alias / enabled / category（name 不可改）。 */
 export type ModelRegistryPatchInput = {
+    base?: string;
+    task?: string;
     alias?: string;
     enabled?: boolean;
     category?: ModelCategory;
@@ -232,4 +238,23 @@ export function modelRegistryDisplayName(entry: Pick<ModelRegistryEntry, "alias"
     const title = entry.meta?.title?.trim();
     if (title) return title;
     return entry.name;
+}
+
+/**
+ * §2.4 分组键 base：以后端字段为准（**不从前端拆 alias**，避免把展示名当数据源）。
+ * 字段尚未就绪时回落到展示名，保证「一组一条、组头非空」，页面不崩、不伪造分组。
+ */
+export function modelRegistryBase(entry: Pick<ModelRegistryEntry, "base" | "alias" | "name" | "meta">) {
+    return entry.base?.trim() || modelRegistryDisplayName(entry);
+}
+
+/**
+ * §2.4 组内行的 task（能力名）：以后端字段为准。
+ * - base 已就绪但 task 缺失：行内回落展示名，不丢信息；
+ * - base 也缺失（字段未就绪的过渡态）：组头已承担展示名，行内返回空串，避免同一串文字上下重复。
+ */
+export function modelRegistryTask(entry: Pick<ModelRegistryEntry, "task" | "base" | "alias" | "name" | "meta">) {
+    const task = entry.task?.trim();
+    if (task) return task;
+    return entry.base?.trim() ? modelRegistryDisplayName(entry) : "";
 }

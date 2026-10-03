@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -7,10 +7,14 @@ import { after, test } from "node:test";
 import {
     CATEGORIES,
     DEFAULT_ALIASES,
+    DEFAULT_BASE_TASK,
+    buildGroups,
     buildTemplateScript,
     categoryForTemplate,
+    composeAlias,
     computeAvailable,
     createModelRegistry,
+    fallbackBaseTask,
     runtimeForProvider,
 } from "../src/model-registry.js";
 
@@ -48,7 +52,7 @@ const SOURCES = {
     },
 };
 
-test("默认别名表：19 条且全部命中契约 §2.2 的中文别名", () => {
+test("默认别名表：19 条、由 §2.5 的 base/task 派生（alias = base + 空格 + task）", () => {
     assert.equal(Object.keys(DEFAULT_ALIASES).length, 19);
     assert.equal(DEFAULT_ALIASES.img_qwen21_t2i, "千问2.1 文生图");
     assert.equal(DEFAULT_ALIASES.img_qwen21_edit, "千问2.1 改图");
@@ -57,18 +61,46 @@ test("默认别名表：19 条且全部命中契约 §2.2 的中文别名", () =
     assert.equal(DEFAULT_ALIASES.img_zimage_artistic, "ZImage 艺术生图");
     assert.equal(DEFAULT_ALIASES.img_boogu_outfit_edit, "Boogu 换装");
     assert.equal(DEFAULT_ALIASES.scail2_action_transfer, "Scail2 动作迁移");
-    assert.equal(DEFAULT_ALIASES.upscale_4x, "4 倍放大");
+    // §2.5：base=放大 / task=4 倍 → alias=放大 4 倍（旧 §2.2 的「4 倍放大」已按 §2.5 归一）
+    assert.equal(DEFAULT_ALIASES.upscale_4x, "放大 4 倍");
     assert.equal(DEFAULT_ALIASES.video_h3_i2v, "H3 图生视频");
     assert.equal(DEFAULT_ALIASES.video_h3_i2v_fl, "H3 首尾帧生视频");
     assert.equal(DEFAULT_ALIASES.video_h3_talk, "H3 台词对口型");
     assert.equal(DEFAULT_ALIASES.video_h3_ref2v_image, "H3 参考图生视频");
-    assert.equal(DEFAULT_ALIASES.video_h3_ref2v_image_turbo, "H3 参考图生视频 快速版");
-    assert.equal(DEFAULT_ALIASES.video_h3_quantfunc_ref2v, "H3 参考图生视频 省显存版");
+    // §2.5：同级变体用 · 分隔
+    assert.equal(DEFAULT_ALIASES.video_h3_ref2v_image_turbo, "H3 参考图生视频 · 快速版");
+    assert.equal(DEFAULT_ALIASES.video_h3_quantfunc_ref2v, "H3 参考图生视频 · 省显存版");
     assert.equal(DEFAULT_ALIASES.video_h3_ref2v, "H3 参考视频生视频");
     assert.equal(DEFAULT_ALIASES.video_minimax_h3_t2v, "H3 文生视频");
     assert.equal(DEFAULT_ALIASES.video_wan_animate, "Wan 动作驱动");
     assert.equal(DEFAULT_ALIASES.audio_qwen3_tts, "千问3 语音合成");
     assert.equal(DEFAULT_ALIASES.deepseek, "DeepSeek 对话");
+});
+
+test("默认 base/task 表：19 条与契约 §2.5 完全一致；H3 一组 8 个 task、千问2.1 一组 2 个", () => {
+    assert.equal(Object.keys(DEFAULT_BASE_TASK).length, 19);
+    assert.deepEqual(DEFAULT_BASE_TASK.img_qwen21_t2i, { base: "千问2.1", task: "文生图" });
+    assert.deepEqual(DEFAULT_BASE_TASK.img_qwen21_edit, { base: "千问2.1", task: "改图" });
+    assert.deepEqual(DEFAULT_BASE_TASK.upscale_4x, { base: "放大", task: "4 倍" });
+    assert.deepEqual(DEFAULT_BASE_TASK.video_h3_ref2v_image_turbo, { base: "H3", task: "参考图生视频 · 快速版" });
+    assert.deepEqual(DEFAULT_BASE_TASK.video_h3_quantfunc_ref2v, { base: "H3", task: "参考图生视频 · 省显存版" });
+    assert.deepEqual(DEFAULT_BASE_TASK.deepseek, { base: "DeepSeek", task: "对话" });
+
+    const values = Object.values(DEFAULT_BASE_TASK);
+    assert.equal(values.filter((v) => v.base === "H3").length, 8, "生视频下 H3 应含 8 个 task");
+    assert.equal(values.filter((v) => v.base === "千问2.1").length, 2, "生图下千问2.1 应含 2 个 task");
+
+    // alias 单一事实源 = composeAlias(base, task)
+    for (const [name, { base, task }] of Object.entries(DEFAULT_BASE_TASK)) {
+        assert.equal(DEFAULT_ALIASES[name], composeAlias(base, task));
+    }
+});
+
+test("回落链 fallbackBaseTask：默认表命中 → alias 拆分 → name 兜底", () => {
+    assert.deepEqual(fallbackBaseTask("video_h3_i2v", ""), { base: "H3", task: "图生视频" });
+    assert.deepEqual(fallbackBaseTask("no_such_model", "底座A 能力B"), { base: "底座A", task: "能力B" });
+    assert.deepEqual(fallbackBaseTask("no_such_model", "单名无空格"), { base: "单名无空格", task: "" });
+    assert.deepEqual(fallbackBaseTask("only_name", ""), { base: "only_name", task: "" });
 });
 
 test("分类映射四类：audio_* → audio，video → video，img/edit/upscale → image（音频不被错分进生图）", () => {
@@ -293,4 +325,160 @@ test("script：服务端生成的模板脚本存在且可编译（等价前端 b
     const videoScript = buildTemplateScript({ name: "video_h3_i2v", family: "video", title: "H3 图生视频", tokens: ["PROMPT", "LENGTH"] });
     assert.ok(videoScript.includes('family: "video"'));
     assert.ok(videoScript.includes("/api/generate/video"));
+});
+
+test("sync 首次登记：base/task/alias 按 §2.5 默认表填；未命中条目回落", () => {
+    const registry = newRegistry();
+    registry.sync(SOURCES);
+    const { models } = registry.list();
+    const byName = new Map(models.map((m) => [m.name, m]));
+
+    const t2i = byName.get("img_qwen21_t2i");
+    assert.equal(t2i.base, "千问2.1");
+    assert.equal(t2i.task, "文生图");
+    assert.equal(t2i.alias, "千问2.1 文生图");
+
+    const upscale = byName.get("upscale_4x");
+    assert.deepEqual({ base: upscale.base, task: upscale.task, alias: upscale.alias }, { base: "放大", task: "4 倍", alias: "放大 4 倍" });
+
+    // 渠道命中默认表
+    assert.deepEqual({ b: byName.get("deepseek").base, t: byName.get("deepseek").task }, { b: "DeepSeek", t: "对话" });
+
+    // 未命中默认表的渠道（本地 ollama 无默认别名）→ base=name、task=""
+    const ollama = byName.get("本地 ollama");
+    assert.equal(ollama.base, "本地 ollama");
+    assert.equal(ollama.task, "");
+
+    // computeAvailable 也带 base/task
+    const items = computeAvailable(SOURCES);
+    assert.equal(items.find((i) => i.name === "video_h3_i2v").base, "H3");
+    assert.equal(items.find((i) => i.name === "video_h3_i2v").task, "图生视频");
+});
+
+test("存量回填：只有 alias 的老条目补齐 base/task；不覆盖用户改过的 alias/enabled；幂等", () => {
+    const dir = join(root, `backfill-${seq++}`);
+    mkdirSync(dir, { recursive: true });
+    const registry = createModelRegistry({ dataDir: dir });
+    // 模拟存量登记：全部只有 alias（无 base/task），含一条被用户改过 alias、一条空 alias。
+    const legacy = {
+        version: 1,
+        models: [
+            { id: "mdl_1", name: "img_qwen21_t2i", alias: "千问2.1 文生图", category: "image", enabled: true, source: "template" },
+            { id: "mdl_2", name: "img_qwen21_edit", alias: "千问2.1 改图", category: "image", enabled: true, source: "template" },
+            { id: "mdl_3", name: "video_h3_i2v", alias: "H3 图生视频", category: "video", enabled: true, source: "template" },
+            { id: "mdl_4", name: "custom_thing", alias: "自定基座 特殊能力", category: "image", enabled: false, source: "manual" },
+            { id: "mdl_5", name: "lonely", alias: "", category: "audio", enabled: true, source: "manual" },
+            { id: "mdl_6", name: "img_flux_artistic", alias: "我的Flux别名", category: "image", enabled: true, source: "template" },
+        ],
+    };
+    writeFileSync(join(dir, "model-registry.json"), JSON.stringify(legacy), "utf8");
+
+    // sync 空源也照样回填（回填独立于可用清单）
+    const result = registry.sync({ templates: [], llmProviders: [] });
+    assert.equal(result.backfilled, 6);
+
+    const { models } = registry.list();
+    const byName = new Map(models.map((m) => [m.name, m]));
+    // 命中默认表
+    assert.deepEqual({ b: byName.get("img_qwen21_t2i").base, t: byName.get("img_qwen21_t2i").task }, { b: "千问2.1", t: "文生图" });
+    assert.deepEqual({ b: byName.get("video_h3_i2v").base, t: byName.get("video_h3_i2v").task }, { b: "H3", t: "图生视频" });
+    // 未命中默认表 → alias 拆分（第一个空格）
+    assert.equal(byName.get("custom_thing").base, "自定基座");
+    assert.equal(byName.get("custom_thing").task, "特殊能力");
+    // 空 alias → base = alias || name
+    assert.equal(byName.get("lonely").base, "lonely");
+    assert.equal(byName.get("lonely").task, "");
+    // 用户改过的 alias 与 enabled 一律保留（回填只补字段，不重写 alias）
+    assert.equal(byName.get("img_flux_artistic").alias, "我的Flux别名");
+    assert.equal(byName.get("img_flux_artistic").base, "Flux");
+    assert.equal(byName.get("custom_thing").alias, "自定基座 特殊能力");
+    assert.equal(byName.get("custom_thing").enabled, false);
+
+    // 幂等：再次 sync 不再回填，字段原样
+    const again = registry.sync({ templates: [], llmProviders: [] });
+    assert.equal(again.backfilled, 0);
+    assert.equal(registry.get("mdl_1").base, "千问2.1");
+    assert.equal(registry.get("mdl_1").alias, "千问2.1 文生图");
+});
+
+test("PATCH 改 base / task → alias 被重算为 base + 空格 + task；入参校验", () => {
+    const registry = newRegistry();
+    registry.sync(SOURCES);
+    const target = registry.list().models.find((m) => m.name === "img_qwen21_t2i");
+
+    const byTask = registry.update(target.id, { task: "文生图 · 高清" });
+    assert.equal(byTask.base, "千问2.1");
+    assert.equal(byTask.task, "文生图 · 高清");
+    assert.equal(byTask.alias, "千问2.1 文生图 · 高清");
+
+    const byBase = registry.update(target.id, { base: "通义千问2.1" });
+    assert.equal(byBase.base, "通义千问2.1");
+    assert.equal(byBase.task, "文生图 · 高清");
+    assert.equal(byBase.alias, "通义千问2.1 文生图 · 高清");
+
+    // task 可为空串 → alias 只留 base
+    assert.equal(registry.update(target.id, { task: "" }).alias, "通义千问2.1");
+    // 校验：base 空 / 非字符串 → 400；task 非字符串 → 400
+    assert.throws(() => registry.update(target.id, { base: "" }), (e) => e.status === 400);
+    assert.throws(() => registry.update(target.id, { base: 123 }), (e) => e.status === 400);
+    assert.throws(() => registry.update(target.id, { task: 7 }), (e) => e.status === 400);
+});
+
+test("PATCH base/task 后再次 sync 不被冲掉", () => {
+    const registry = newRegistry();
+    registry.sync(SOURCES);
+    const target = registry.list().models.find((m) => m.name === "img_qwen21_edit");
+    registry.update(target.id, { base: "千问2.1", task: "图像编辑" });
+    registry.sync(SOURCES);
+    const after = registry.get(target.id);
+    assert.equal(after.task, "图像编辑");
+    assert.equal(after.alias, "千问2.1 图像编辑");
+});
+
+test("POST 新增支持 base/task（缺则按默认表/拆分推）；入参校验", () => {
+    const registry = newRegistry();
+    const hit = registry.create({ name: "img_qwen21_t2i", category: "image" });
+    assert.deepEqual({ b: hit.base, t: hit.task, a: hit.alias }, { b: "千问2.1", t: "文生图", a: "千问2.1 文生图" });
+
+    const explicit = registry.create({ name: "brand_new", category: "image", base: "新基座", task: "新能力" });
+    assert.equal(explicit.alias, "新基座 新能力");
+
+    // alias 显式优先于 base+task 组合视图
+    const explicitAlias = registry.create({ name: "brand_new2", category: "image", base: "新基座", task: "另一个", alias: "自定义别名" });
+    assert.equal(explicitAlias.alias, "自定义别名");
+    assert.equal(explicitAlias.base, "新基座");
+    assert.equal(explicitAlias.task, "另一个");
+
+    // 无 base/task → 由 alias 拆分
+    const split = registry.create({ name: "brand_new3", category: "image", alias: "底座A 能力B" });
+    assert.deepEqual({ b: split.base, t: split.task }, { b: "底座A", t: "能力B" });
+
+    assert.throws(() => registry.create({ name: "bad", category: "image", base: "" }), (e) => e.status === 400);
+    assert.throws(() => registry.create({ name: "bad2", category: "image", task: 5 }), (e) => e.status === 400);
+});
+
+test("groups：按 category → base 聚合；默认表顺序优先、表外按 name 字典序；组内按默认表顺序", () => {
+    const registry = newRegistry();
+    registry.sync(SOURCES);
+    registry.create({ name: "zzz_extra", category: "image", base: "Zeta", task: "杂项" });
+    registry.create({ name: "aaa_extra", category: "image", base: "Alpha", task: "杂项" });
+
+    const { groups } = registry.list();
+    assert.deepEqual(groups.map((g) => g.category), ["text", "image", "video", "audio"]);
+
+    const image = groups.find((g) => g.category === "image");
+    // 默认表内 image 组：千问2.1（表首）→ 放大（表内最后）；表外 Alpha/Zeta 追加、按字典序
+    assert.deepEqual(image.bases.map((b) => b.base), ["千问2.1", "放大", "Alpha", "Zeta"]);
+    // 组内按默认表顺序：文生图 在 改图 之前
+    const qwen = image.bases.find((b) => b.base === "千问2.1");
+    assert.deepEqual(qwen.models.map((m) => m.task), ["文生图", "改图"]);
+    // 组内每行不再重复 base —— models[].base 与组头一致，前端只渲染 task
+    assert.ok(qwen.models.every((m) => m.base === "千问2.1"));
+
+    // text 组：deepseek(DeepSeek 对话) 命中默认表，本地 ollama 表外
+    const text = groups.find((g) => g.category === "text");
+    assert.deepEqual(text.bases.map((b) => b.base), ["DeepSeek", "本地 ollama"]);
+
+    // buildGroups 纯函数同构
+    assert.deepEqual(buildGroups(registry.list().models), groups);
 });

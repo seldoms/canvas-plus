@@ -26,30 +26,60 @@ export const RUNTIMES = Object.freeze(["local", "cloud"]);
 export const SOURCES = Object.freeze(["template", "channel", "manual"]);
 
 /**
- * 契约 §2.2 默认别名表 —— 19 条：18 个本机模板 + 1 条 LLM 渠道模型默认别名。
+ * 契约 §2.5 默认 base / task 表 —— 19 条：18 个本机模板 + 1 条 LLM 渠道模型。
+ *
+ * | 字段 | 含义 | 用途 |
+ * | `base` | 基座 / 模型名（`千问2.1` / `H3` / `Flux` / `Wan` / `DeepSeek`）| **分组键** |
+ * | `task` | 能力 / 用途名（`文生图` / `改图` / `首尾帧生视频`）| 组内那一行的标题 |
+ *
+ * 规则（§2.4）：base/task 一律中文、禁缩写（沿用 §2.1）；同级变体（快慢 / 显存档）
+ * 不另开一组，用 `·` 分隔表达（如 `参考图生视频 · 快速版`）。
+ * 表的**插入顺序即组内默认排序**（§2.4 规则 5）。
+ */
+export const DEFAULT_BASE_TASK = Object.freeze({
+    img_qwen21_t2i: { base: "千问2.1", task: "文生图" },
+    img_qwen21_edit: { base: "千问2.1", task: "改图" },
+    img_flux_artistic: { base: "Flux", task: "艺术生图" },
+    img_krea2_artistic: { base: "Krea2", task: "艺术生图" },
+    img_zimage_artistic: { base: "ZImage", task: "艺术生图" },
+    img_boogu_outfit_edit: { base: "Boogu", task: "换装" },
+    scail2_action_transfer: { base: "Scail2", task: "动作迁移" },
+    upscale_4x: { base: "放大", task: "4 倍" },
+    video_h3_i2v: { base: "H3", task: "图生视频" },
+    video_h3_i2v_fl: { base: "H3", task: "首尾帧生视频" },
+    video_h3_talk: { base: "H3", task: "台词对口型" },
+    video_h3_ref2v_image: { base: "H3", task: "参考图生视频" },
+    video_h3_ref2v_image_turbo: { base: "H3", task: "参考图生视频 · 快速版" },
+    video_h3_quantfunc_ref2v: { base: "H3", task: "参考图生视频 · 省显存版" },
+    video_h3_ref2v: { base: "H3", task: "参考视频生视频" },
+    video_minimax_h3_t2v: { base: "H3", task: "文生视频" },
+    video_wan_animate: { base: "Wan", task: "动作驱动" },
+    audio_qwen3_tts: { base: "千问3", task: "语音合成" },
+    deepseek: { base: "DeepSeek", task: "对话" },
+});
+
+/** 组合视图：`alias = base + 空格 + task`（task 为空时只留 base，不留尾空格）。 */
+export function composeAlias(base, task) {
+    const b = String(base ?? "").trim();
+    const t = String(task ?? "").trim();
+    return t ? `${b} ${t}` : b;
+}
+
+/**
+ * 契约 §2.2 默认别名表 —— 由 §2.5 的 base/task 派生（**单一事实源**），仍是 19 条。
  * 规则（§2.1）：一律中文、禁止 i2v/t2i 这类缩写；厂商名可保留通用写法；
  * 「云端」不写进别名（由 runtime + UI 的 ☁️ 图标表达）。
  */
-export const DEFAULT_ALIASES = Object.freeze({
-    img_qwen21_t2i: "千问2.1 文生图",
-    img_qwen21_edit: "千问2.1 改图",
-    img_flux_artistic: "Flux 艺术生图",
-    img_krea2_artistic: "Krea2 艺术生图",
-    img_zimage_artistic: "ZImage 艺术生图",
-    img_boogu_outfit_edit: "Boogu 换装",
-    scail2_action_transfer: "Scail2 动作迁移",
-    upscale_4x: "4 倍放大",
-    video_h3_i2v: "H3 图生视频",
-    video_h3_i2v_fl: "H3 首尾帧生视频",
-    video_h3_talk: "H3 台词对口型",
-    video_h3_ref2v_image: "H3 参考图生视频",
-    video_h3_ref2v_image_turbo: "H3 参考图生视频 快速版",
-    video_h3_quantfunc_ref2v: "H3 参考图生视频 省显存版",
-    video_h3_ref2v: "H3 参考视频生视频",
-    video_minimax_h3_t2v: "H3 文生视频",
-    video_wan_animate: "Wan 动作驱动",
-    audio_qwen3_tts: "千问3 语音合成",
-    deepseek: "DeepSeek 对话",
+export const DEFAULT_ALIASES = Object.freeze(
+    Object.fromEntries(Object.entries(DEFAULT_BASE_TASK).map(([name, { base, task }]) => [name, composeAlias(base, task)])),
+);
+
+/** base 首次出现顺序（组间排序：默认表优先）；name → 表内下标（组内排序）。 */
+const BASE_ORDER = new Map();
+const NAME_ORDER = new Map();
+Object.entries(DEFAULT_BASE_TASK).forEach(([name, { base }], index) => {
+    NAME_ORDER.set(name, index);
+    if (!BASE_ORDER.has(base)) BASE_ORDER.set(base, index);
 });
 
 function httpError(status, message) {
@@ -65,6 +95,46 @@ function nowIso() {
 /** 未命中默认别名表时返回空串（UI 回落 meta.title → name），不做任何猜测。 */
 export function defaultAliasFor(name) {
     return DEFAULT_ALIASES[String(name ?? "").trim()] || "";
+}
+
+/** 命中 §2.5 默认表则返回 `{ base, task }`，否则 null。 */
+export function defaultBaseTaskFor(name) {
+    const hit = DEFAULT_BASE_TASK[String(name ?? "").trim()];
+    return hit ? { base: hit.base, task: hit.task } : null;
+}
+
+/**
+ * base/task 回落链（§2.5 回填规则）：
+ *   1. 默认表按 `name` 命中 → 取之；
+ *   2. 否则按 `alias` 拆分（`base` = 第一个空格前，`task` = 其余）；
+ *   3. 再否则 `base = alias || name`、`task = ""`。
+ * 纯函数，不写别名（回填**绝不覆盖用户改过的 alias**）。
+ */
+export function fallbackBaseTask(name, alias) {
+    const hit = defaultBaseTaskFor(name);
+    if (hit) return hit;
+    const a = String(alias ?? "").trim();
+    if (a) {
+        const index = a.indexOf(" ");
+        if (index > 0) return { base: a.slice(0, index).trim(), task: a.slice(index + 1).trim() };
+        return { base: a, task: "" };
+    }
+    return { base: String(name ?? "").trim(), task: "" };
+}
+
+/**
+ * 幂等补齐：仅当 `base`/`task` 缺失时填入（命中/拆分/回落），**已具备则不动**。
+ * 不触碰 `alias`/`enabled` —— 保证存量回填不丢用户改动。返回是否发生了补齐。
+ */
+export function ensureBaseTask(model) {
+    if (!model || typeof model !== "object") return false;
+    const hasBase = model.base != null && String(model.base).trim() !== "";
+    const hasTask = model.task != null;
+    if (hasBase && hasTask) return false;
+    const fallback = fallbackBaseTask(model.name, model.alias);
+    if (!hasBase) model.base = fallback.base;
+    if (!hasTask) model.task = fallback.task;
+    return true;
 }
 
 /**
@@ -231,12 +301,15 @@ export function computeAvailable({ templates = [], llmProviders = [], catalog = 
             supportsReference: Boolean(info?.supportsReference),
             referenceLimit: Number(info?.maxReferenceImages) || 0,
         };
+        const { base, task } = fallbackBaseTask(name, defaultAliasFor(name));
         if (category === "video") {
             meta.durations = template?.durations ?? template?.durationMeta?.durations ?? null;
             meta.durationMeta = template?.durationMeta ?? null;
         }
         items.push({
             name,
+            base,
+            task,
             category,
             runtime: "local",
             provider: "comfy",
@@ -252,8 +325,11 @@ export function computeAvailable({ templates = [], llmProviders = [], catalog = 
     for (const provider of Array.isArray(llmProviders) ? llmProviders : []) {
         const name = String(provider?.name || "").trim();
         if (!name) continue;
+        const { base, task } = fallbackBaseTask(name, defaultAliasFor(name));
         items.push({
             name,
+            base,
+            task,
             category: categoryForChannel(provider),
             runtime: runtimeForProvider(provider),
             provider: "llm",
@@ -270,10 +346,14 @@ export function computeAvailable({ templates = [], llmProviders = [], catalog = 
 
 /** 由可用项描述构造一条 ModelEntry（缺省 enabled=true、alias 取默认别名表）。 */
 function entryFromAvailable(item, now) {
+    const base = String(item.base ?? "").trim();
+    const task = String(item.task ?? "").trim();
     return {
         id: `mdl_${ulid()}`,
         name: String(item.name),
-        alias: item.alias || "",
+        alias: item.alias || composeAlias(base, task),
+        base,
+        task,
         category: item.category,
         enabled: true,
         runtime: item.runtime,
@@ -297,6 +377,58 @@ function computeCounts(models) {
         if (model?.enabled) counts.enabled += 1;
     }
     return counts;
+}
+
+/** 组间/组内比较器：默认表顺序优先，表外排最后、按 `name` 字典序（§2.4 规则 5）。 */
+function byDefaultOrder(keyOf) {
+    return (a, b) => {
+        const ao = keyOf(a);
+        const bo = keyOf(b);
+        if (ao != null && bo != null) return ao - bo;
+        if (ao != null) return -1;
+        if (bo != null) return 1;
+        return 0;
+    };
+}
+const compareName = (a, b) => (String(a.name) < String(b.name) ? -1 : String(a.name) > String(b.name) ? 1 : 0);
+
+/**
+ * 按 `category → base` 聚合（§2.4）：组间 base 顺序 = 默认表首次出现顺序，表外按 `base` 字典序；
+ * 组内按默认表顺序，表外按 `name` 字典序。前端可直接渲染成「组头（base）+ 组内行（task）」。
+ */
+export function buildGroups(models = []) {
+    const byBase = new Map();
+    for (const model of Array.isArray(models) ? models : []) {
+        const base = String(model?.base ?? "").trim() || String(model?.name ?? "").trim();
+        if (!base) continue;
+        if (!byBase.has(base)) byBase.set(base, []);
+        byBase.get(base).push(model);
+    }
+    const baseNames = [...byBase.keys()].sort((a, b) => {
+        const ao = BASE_ORDER.has(a) ? BASE_ORDER.get(a) : null;
+        const bo = BASE_ORDER.has(b) ? BASE_ORDER.get(b) : null;
+        if (ao != null && bo != null) return ao - bo;
+        if (ao != null) return -1;
+        if (bo != null) return 1;
+        return a < b ? -1 : a > b ? 1 : 0;
+    });
+    const byCategory = new Map();
+    for (const base of baseNames) {
+        const group = byBase.get(base).slice().sort(byDefaultOrder((m) => (NAME_ORDER.has(String(m.name)) ? NAME_ORDER.get(String(m.name)) : null)) || compareName);
+        const category = String(group[0]?.category || "");
+        if (!CATEGORIES.includes(category)) continue;
+        if (!byCategory.has(category)) byCategory.set(category, []);
+        byCategory.get(category).push({ base, models: group });
+    }
+    return CATEGORIES.filter((category) => byCategory.has(category)).map((category) => ({ category, bases: byCategory.get(category) }));
+}
+
+/** base/task 入参校验：必须是字符串；base 非空，task 可为空串（表示未命名能力）。 */
+function normalizeBaseField(value, field) {
+    if (typeof value !== "string") throw httpError(400, `${field} 必须是字符串`);
+    const trimmed = value.trim();
+    if (field === "base" && !trimmed) throw httpError(400, "base 不能为空");
+    return trimmed;
 }
 
 /**
@@ -332,12 +464,16 @@ export function createModelRegistry({ dataDir } = {}) {
     }
 
     function get(id) {
-        return readDoc().models.find((model) => String(model.id) === String(id)) || null;
+        const model = readDoc().models.find((item) => String(item.id) === String(id)) || null;
+        // 读取时就地补齐 base/task（不落盘）：老数据在 sync 之前也能被前端正确分组。
+        if (model) ensureBaseTask(model);
+        return model;
     }
 
     /** 列出登记项，支持 ?category= / ?enabled= 过滤；counts 恒为「全部登记」的汇总。 */
     function list({ category, enabled } = {}) {
         const doc = readDoc();
+        doc.models.forEach(ensureBaseTask);
         let models = doc.models;
         const wantedCategory = String(category || "").trim();
         if (wantedCategory) models = models.filter((model) => model.category === wantedCategory);
@@ -345,7 +481,7 @@ export function createModelRegistry({ dataDir } = {}) {
             const want = enabled === true || String(enabled).toLowerCase() === "true";
             models = models.filter((model) => Boolean(model.enabled) === want);
         }
-        return { models, counts: computeCounts(doc.models), warning: doc.warning };
+        return { models, counts: computeCounts(doc.models), groups: buildGroups(models), warning: doc.warning };
     }
 
     function create(input = {}) {
@@ -364,11 +500,22 @@ export function createModelRegistry({ dataDir } = {}) {
         const provider = input.provider != null ? String(input.provider) : source === "template" ? "comfy" : source === "channel" ? "llm" : "manual";
         const script = input.script != null ? String(input.script) : template && source === "template" ? buildTemplateScript({ name: template, family: input.meta?.family }) : "";
 
+        // base/task：显式传入优先，缺则按 §2.5 默认表 / alias 拆分 / name 回落；alias 为组合视图。
+        const fallback = fallbackBaseTask(name, input.alias);
+        const base = input.base != null ? normalizeBaseField(input.base, "base") : fallback.base;
+        let task;
+        if (input.task != null) task = normalizeBaseField(input.task, "task");
+        else if (input.base != null) task = base === fallback.base ? fallback.task : "";
+        else task = fallback.task;
+        const alias = input.alias != null ? String(input.alias) : composeAlias(base, task);
+
         const now = nowIso();
         const model = {
             id: `mdl_${ulid()}`,
             name,
-            alias: input.alias != null ? String(input.alias) : defaultAliasFor(name),
+            alias,
+            base,
+            task,
             category,
             enabled: input.enabled === undefined ? true : Boolean(input.enabled),
             runtime,
@@ -388,7 +535,7 @@ export function createModelRegistry({ dataDir } = {}) {
         return model;
     }
 
-    /** 局部更新：只有 alias / enabled / category 生效；name 不可改。 */
+    /** 局部更新：alias / enabled / category / base / task 生效；name 不可改。改 base 或 task 会重算 alias。 */
     function update(id, patch = {}) {
         const doc = readDoc();
         const model = doc.models.find((item) => String(item.id) === String(id));
@@ -403,6 +550,12 @@ export function createModelRegistry({ dataDir } = {}) {
             if (!CATEGORIES.includes(category)) throw httpError(400, `category 必须是 ${CATEGORIES.join(" / ")} 之一`);
             model.category = category;
         }
+        // 老条目可能还没有 base/task：改它们之前先补齐另一半，避免 composeAlias 丢字段。
+        if (patch?.base !== undefined || patch?.task !== undefined) ensureBaseTask(model);
+        if (patch?.base !== undefined) model.base = normalizeBaseField(patch.base, "base");
+        if (patch?.task !== undefined) model.task = normalizeBaseField(patch.task, "task");
+        // alias 是 base + 空格 + task 的组合视图：base/task 任一改动都重算（显式改 alias 会被覆盖）。
+        if (patch?.base !== undefined || patch?.task !== undefined) model.alias = composeAlias(model.base, model.task);
         model.updatedAt = nowIso();
         writeDoc(doc);
         return model;
@@ -418,13 +571,19 @@ export function createModelRegistry({ dataDir } = {}) {
     }
 
     /**
-     * 从服务端「实际可用」同步：缺失的补登记（enabled 默认 true、alias 取默认表）；
+     * 从服务端「实际可用」同步：缺失的补登记（enabled 默认 true、base/task/alias 取默认表）；
      * 已消失的置 stale:true（**不删**）；回归的清除 stale。
-     * 只做「补缺 + 标记 stale」，**绝不覆盖用户改过的 alias/enabled**（手工登记项不由 sync 判定）。
+     * 同时**幂等回填**存量条目缺失的 base/task（只补字段，绝不覆盖用户改过的 alias/enabled）。
+     * 手工登记项不由 sync 判定 stale。
      */
     function sync(sources = {}) {
         const available = computeAvailable(sources);
         const doc = readDoc();
+        // 存量回填：仅补缺失的 base/task（命中默认表 / 拆 alias / 回落 name），不碰 alias/enabled。
+        let backfilled = 0;
+        for (const model of doc.models) {
+            if (ensureBaseTask(model)) backfilled += 1;
+        }
         const byName = new Map(doc.models.map((model) => [String(model.name), model]));
         const now = nowIso();
         const added = [];
@@ -452,7 +611,7 @@ export function createModelRegistry({ dataDir } = {}) {
             }
         }
         writeDoc(doc);
-        return { added, staled, kept: doc.models.length - added.length };
+        return { added, staled, kept: doc.models.length - added.length, backfilled };
     }
 
     /** 服务端发现的可用模型（未登记项也含），供配置页显示「可补」差异。 */

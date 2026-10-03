@@ -119,23 +119,36 @@ RunningHub 是**保留的可选云端后端**：未配置 `runninghub.apiKey` �
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/api/model-registry` | `{ models: ModelEntry[], counts: { text, image, video, audio, total, enabled } }`。支持 `?category=image`、`?enabled=true` 过滤；`counts` 恒为**全部登记**的汇总（不随过滤变化） |
-| POST | `/api/model-registry` | 新增登记。body `{ name, category, alias?, enabled?, provider?, source?, template?, channelId? }`；`name`+`category` 必填，**name 唯一，重复 409** → `201 { model }` |
-| PATCH | `/api/model-registry/:id` | 局部更新，只接受 `alias` / `enabled` / `category`（**`name` 不可改**，改它返回 400）→ `{ model }` |
+| GET | `/api/model-registry` | `{ models: ModelEntry[], counts: { text, image, video, audio, total, enabled }, groups: Group[] }`。支持 `?category=image`、`?enabled=true` 过滤；`counts` 恒为**全部登记**的汇总（不随过滤变化），`groups` 按**过滤后的** `models` 聚合 | 
+| POST | `/api/model-registry` | 新增登记。body `{ name, category, alias?, base?, task?, enabled?, provider?, source?, template?, channelId? }`；`name`+`category` 必填，**name 唯一，重复 409**；缺 `base`/`task` 时按 §2.5 默认表 / alias 拆分 / name 回落推 → `201 { model }` |
+| PATCH | `/api/model-registry/:id` | 局部更新，接受 `alias` / `enabled` / `category` / `base` / `task`（**`name` 不可改**，改它返回 400）；**改 `base` 或 `task` 会重算 `alias = base + 空格 + task`**（显式同传的 `alias` 会被覆盖）→ `{ model }` |
 | DELETE | `/api/model-registry/:id` | 删除**登记**（不动模板/渠道本身）→ `{ removed }`；不存在 404 |
-| POST | `/api/model-registry/sync` | 从「服务端实际可用的模板 + LLM 渠道」同步 → `{ added, staled, kept }` |
+| POST | `/api/model-registry/sync` | 从「服务端实际可用的模板 + LLM 渠道」同步 → `{ added, staled, kept, backfilled }`（`backfilled` = 本次补齐 base/task 的存量条数） |
 | GET | `/api/model-registry/available` | 服务端发现的可用清单（未登记项也含）→ `{ available, registered, missing }`，供配置页显示「可补」差异 |
 
-`ModelEntry` = `{ id: "mdl_<ULID>", name, alias, category: "text"｜"image"｜"video"｜"audio", enabled, runtime: "local"｜"cloud", provider, source: "template"｜"channel"｜"manual", template, channelId, channelName, script, meta, stale, createdAt, updatedAt }`
+`ModelEntry` = `{ id: "mdl_<ULID>", name, base, task, alias, category: "text"｜"image"｜"video"｜"audio", enabled, runtime: "local"｜"cloud", provider, source: "template"｜"channel"｜"manual", template, channelId, channelName, script, meta, stale, createdAt, updatedAt }`
+
+`Group` = `{ category, bases: [{ base, models: ModelEntry[] }] }`（`groups` 只含非空 category，按 `text→image→video→audio` 排序）
+
+- **`base` + `task`（契约 §2.4/§2.5，分组键）**：`base` = 基座 / 模型名（分组键，同 base 归一组），
+  `task` = 能力 / 用途名（组内那一行的标题）。`alias` 降级为「`base` + 空格 + `task`」的**组合视图**（由服务端计算维护）。
+  默认 base/task 表（19 条）在 `src/model-registry.js` 的 `DEFAULT_BASE_TASK`，`DEFAULT_ALIASES` 由它派生（**单一事实源**）。
+- **`groups` 聚合与排序（§2.4 规则 4/5）**：按 `category` 分栏后再按 `base` 分组；组间 base 顺序 = 默认表首次出现顺序、
+  表外按 `base` 字典序；组内按默认表顺序、表外按 `name` 字典序。**base 只在组头出现一次**，组内每行只渲染 `task`，
+  前端不必自己拆字符串或聚合（禁硬编码）。
+- **`sync` 幂等回填存量**：老条目（只有 `alias`、缺 `base`/`task`）在 `sync` 时按「默认表命中 → alias 拆分 → `base=alias||name`」
+  补齐，**只补字段，绝不改写已有的 `alias`/`enabled`**（所以未必等于新的组合视图，但分组键 `base`/`task` 一定正确）。
+  已具备 `base`/`task` 的条目不动；`GET`/`GET :id` 读取时也会就地为缺失项推导（不落盘），保证前端在下次 `sync` 前即可正确分组。
+
 
 - **分类映射（唯一事实源在服务端）**：LLM 渠道 → `text`；模板 `family=video` → `video`；
   `image｜edit｜upscale` → `image`；`family=audio` **或模板名以 `audio_` 开头** → `audio`
   （`providers/comfy.js` 的 `familyOf()` 会把 `audio_qwen3_tts` 判成 `edit`，故按名字前缀兜底，避免音频混进生图下拉）。
 - **runtime 判定**：本地 ComfyUI 模板 / 本地 LLM（ollama、回环、私有网段、`.local`/`.internal`）→ `local`；
   LLM 云端渠道 / 云端 ComfyUI（RunningHub）→ `cloud`。UI 对 `cloud` 加 ☁️ 图标（别名文字里不得再写「云端」）。
-- **sync 行为**：缺失的补登记（`enabled` 默认 `true`、`alias` 命中 §2.2 默认别名表则填中文名，未命中留空由 UI 回落
-  `meta.title → name`）；已消失的置 `stale: true`（**不删**）；回归的清除 `stale`。**绝不覆盖用户改过的 `alias`/`enabled`**
-  （`source=manual` 的手工登记项不参与 stale 判定）。重复调用幂等。
+- **sync 行为**：缺失的补登记（`enabled` 默认 `true`，`base`/`task`/`alias` 命中 §2.5 默认表则填，未命中按 alias 拆分 / name 回落）；
+  已消失的置 `stale: true`（**不删**）；回归的清除 `stale`。**绝不覆盖用户改过的 `alias`/`enabled`**，并对存量条目
+  **幂等补齐**缺失的 `base`/`task`（返回 `backfilled` 计数）。（`source=manual` 的手工登记项不参与 stale 判定）。重复调用幂等。
 - **`script`**：模板类条目的请求脚本由服务端生成（等价前端 `buildGatewayTemplateScript`，前端不再自己拼脚本）；
   渠道类条目为空串。
 
@@ -212,7 +225,7 @@ RunningHub 是**保留的可选云端后端**：未配置 `runninghub.apiKey` �
 | `src/providers/comfy.js` | `createComfyClient(config)`, `probeComfy(config)`, `listComfyCapabilities(config)`, `listTemplates(workflowsDir)` | 见下 |
 | `src/skills.js` | `loadSkills(skillsDir)`, `loadRegistry(skillsDir)`, `readSkill(skillsDir, id)` | 见下 |
 | `src/pipeline.js` | `createPipeline({ config, skillsDir, jobs, comfy, llm, runJob })` | 见下 |
-| `src/model-registry.js` | `createModelRegistry({ dataDir })`, `computeAvailable()`, `categoryForTemplate()`, `runtimeForProvider()`, `buildTemplateScript()`, `DEFAULT_ALIASES` | 模型注册表存储内核：CRUD + `sync` + `available`；分类/runtime 映射与默认别名表（契约 v1） |
+| `src/model-registry.js` | `createModelRegistry({ dataDir })`, `computeAvailable()`, `categoryForTemplate()`, `runtimeForProvider()`, `buildTemplateScript()`, `buildGroups()`, `composeAlias()`, `fallbackBaseTask()`, `DEFAULT_ALIASES`, `DEFAULT_BASE_TASK` | 模型注册表存储内核：CRUD + `sync`（含存量幂等回填）+ `available` + 分组聚合；分类/runtime 映射与默认 base/task 别名表（契约 v1） |
 
 ### `src/chunk-novel.js`
 

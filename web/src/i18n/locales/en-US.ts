@@ -852,6 +852,8 @@ export default {
             loadFailed: "Failed to load the model registry",
             saveFailed: "Save failed",
             stale: "Gone",
+            basePlaceholder: "Base name",
+            taskPlaceholder: "Task name",
             categories: {
                 text: "Text",
                 image: "Image",
