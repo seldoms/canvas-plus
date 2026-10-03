@@ -195,14 +195,28 @@
 | `POST` | `/api/model-registry` | 新增登记。body：`{ name, category, alias?, enabled?, provider?, source?, template?, channelId? }`；`name`+`category` 必填；**name 唯一，重复返回 409** |
 | `PATCH` | `/api/model-registry/:id` | 局部更新：`alias` / `enabled` / `category`（**`name` 不可改**，要改只能删了重建）|
 | `DELETE` | `/api/model-registry/:id` | 删除**登记**（不动模板/渠道本身）|
-| `POST` | `/api/model-registry/sync` | **从「服务端实际可用的模板 + 渠道」同步**：缺失的补登记（`enabled` 默认 `true`）；已消失的置 `stale: true`（**不删、不覆盖用户改过的 alias/enabled**）。返回 `{ added: [...], staled: [...], kept: n }` |
+| `POST` | `/api/model-registry/sync` | **从「服务端实际可用的模板 + 渠道」同步**：缺失的补登记（`enabled` 默认 `true`）；已消失的置 `stale: true`（**不删、不覆盖用户改过的 alias/enabled**）；渠道条目的 `meta.baseUrl`/`meta.models` 属服务端事实，每次同步刷新。返回 `{ added: [...], staled: [...], refreshed: [...], kept: n, backfilled: n }` |
 | `GET` | `/api/model-registry/available` | 服务端发现的**可用模型**清单（未登记项也含），供配置页显示「可补」差异：`{ available: [...], registered: n, missing: [...] }` |
 
 ### 行为约定
 - **幂等**：`sync` 重复调用不改变结果；用户改过的 `alias`/`enabled` 必须保留。
-- **不覆盖用户意图**：`sync` 只做「补缺 + 标记 stale」，绝不把用户设的 `enabled:false` 改回 true。
+- **不覆盖用户意图**：`sync` 只做「补缺 + 标记 stale + 刷新渠道服务端事实」，绝不把用户设的 `enabled:false` 改回 true。
 - **写入**：所有写操作走 `data/model-registry.json`，**原子写**（临时文件 + rename），失败不留半截文件。
 - **容错**：文件缺失/损坏 → 视为空表并记 warning，不要 500。
+
+### 3.1 文本模型清单：**只读注册表，网关不探测上游**（硬规则 · 2026-10-03 产品负责人当面定）
+
+> 原话口径：「外部模型探测功能不太实用，因为已经有模型列表获取的能力了，我认为这个足够了。」
+
+- `GET /v1/models`、`/api/llm/models`、`/api/providers.llm.models`、`/api/health.llm.models` **一律**由注册表的 `textModelIds()` 静态展开：
+  已启用的 `category: text` 条目 → 每个声明模型产出一个 `渠道名::模型名`（与 `providers/llm.js` 的 `::` 前缀路由同口径）。
+- 声明来源：渠道表 `data/llm-providers.json` 的 `models: string[]`（或 `POST /api/llm/providers` 带 `models`）→ `sync` 抄进条目 `meta.models`。
+  服务端启动时 sync 一次，渠道表写入后也 sync 一次，**清单不需要等用户点「同步」**。
+- **未声明模型的渠道不产出任何 id**：宁可少列，也不把渠道名当模型名发给上游换一个含糊 404。
+- 因此网关**不再**向任何上游发 `/v1/models` / `/api/tags` 探测请求：死渠道既拖不住 `/api/health`，也不需要探测缓存/冷却来兜底
+  （原 `probeLlm` / `listLlmModels` / `modelsAt` / `probeCache` 与 `config.llm.probeTimeoutMs` 一并删除）。
+- **代价（已知并接受）**：本机 Ollama（`config.llm.baseUrl`）的模型不再被自动发现。要把它列进下拉，就登记成一个渠道并声明模型 id。
+  已存在的浏览器渠道配置不受影响 —— `chat` 的路由只看 `::` 前缀与 `config.llm.baseUrl`，与清单是否列出无关。
 
 ## 4. 前端行为约定
 
@@ -246,3 +260,7 @@
 - **前端不得暴露**：无「预览最终提示词」入口、无「已强化/未强化」痕迹标签、无解释性说明
 - 接口返回的 `untranslated` / `finishReason` / `rewriterId` 等元数据**仅供排查与运维**，**不得渲染到界面**
 - **不得为转写增加任何用户要填的参数**；用户只选模型、点生成
+
+### 官方资产与项目补充路径
+
+`rewriterId` 只有在调研注册表明确登记并且本地 `prompts/rewriters/` 有对应资产时，才表示厂商官方改写器（当前包括 Qwen、Wan、Boogu、SCAIL-2）。Krea2 与 FLUX 当前没有登记官方改写器；后端在需要英文时使用项目自有的通用翻译 system prompt 作为补充路径，不能把这条路径当作厂商官方口径或官方资产。

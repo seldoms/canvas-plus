@@ -529,7 +529,7 @@ ReviewNote { id, scope: project|episode|scene|shot, targetId?, stage,
 
 > 本章回答两个问题：**做到什么程度**、**遇到哪些问题**。§8 写的是「要做什么 + 验收标准」，本章写「实际到哪了」。
 > **复核方式**：读代码 + 跑后端测试 + 打接口，不采信 CHANGELOG 自述。
-> **复核基线**：后端 `cd canvas-server && node --test test/*.test.mjs` → **206 tests / 206 pass / fail 0 / 2.9s**。
+> **复核基线**：本轮提示词策略复核在允许回环监听的受控环境执行 `cd canvas-server && node --test test/*.test.mjs` → **667 tests / 667 pass / fail 0 / 4.31s**。此前 206/206 是旧快照，不再作为当前基线。
 > 问题详情与整改单在 `pilot-issues.md`（只追加、不替换）；本章只做**汇总与分级**。
 
 ### 11.1 做到什么程度 —— 对着 §8 工作包逐项对账
@@ -540,7 +540,7 @@ ReviewNote { id, scope: project|episode|scene|shot, targetId?, stage,
 > - **时长档位（pilot-issues D1）**：档位**跟着模型走**（模型能力元数据），`24×秒+3`、H3 仅 5/10/15s；**先算时长再填内容**，Σ段时长必须等于骨架。
 > - **关键帧 ≥4 张（pilot-issues D3）**：单镜一次生成 ≥4 个候选，**不达标自动重新生成**，不停下等人挑。
 
-> **本表于 2026-10-03 傍晚二次复核**（今日下午交付 batch 后）。复核口径：每条都取**运行时一手**（打接口 / 跑测试 / 全仓 grep）；**否定断言一律双范围复核**。本轮实测基线：后端 `node --test` **456/456 pass**、`tsc --noEmit` 0 错、`npm run build` 通过。以下状态列**只代表当前**，与上一版的差异均已在「一手证据」列尾部以 `⟶ 复核` 标出。
+> **本表于 2026-10-03 傍晚二次复核**（今日下午交付 batch 后）。复核口径：每条都取**运行时一手**（打接口 / 跑测试 / 全仓 grep）；**否定断言一律双范围复核**。本轮实测基线：后端 `node --test` **667/667 pass**、`tsc --noEmit` 0 错、`npm run build` 通过。以下状态列**只代表当前**，与上一版的差异均已在「一手证据」列尾部以 `⟶ 复核` 标出。
 
 | 工作包 | 实际状态 | 一手证据 / 缺口 |
 | --- | --- | --- |
@@ -548,6 +548,7 @@ ReviewNote { id, scope: project|episode|scene|shot, targetId?, stage,
 | **P0-a** Project 内核 | 🟡 | `projects.js`(23.0KB) 原子写 + 乐观版本；`/api/projects` 列表/创建/详情/上下文/归档；6 个工作区页 + 门禁。缺口：`runIds[]` 仅覆盖「项目内建 run」路径（前端 `use-project-run.ts:106` PATCH 回填），**从流水线页建的 run 不回填**；服务端「建 run 时按 `options.projectId` 幂等追加」仍未实现 |
 | **P0-b** Job→Artifact→Slot 回写断链 | ✅ | 终态重放 + `registerArtifacts` 幂等回写；阶段状态以任务终态为准。**活证据**：本项目 keyframe `artifacts=17`、assembly 2 条 clip done。⟶ 复核：今日补上 **keyframe→`episodes[].shots[].generationSlots`** 投影（此前缺失导致 `assembly` 门禁被永挡，见 #48）；幂等守卫「已存在≠已完成」缺陷亦修（#41） |
 | **P0-c** run 可恢复 | 🟡 | 异步 run（202）+ `progress.json` + `GET /runs/:id/progress` + 取消贯通 + 断点续跑 + `run.estimate` + 启动 `reconcileRunning()`。缺口：① 只覆盖项目内建 run（同上）；② 多 run 时前端只取 `runIds[0]`（`workspace-gate-panel.tsx:40`、`use-project-timeline.ts:20`），第二个及以后不可见 |
+| **P0 prompt strategy** 模型提示词编译与门禁同源 | ✅ | 模型规则表、编译器、外部 LLM 改写客户端与入队接线已在工作区；阶段运行面板点击前重新读取当前 run 的服务端 `/gates`，服务不可达保持 unknown 不放行。后端 667/667 通过，前端 `tsc` 与 build 通过；DeepSeek `deepseek-flash` 真调用返回 `finishReason=stop/chars=3045`，Qwen 改写器返回 `untranslated=false`；生产重载后 CDP 真实点击关键帧使 job **177→282**，并核对新 `img_qwen21_edit` job 的完整英文 PROMPT。同步降级去重/去旧尾巴、编译快照落盘、重跑强制新编译、撤销候选回退、历史进度旧字数清洗均已验证。仍缺 H3 真实 UI 全文与 #56 返回入口专项交互。 |
 | **P0-d** 资源调度与注册表 | 🟡 | `registry.js`(12.4KB) 四类注册表 + 能力路由。缺口：各类 Job 未统一进调度链；音频/TTS 未纳入同一生产契约；设备并行与取消释放无端到端验证 |
 | **P0-e** 可逆生产链与影响分析 | 🟡 | ⟶ **复核上调（⬜→🟡）**：`impact.js`(**32.8KB**，57 处 fingerprint/revision/stale 相关) 已落地并**接了 HTTP** —— 实打 `POST /api/projects/:id/impact` 返回 `{changed, stale:[], keep:[sh_…×17], summary}`、`GET …/impact/options` 返回带 `revision` 的 assetRefs（老周 revision=79）。缺口：**「分支重跑 / 回马枪」施工未接**（分析能算，不能按集/场/镜发起分支 run）；旧产物只读保留与回退播放未做 |
 | **P0-f** 制作圣经与确认锁 | 🟡 | ⟶ **复核上调（⬜→🟡）**：`bible.js`(**25.9KB**) 已实现五类实体（ProjectBrief / Series / Character / World / Audio Bible）规范化 + `draft→review→approved→locked` 状态机（含 revision 语义：改已锁对象必须产生新 revision）+ 34 例单测。**缺口关键**：全仓 grep 显示该模块**只有 1 处自引用、未被任何模块消费** —— 尚未接进门禁与下游阶段，「下游只消费已批准版本」这条验收**未达成** |
@@ -602,10 +603,10 @@ ReviewNote { id, scope: project|episode|scene|shot, targetId?, stage,
 
 ### 11.3 本轮状态与风险面（交给下一个接手者）
 
-1. **工作区已全部提交、干净**。本轮 7 笔：文档 5（`b3874d5` §11 初稿+清单复核+追加 #22–#24、`87d0485` 交接单同步、`39f1ad4` runIds 结论更正+CHANGELOG、`7a85ef0` 复跑结果与渠道事故登记）+ 代码 2（`e1383ac` 原文导入+styleAnchor 唯一事实源、`78e390a` 项目工作区过程时间线）。验证：后端 `206/206 pass`、前端 `tsc 0` 错、`npm run build` 通过。
+1. **本轮提示词策略与门禁修复仍在工作区待统一提交**。本轮复核：后端 **667/667 pass**、前端 `tsc 0` 错、`npm run build` 通过；生产服务已在确认 GPU 队列空闲后受控重载，并完成真实 CDP 关键帧点击（run job **177→282**）与 Qwen `params.PROMPT` 全文取证。
 2. **出片复跑已结束，但成片没出来**。`run-murpt28o-46f5q` 落 assembly `partial`（16 镜 10 成 / 6 镜 OOM）。要先出片，顺序是：解决 147 显存（#25，建议先降 480×864 出草稿）→ **逐镜重试 `sh11`–`sh16`**（已有 `regenerate` 能力，不必重跑整条）→ 调 `assemble`。
 3. **服务已重启（在确认无在跑 job 后）**：`canvas-server` active @ `127.0.0.1:8788`，`/api/health` ok，模板 16 个；`/v1/models` 现 **10 个**（8 本地 + `deepseek::deepseek-flash` + `deepseek::deepseek-v4-pro`），那个压了很久的门禁修复顺带生效；外部渠道表已恢复到 `deepseek`（**但前端一保存/一键接入就会再被冲掉**，见 #26）。远端 ComfyUI `192.168.123.147:8188`（0.38.2，活着）。
-4. **⚠️ 证据效力提醒（接手者必读）**：`run-murpt28o-46f5q` 是**跨代码版本**的产物 —— 它的 script 段跑的是三段式**之前**的旧代码（`stage.steps` 字段缺失可证）。因此**只能拿它证明**两件事：① P0-b 回写断链已通（keyframe 29 / assembly 10 产物）；② 147 显存 OOM（#25）。**不能**用它评判集数对齐、时长、三段式、styleAnchor 等修复的效果 —— 要评判必须**新建 run 重跑**。
+4. **⚠️ 证据效力提醒（接手者必读）**：`run-murpt28o-46f5q` 是**跨代码版本**的产物 —— 它的 script 段跑的是三段式**之前**的旧代码（`stage.steps` 字段缺失可证）。因此**只能拿它证明**两件事：① P0-b 回写断链已通（keyframe 29 / assembly 10 产物）；② 147 显存 OOM（#25）。**不能**用它评判集数对齐、时长、三段式、styleAnchor 等修复的效果 —— 要评判必须**新建 run 重跑**。本轮新增的 DeepSeek 与 CDP 证据来自 `run-murnwa81-k27eq`，其片段任务在验收后已通过 UI 取消，未保留 GPU 运行任务。
 
 ### 11.4 第二轮复跑结论（run `run-murpt28o-46f5q`，2026-10-03）
 
@@ -976,3 +977,50 @@ const provenance = {
 ```
 
 这份全链路审计把后续重点从“继续增加更多生成模板”调整为“先补生产事实、审批、声音、编辑、QC 和发布闭环”。模板数量只有在这些环节能追踪、能回退、能验收后才会转化为稳定产能。
+
+### 11.6 提示词策略层第二轮验收收口（2026-10-03）
+
+此前关键帧路径的验收记录：后端测试 **667/667 通过（约 4.31 秒）**，前端 `tsc --noEmit` 与 `npm run build` 通过；构建产物中不存在「预览提示词」「未强化」及对应英文 key。生产服务在确认远端 GPU 队列为空后完成受控重载，`/api/health` 返回正常。这些记录不代表下述新问题已解决，也不覆盖后续未验收的工作区改动。
+
+真实 CDP 页面点击关键帧按钮前，该 run 有 177 个历史 job；点击后增至 282 个，新增任务使用 `img_qwen21_edit`。抽取任务 `run-murvf1vq-aqyqm-sh17-start-musdrodb-14d74` 的 `params.PROMPT` 为 2785 字单一英文正文：无重复风格锚点、无中英混写、无旧英文尾巴、无 `[untranslated]`。同一轮的降级条目 `sh17-end` 使用 470 字结构化中文，warning 留在 job meta，标记未进入模型输入。点击取消后阶段为 `partial`，旧 QC 通过候选仍保留，147 队列回到 `running=[] / pending=[]`。
+
+任务参数继续采用创建时快照；阶段重跑与逐条 regenerate 强制创建新 attempt 并重新编译，旧 job 不被覆盖。历史 `progress.json` 中的旧「提示词 N 字」后缀由前端兼容清洗，真实页面刷新后只显示「模型生成中」。H3 真实入队提示词全文已于 2026-10-04 取证（`h3-i2v-ui-evidence.md`）；仍待单独补测的只有带台词镜头的视频逐字台词，以及生图工作台「正在生成中 N 张」返回入口的专项 CDP 交互。
+
+### 11.7 当前问题登记：健康检查边界与生产事实
+
+**状态：部分整改完成（2026-10-03 夜），2026-10-04 收口移交。** 产品负责人就「外部模型探测」拍板：**探测不实用，模型清单只读注册表**（见 `model-registry-contract.md` §3.1）。据此 LLM 侧探测链路（`probeLlm`/`listLlmModels`/`modelsAt`/探测缓存/`config.llm.probeTimeoutMs`）已整条删除，四处清单接口改为读注册表静态展开；「画幅校正尝试」已由**只检测不改稿**的 `aspectRatioConflict()` 取代。后端 `node --test test/*.test.mjs` → **673/673**（4.46s）。**残留**：`comfy`/`runninghub` 仍是同步探测（存活接口还会等这两项），画幅与 H3 视频提示词都还缺真实任务验收。本轮维护到此结束，移交清单见 `HANDOFF.md`「2026-10-04 本轮结论」与 `pilot-issues.md` #64–#67。
+
+#### P0：网关存活、依赖连通与生产就绪混为一谈
+
+当前调用链（依据 `src/index.js`、`src/providers/llm.js`、`src/providers/comfy.js` 与前端 `gateway.ts`）：
+
+- 浏览器通过 `/api/health` 判断网关连接，请求超时为 8 秒。
+- `/api/health` 等待 LLM、ComfyUI 和 RunningHub 三项探测全部结束后才返回。
+- LLM 探测请求主地址及 fallback 的 `/v1/models`、`/api/tags`，有模型列表即视为可用；这不能证明指定模型已加载或聊天生成成功，也不应默认发送生成请求。
+- ComfyUI 探测请求 `/system_stats`；它不能证明目标工作流、模型文件及显存条件已满足。本接口的 `queue` 是网关 Job 计数，不是远端 `/queue` 的实时快照。
+- 总体 `ok` 为 `llm.ok || comfy.ok`，HTTP 仍返回 200。两者任一在线不能证明整条生产链可用；两者都离线也不意味着网关进程停止。
+- 原有外部渠道探测可能拖慢响应；用户报告 14 次探测中 2 次失败。该现象与等待上游、前端 8 秒超时的结构性冲突一致，但每次失败的具体来源和耗时仍需取证，不能断言 Node 进程崩溃。
+
+**整改策略**：网关存活接口只报告本进程可响应及内部状态，不等待任何上游网络请求。LLM、ComfyUI、外部渠道分别保留依赖状态（状态、检查时间、检查方法、错误）；探测由显式刷新或后台机制执行。未检查、过期、不可达、已发现模型必须可区分；实际生成成功单独记录，模型列表非空不冒充生成能力。阶段可运行性继续由服务端 `/gates` 结合实际 Tool、Provider 和输入产物判断，不由一个全局 `ok` 决定。
+
+优先实现调用边界解耦，避免只靠新增缓存、冷却或重试掩盖问题。后台周期、缓存有效期与超时属于行为参数，实施前需说明默认值与失败处理并确认；当前尝试中的数值不是已批准的产品契约。
+
+**验收**：模拟外部死渠道、本地 LLM 离线、ComfyUI 离线及 GPU 忙碌，网关存活接口均能独立响应；页面保持网关在线并分别显示依赖状态。读取模型列表不触发推理或加载模型；生成探测只能显式发起并说明成本。记录前端超时与各依赖耗时，证明依赖失败没有被显示成网关离线。
+
+**本轮落地**：LLM 侧探测整条删除（含探测缓存 —— 按「不靠缓存掩盖问题」的口径，缓存失去存在理由）；`/v1/models`、`/api/llm/models`、`/api/providers.llm.models`、`/api/health.llm` 改为读注册表静态清单，读清单**零网络请求**（HTTP 层测试断言上游 stub 的 `/v1/models`、`/api/tags` 命中数为 0）。`/api/health` 的 `ok` 改成存活语义并新增 `service` 段；`llm` 段带 `source:"registry"`、`probed:false`，前端「测试连接」的 LLM 行改显示「已登记 N 个文本模型（不探测连通性）」，不再把「已登记」谎报成「已连通」。**未做**：`comfy`/`runninghub` 探测仍在存活接口里同步等待，生成就绪度（generation readiness）仍未与依赖连通分离。
+
+#### P0：改写器擅自改变项目画幅
+
+用户已验证竖屏项目的改写稿出现横屏描述。画幅属于项目生产事实，应与分辨率、参考图槽位一起快照进入编译输入；改写器只能表达事实，不能猜测或覆盖。最终模型参数、提示词构图与项目画幅须一致。文本替换 `horizontal` 只是未验收的尝试，不作为最终策略，避免误伤“横向移动”等合法描述。
+
+**验收**：从真实页面生成新任务，逐项核对项目画幅、改写输入、最终 `params.PROMPT` 和实际尺寸参数；覆盖竖屏、横屏与非 9:16 比例。冲突时保留排查 warning，不把错误方向交给生成模型，也不在前端暴露改写层。
+
+**本轮落地**：文本手术（`enforceAspectRatio`）已删除 —— 它改不干净时会在开头补一句竖屏、正文仍留横屏，把自相矛盾的稿子发给模型。改为**只检测不改稿**：画幅以「不可改写事实」单独一行进改写源文本；`aspectRatioConflict()` 用三条判定识别相反画幅（相反的显式比例 / 方向词与构图名词紧邻 / 首句「画面主语+系动词+方向词」），命中即整稿弃用 → 回落同步结构稿 + 写 `item.warning`（后端可见、前端不暴露）。17 条真实句式取证：实测故障句被抓；`horizontal pan`、`a horizontal band of sky`、`a portrait of a man`（人像）不误伤。**未做**：真实任务的竖屏/横屏/非 9:16 三种画幅逐项验收。
+
+#### 验证缺口：H3 i2v 新任务提示词
+
+目前缺少新代码通过真实 UI 入队的视频 `params.PROMPT` 全文；旧任务快照或编译器干跑不能替代该证据。暂不据此判定视频编译路径损坏。已选中关键帧完成的历史运行，但队列检查发现远端正在执行一个关键帧任务，未点击视频生成叠加任务。
+
+**验收**：使用隔离实例与独立测试页面，队列空闲时通过真实页面触发片段生成，记录点击前后 Job 增量、Job ID、模板、编译输入指纹与完整 PROMPT。按权威调研核对关键帧对齐行、两位小数时间、三字段固定顺序、`<Picture 1>`、运镜、说话人、逐字台词、目标总时长与画幅；保留证据后结束测试任务。生产重载另行安排，不能与占用中的队列冲突。
+
+**本轮落地**：已按上述口径取证，全文与逐项核对见 `h3-i2v-ui-evidence.md` —— 独立 headless 测试页（不碰人工标签）在「片段合成」条目上点「换个模型再出一张 → H3 图生视频」，jobs 488→489，新 job `run-murpt28o-46f5q-sh1-clip-musnttqs-fhw1j` 的 PROMPT 为三段式新稿（对齐行 `0.00` 两位小数、`<Picture 1>`、运镜自然句、`non_diegetic_music: N/A`、`vertical portrait / 9:16` 与项目画幅一致、`LENGTH=90` 帧为 4s@24fps 的 H3 帧网格），同条目旧 job 的旧拼法并存可对照；取证后即撤销、队列归零。**残留**：带台词镜头的视频逐字台词（`(S1)` + `<d>[English]…</d>`）尚未取证。

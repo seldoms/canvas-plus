@@ -73,6 +73,9 @@ so they do not render in the docs site. Read them directly from the repository.
 - `docs/content/docs/progress/local-asset-inventory.md` — inward-facing asset inventory of the
   local-first capabilities: structural moats, extractable engineering assets, design disciplines
   worth propagating, and the honest debt list, each item verified against code or a real run.
+- `docs/content/docs/progress/h3-i2v-ui-evidence.md` — first-hand capture of a real UI-enqueued
+  H3 i2v job's full `params.PROMPT` (job id, template, sizes, frame count, side-by-side with the
+  old compiler's output), closing pilot-issue #66's evidence gap.
 
 ## Notes
 

@@ -42,7 +42,7 @@ node src/index.js            # 默认 127.0.0.1:8788
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/api/health` | `{ ok, llm: {ok, baseUrl, error?}, comfy: {ok, baseUrl, error?}, runninghub: {ok, baseUrl, error?}, queue: {running, pending} }` |
+| GET | `/api/health` | `{ ok, service: {ok, name, version, uptimeSec}, llm: {ok, baseUrl, source:"registry", probed:false, models: string[], error?}, comfy: {ok, baseUrl, error?}, runninghub: {ok, baseUrl, error?}, queue: {running, pending} }`。**`ok` 是存活语义**（本进程能应答即 true），不代表生产就绪；`llm` 段是注册表静态事实（`probed:false`，`ok` 只表示「已登记启用的文本模型」），`comfy`/`runninghub` 仍是真实探测 |
 | GET | `/api/backends` | `{ backends: BackendInfo[], defaultBackend, allowRunningHub }` |
 | GET | `/api/providers` | `{ llm: { models: string[] }, comfy: { templates: TemplateInfo[], models: {...} }, backends: BackendInfo[] }` |
 | GET | `/api/runninghub/models` | `{ image: RunningHubModel[], video: RunningHubModel[] }`，本地内置目录，不请求上游 |
@@ -65,17 +65,34 @@ RunningHub 是**保留的可选云端后端**：未配置 `runninghub.apiKey` �
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | ANY | `/v1/*` | 原样转发到 `config.llm.baseUrl`，保留流式响应（SSE 逐块透传）。前端把渠道 baseUrl 填 `http://<host>:8788` 即可。 |
-| GET | `/api/llm/models` | 便捷别名，等价于 `GET /v1/models` 并规整为 `{ models: string[] }` |
-| GET | `/api/llm/providers` | `{ providers: [{ name, baseUrl, hasKey }] }`，**脱敏**：只报有没有 Key，绝不回吐 SK |
-| POST | `/api/llm/providers` | body `{ providers: [{ name, baseUrl, apiKey? }] }` **全量替换**注册表 → `{ providers }`（同上脱敏） |
+| GET | `/api/llm/models` | `{ models: string[] }`，与 `GET /v1/models` 同源：**只读模型注册表**（不探测上游） |
+| GET | `/api/llm/providers` | `{ providers: [{ name, baseUrl, hasKey, models }] }`，**脱敏**：只报有没有 Key，绝不回吐 SK |
+| POST | `/api/llm/providers` | body `{ providers: [{ name, baseUrl, apiKey?, models? }] }` 按 `name` **增量 upsert**（不在请求里的渠道原样保留，`apiKey`/`models` 缺省沿用原值）→ `{ providers }`（同上脱敏）。写完自动 sync 模型注册表 |
 
 **外部 LLM 渠道注册表**：让本地模型与远程 API 对调用方完全同构，页面只需连一个端口。
 
 - 注册表独立存 `data/llm-providers.json`（不写进 `config.json`），启动时并入 `config.llm.providers`，`POST` 后**热更新**、无需重启。
 - 校验：`name` 非空且不得含 `::`；`baseUrl` 必须是 `http(s)` 地址，尾部斜杠会被去掉。不合法直接 400。
-- `GET /api/llm/models` 会把外部渠道的模型以 **`渠道名::模型名`** 命名空间追加进列表（如 `deepseek::deepseek-v4-pro`）；本地上游一个都连不上但注册表非空时，不再抛「LLM 服务不可达」。
+- 模型清单**不探测上游**：`GET /v1/models` / `/api/llm/models` 把渠道**声明**的 `models[]` 展开成 **`渠道名::模型名`**（如 `deepseek::deepseek-v4-pro`）；未声明模型的渠道一个 id 也不产出，因此死渠道既不进下拉也拖不住接口。
 - `chat()` 按 `::` 前缀路由到对应渠道；也可传 `options.provider = { baseUrl, apiKey }` **临时**指定渠道（仅本次调用生效，**绝不落盘**，流水线用它透传浏览器侧渠道）。
 - `/v1/*` 透传**不走**注册表，仍固定打 `config.llm.baseUrl` / `fallbacks`。
+
+### 提示词编译（按所选模型标准）
+
+产品硬约束：用户只关心剧情与分镜，**按模型标准写提示词是后端内部机制**。发起生成请求那一刻，后端必须把
+「模型无关的内容事实」按所选模型的标准编译成该模型要的提示词，再发给模型接口（图片/视频一视同仁）。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| POST | `/api/prompt/compile` | 把内容事实按目标模型编译成提示词 → `200 { prompt, meta }` |
+
+body：`{ template, family, shot, scene?, characters?, style?, slots?, overlays?, durationSec?, rewrite? }`
+
+- `rewrite: true` 时走带官方改写器的 async 版：仅英文有官方依据的模型（Qwen-Image 2.1 / Krea2 / FLUX）经**语言适配 LLM（DeepSeek）**英文化；未传 `rewrite` 时保持同步编译。
+- `meta` = `{ template, modelKey, language: 'zh'|'en', rewriterId: string|null, untranslated, applied: { structure, negative, textInImage }, llm: { model, finishReason, chars }|null, notes?: string[] }`。
+- `meta.untranslated` / `meta.llm.finishReason` 等是**给排查与运维看的**元数据，**前端不得渲染到界面**（见 `AGENTS.md` 内容创作规范）。
+- 语言适配 LLM 不可用 / 超时 / 输出被截断（`finish_reason=length`）时**只降级不阻塞**：同步结构照旧产出，PROMPT 带显式 `[untranslated]` 标记并在 `notes` 记录原因——**绝不假装配好了英文**。
+- **画幅是生产事实，改写器不得猜测或覆盖**：`project.plan.ratio` 经 `style.ratio` 进编译输入，作为「不可改写事实」单独一行交给改写器；改写稿若把画幅写成反方向（`aspectRatioConflict()` 三条判定命中），**整稿弃用** → 回落同步结构稿 + 记 warning（`notes` / job meta），错误方向绝不进 PROMPT。不对英文稿做正则替换（改不干净会留下自相矛盾的提示词）。
 
 ### 生成任务
 
@@ -221,11 +238,13 @@ RunningHub 是**保留的可选云端后端**：未配置 `runninghub.apiKey` �
 | `src/files.js` | `artifactsDir`, `ensureDir`, `saveBuffer`, `artifactUrl`, `guessContentType`, `safeJoin` | 产物落盘与路径安全 |
 | `src/generate.js` | `createLocalRunner({ config, comfy, jobs })`, `ASSET_TOKENS` | 本地 ComfyUI 执行器：素材解析 → 尺寸吸附 → 模板渲染 → 提交 → 轮询 → 回收产物 |
 | `src/chunk-novel.js` | `splitNovelIntoChunks(text, maxChunkChars)` | 纯函数长文切块，见下 |
-| `src/providers/llm.js` | `createLlmProvider(config)`, `probeLlm(config)`, `listLlmModels(config)`, `forwardToLlm(req, res, config, pathWithQuery)`, `chat(config, options)`, `externalProviders(config)` | 见下 |
+| `src/providers/llm.js` | `createLlmProvider(config)`, `forwardToLlm(req, res, config, pathWithQuery)`, `chat(config, options)`, `externalProviders(config)` | 见下（**不含模型清单/探测**：清单只读模型注册表） |
+| `src/llm-client.js` | `callLlm({ system, user, maxTokens?, timeoutMs?, model?, provider? })`, `llmCall({ system, user })`, `findProvider(name)`, `loadProviders()` | 服务端 LLM 客户端（提示词策略层的语言适配出口）。零依赖、用 `node:https` 不用 `fetch`（避开 undici 300s headersTimeout）；默认打 `data/llm-providers.json` 的 `deepseek` 渠道 + `deepseek-flash`；返回带 `finishReason`/`chars`；空内容/截断（`finish_reason=length`）抛错，绝不静默回退 |
+| `src/prompt-api.js` | `createPromptApi()`, `compilePromptForRequest(body, { callLlm })` | `POST /api/prompt/compile` 的业务 + 路由装配：按模板编译提示词 → `{ prompt, meta }`（见「提示词编译」节） |
 | `src/providers/comfy.js` | `createComfyClient(config)`, `probeComfy(config)`, `listComfyCapabilities(config)`, `listTemplates(workflowsDir)` | 见下 |
 | `src/skills.js` | `loadSkills(skillsDir)`, `loadRegistry(skillsDir)`, `readSkill(skillsDir, id)` | 见下 |
-| `src/pipeline.js` | `createPipeline({ config, skillsDir, jobs, comfy, llm, runJob })` | 见下 |
-| `src/model-registry.js` | `createModelRegistry({ dataDir })`, `computeAvailable()`, `categoryForTemplate()`, `runtimeForProvider()`, `buildTemplateScript()`, `buildGroups()`, `composeAlias()`, `fallbackBaseTask()`, `DEFAULT_ALIASES`, `DEFAULT_BASE_TASK` | 模型注册表存储内核：CRUD + `sync`（含存量幂等回填）+ `available` + 分组聚合；分类/runtime 映射与默认 base/task 别名表（契约 v1） |
+| `src/pipeline.js` | `createPipeline({ config, skillsDir, jobs, comfy, llm, llmCall, runJob })` | 见下 |
+| `src/model-registry.js` | `createModelRegistry({ dataDir })`（含 `textModels()`）, `computeAvailable()`, `textModelIds()`, `asModelIdList()`, `categoryForTemplate()`, `runtimeForProvider()`, `buildTemplateScript()`, `buildGroups()`, `composeAlias()`, `fallbackBaseTask()`, `DEFAULT_ALIASES`, `DEFAULT_BASE_TASK` | 模型注册表存储内核：CRUD + `sync`（含存量幂等回填、渠道 `meta.baseUrl`/`meta.models` 刷新）+ `available` + 分组聚合；**文本模型清单的唯一读源**（`textModelIds` → `渠道名::模型名`）；分类/runtime 映射与默认 base/task 别名表（契约 v1） |
 
 ### `src/chunk-novel.js`
 
@@ -284,17 +303,19 @@ disableEmptyImageRefs(graph) => string[]        // 摘除 image 为空的 LoadIm
 ### `src/providers/llm.js`
 
 ```js
-probeLlm(config) => Promise<{ ok, baseUrl, models?, error? }>
-listLlmModels(config) => Promise<string[]>   // 含外部渠道的「渠道名::模型名」
 forwardToLlm(incomingReq, outgoingRes, config, pathWithQuery) => Promise<void>  // 含 SSE 流式透传
-externalProviders(config) => [{ name, baseUrl, apiKey }]   // 规整 config.llm.providers，丢弃 name/baseUrl 缺失项
+externalProviders(config) => [{ name, baseUrl, apiKey, models }]   // 规整 config.llm.providers，丢弃 name/baseUrl 缺失项
 chat(config, { messages, model?, temperature?, provider?, ...rest }) => Promise<OpenAIChatCompletion>
 ```
 
 `chat` 固定非流式（要流式走 `forwardToLlm`）。渠道路由优先级：`options.provider.baseUrl`（临时，不落盘）→ `model` 里的 `渠道名::` 前缀（查注册表，未注册直接抛中文错误）→ `config.llm.baseUrl` / `fallbacks`。`model` 为空时兜底到 `config.llm.defaultModel`，仍为空则抛错。**连接层失败**会带上 `cause.code`（如 `ECONNREFUSED`）便于排查；**HTTP 非 2xx 不重试**，直接把状态码与前 300 字响应体带进错误信息。
 
-**探测超时与 `timeoutMs` 分开**：`timeoutMs`（默认 600000）是给长思考 `chat` 与 `/v1/*` 透传的，**绝不能**用于列模型探测。`listLlmModels` 一律用 `probeTimeoutMs`（默认 **8000**）。原因：`/api/health` 与 `/api/llm/models` 要探测每个外部渠道，而 `getJson` 失败只返回 `null` 不抛错，所以一个「TCP 连上但不回包」的死链会一直耗到超时——串行 + 600s 时单个死渠道能挂住接口 20 分钟，前端模型下拉直接卡死。
-因此外部渠道是**并行**探测的（`Promise.all`），`modelsAt` 内部的 `/v1/models` 与 `/api/tags` 也是并行的：总耗时 ≈ 最慢的一个渠道，不随渠道数累加。返回空模型的渠道会打一条 `[llm] 外部渠道「X」(url) 在 Ns 内未返回模型，本次跳过` 告警，**只丢它自己的模型**，不影响本机与其它渠道。
+**模型清单不在本模块，也不探测上游**（产品负责人 2026-10-03 拍板：外部模型探测不实用，清单只读模型注册表）。
+`/v1/models`、`/api/llm/models`、`/api/providers.llm.models`、`/api/health.llm` 全部读 `model-registry.js` 的 `textModelIds()`：
+已启用的 `category:text` 条目按渠道声明的 `meta.models[]` 展开成 `渠道名::模型名`（与本模块的前缀路由同口径）。
+渠道声明写在 `data/llm-providers.json` 的 `models` 字段（或 `POST /api/llm/providers` 带 `models`），写入后自动 sync 进注册表；启动时也会 sync 一次。
+**没声明模型的渠道不产出任何 id** —— 死渠道既拖不住接口，也不会被列进下拉。代价：本机 Ollama 的模型不再被自动发现，要用就把它们登记成一个渠道并声明模型 id。
+`timeoutMs`（默认 600000）只服务 `chat` 与 `/v1/*` 透传；`config.llm.probeTimeoutMs` 已随探测一起删除。
 
 ### `src/skills.js`
 
@@ -307,7 +328,7 @@ readSkill(skillsDir, id) => string                            // SKILL.md 全文
 ### `src/pipeline.js`
 
 ```js
-createPipeline({ config, skillsDir, jobs, comfy, llm, runJob }) => {
+createPipeline({ config, skillsDir, jobs, comfy, llm, llmCall, runJob }) => {
   stages(): StageInfo[],
   list(): Run[],
   get(id): Run | null,

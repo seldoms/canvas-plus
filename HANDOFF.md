@@ -24,9 +24,21 @@
 
 ## 当前状态
 
-**最后更新**：2026-10-03（开发计划维护 + 试跑问题清单复核。**进度细节的唯一入口**：`docs/content/docs/progress/development-plan.md` §11「进度快照与问题台账」+ `pilot-issues.md`）
+**最后更新**：2026-10-04（GPT 复核 4 条收口 + 一次自伤事故修复；**本轮维护到此结束**。**进度细节的唯一入口**：`docs/content/docs/progress/development-plan.md` §11「进度快照与问题台账」+ `pilot-issues.md`）
 
-**2026-10-03 本轮结论（先读这段，再往下看历史表格）**
+**2026-10-04 本轮结论（先读这段，再往下看历史表格）**
+
+| 结论 | 指针 |
+| --- | --- |
+| **产品拍板：外部模型探测废除，模型清单只读注册表**。`probeLlm`/`listLlmModels`/`modelsAt`/探测缓存/`probeTimeoutMs` 整条删除；`/v1/models`、`/api/llm/models`、`/api/providers.llm.models`、`/api/health.llm` 改读 `textModelIds()`（渠道声明的 `models[]` → `渠道名::模型名`）。`/api/health` 实测 **27ms**（原 8s+），`ok` 改存活语义 + `service` 段，`llm.probed:false`。**代价（已接受）**：本机 Ollama 模型不再自动进清单 | `model-registry-contract.md` §3.1、`canvas-server/README.md` |
+| **画幅改为「只检测不改稿」**：删 GPT 的正则手术（会留下自相矛盾稿），`aspectRatioConflict()` 三条判定命中即整稿弃用 → 回落同步稿 + warning（条目与 job meta 都有）。17 条真实句式取证 + 流水线回归 | `pilot-issues.md` #65 |
+| **H3 i2v 真实 UI 入队证据已取到**：独立 headless 测试页点「换个模型再出一张 → H3 图生视频」，jobs 488→489，新 job 三段式新稿、旧 job 旧拼法可对照；取证后撤销、队列归零 | `docs/content/docs/progress/h3-i2v-ui-evidence.md`、`pilot-issues.md` #66 |
+| 🔴 **自伤事故（已修复）**：warning 追加不去重 + 回灌 plan.warning → 启动重放自我放大 → `RangeError` 启动崩溃，且把 `run-murvf1vq-aqyqm/run.json` 撑到 **529MB**。代码改 `appendWarning()` 去重；数据用一次性脚本修复（run.json 回 930KB），坏文件备份在 `data/runs/run-murvf1vq-aqyqm/run.json.bak-bloated`（**529MB，确认后可删**） | `pilot-issues.md` #67、`canvas-server/scripts/repair-bloated-warnings.mjs` |
+| **测试基线**：后端 `node --test test/*.test.mjs` → **673/673**；前端 `tsc --noEmit` 0 错；`web/dist` 已重建、服务已重启跑在新代码上 | 同上命令 |
+| ⚠️ **仍未收口**：① `comfy`/`runninghub` 探测还在 `/api/health` 里同步等待（#64 只做了一半）；② 画幅缺真实任务验收；③ 带台词镜头的视频逐字台词未取证；④ 渠道表里 4 个死渠道仍在（对清单/health 已无害）；⑤ #19 浏览器双写者根因未除（旧前端重写渠道表会丢字段） | `pilot-issues.md` #64/#65/#66、§「契约/数据流视角」 |
+| ⚠️ **工作区未提交**，且**混着 GPT 的未提交改动**（`web/src/pages/image/index.tsx`、`router.tsx`、`web/src/pages/tasks/`、`llm-client.js`、`prompt-api.js` 等）。提交前必须按作者/主题分批，别一把梭 | `git status --short` |
+
+**2026-10-03 本轮结论（历史）**
 
 | 结论 | 指针 |
 | --- | --- |
