@@ -2,7 +2,8 @@ import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from "no
 import { join } from "node:path";
 
 import { splitNovelIntoChunks } from "./chunk-novel.js";
-import { ensureDir, safeJoin } from "./files.js";
+import { assembleEpisode } from "./delivery.js";
+import { artifactUrl, ensureDir, safeJoin } from "./files.js";
 import { loadRegistry, readSkill } from "./skills.js";
 
 /** 生成型阶段：只构造生成任务参数并交给任务队列，不等真实产物。 */
@@ -68,8 +69,10 @@ function fillTemplate(text, context) {
  * 五段式流水线编排器。
  * comfy 只作为能力依赖传入，真实生图/生视频执行体通过 runJob 注入（index.js 传 runGenerationJob）；
  * 没有 runJob 时生成型阶段只构造任务参数并标记 queued，不伪造产物。
+ * assemble 是「片段 → 成片」的后期执行体，默认用 delivery.js 的 assembleEpisode；
+ * 编排器只负责判定何时拼接、把清单与参数交给它，ffmpeg 命令构造与执行都留在 delivery.js。
  */
-export function createPipeline({ config, skillsDir, jobs, comfy, llm, runJob } = {}) {
+export function createPipeline({ config, skillsDir, jobs, comfy, llm, runJob, assemble = assembleEpisode } = {}) {
     const pipelineConfig = config?.pipeline || {};
     const runsDir = ensureDir(join(config?.dataDir || "data", "runs"));
     const registry = loadRegistry(skillsDir);
@@ -330,6 +333,19 @@ export function createPipeline({ config, skillsDir, jobs, comfy, llm, runJob } =
     }
 
     /**
+     * 01 剧本分块路径与阶段技能共用同一份「内容创作红线（硬约束）」：直接抽取 SKILL.md 的
+     * `## 内容创作红线（硬约束）` 正文供 map（逐块提取）与 reduce（合并成篇）两个提示词复用，
+     * 不再在两处各写一遍逐字重复的硬编码字符串。技能缺该节时返回空串，退回无红线的旧形态。
+     */
+    function scriptRedlines(def) {
+        try {
+            return extractSection(readSkill(skillsDir, def.skill), "内容创作红线（硬约束）").trim();
+        } catch {
+            return "";
+        }
+    }
+
+    /**
      * 01 剧本分块改编（map-reduce）：整本长篇超过阈值时切成 N 块，逐块提取局部人物/场次，
      * 再把全部局部结果与项目标题喂给模型合并成符合 01 SKILL.md 契约的完整剧本。
      * stage.output 与单次调用完全同构，分块信息记在 stage.chunked。
@@ -337,6 +353,10 @@ export function createPipeline({ config, skillsDir, jobs, comfy, llm, runJob } =
     async function composeScriptChunked(run, def, stage, provider, maxChunkChars, ctx = {}) {
         const { signal, resume = false, estSecondsPerChunk = 31 } = ctx;
         const chunks = splitNovelIntoChunks(run.novel, maxChunkChars);
+        // 阶段技能的内容创作红线（忠于原著 / 不注入教化结构 / 风险只提示不改稿 / 质量校验照做），
+        // map 与 reduce 两处复用同一份文案；技能没写该节时留空，退回旧的 \n\n 分隔。
+        const redlines = scriptRedlines(def);
+        const redlineBlock = redlines ? `\n\n改编必须遵守阶段技能的内容创作红线（硬约束）：\n${redlines}\n` : "\n\n";
         const system = { role: "system", content: `你是「${def.title}」阶段的执行者。严格只返回一个 JSON 对象，不要输出解释、Markdown 代码块或任何多余文字。` };
         const partials = [];
         const startedAt = Date.now();
@@ -347,15 +367,13 @@ export function createPipeline({ config, skillsDir, jobs, comfy, llm, runJob } =
 
 <novel-part>
 ${chunk.text}
-</novel-part>
-
-要求：
+</novel-part>${redlineBlock}要求：
 
 1. 只提取本块出现的 characters 与 scenes，不要写 logline / synopsis / episodes。
 2. characters 覆盖本块所有有台词或推动剧情的角色：profile 写身份、性格、人物关系；appearance 写成能直接喂给生图模型的外观描述（年龄、体态、五官、发型、服装基调），不要抽象形容词；voice 写音色、语速、口音等可复现的声音特征。
 3. scenes 按本块时间顺序排列；beats 用 3~8 条原文里的可拍摄动作/台词节拍，不要文学抒情和心理描写。
 4. location 统一写成「内景/外景 + 地点」，time 只用 日 / 夜 / 黄昏 / 清晨 这类可布光的词。
-5. 只输出下面结构的 JSON 本体，id 在本块内唯一即可（合并时会统一重排），不要 Markdown 代码块、不要解释文字：
+5. 只输出下面结构的 JSON 本体，只输出契约允许的字段、不得增删或改名，id 在本块内唯一即可（合并时会统一重排），不要 Markdown 代码块、不要解释文字：
 
 {"characters":[{"id":"c1","name":"","profile":"","appearance":"","voice":""}],"scenes":[{"id":"sc1","title":"","location":"","time":"","intent":"","beats":[""]}]}`;
             // resume 时优先复用上次已落盘的块结果：163 块 / 83 分钟的任务崩了不该从头再来
@@ -388,16 +406,14 @@ ${chunk.text}
 
 <partials>
 ${JSON.stringify(partials, null, 2)}
-</partials>
-
-要求：
+</partials>${redlineBlock}要求：
 
 1. 生成 logline（一句话故事线）与 synopsis（不超过 300 字的故事梗概）。
 2. characters 按姓名合并去重，profile 合并各块信息；appearance 与 voice 必须每条非空，缺失时依据原文细节合理推断补齐。
 3. scenes 按时间顺序合并，跨块重复的场次合并且不丢 beats；beats 保留可拍摄的动作/台词细节。
 4. characters[].id 与 scenes[].id 全部重排为连续稳定的 c1、c2… 与 sc1、sc2…，只允许 [A-Za-z0-9_-]。
 5. 短篇可省略 episodes；若给出，sceneIds 必须都能在 scenes 里找到。
-6. 只输出下面结构的 JSON 本体，字段名不得改动，不要 Markdown 代码块、不要解释文字：
+6. 只输出下面结构的 JSON 本体，只输出契约允许的字段、字段名不得增删或改名，不要 Markdown 代码块、不要解释文字：
 
 {"logline":"","synopsis":"","characters":[{"id":"c1","name":"","profile":"","appearance":"","voice":""}],"scenes":[{"id":"sc1","title":"","location":"","time":"","intent":"","beats":[""]}],"episodes":[]}`;
         if (signal?.aborted) throw new Error(`已取消（${chunks.length} 块已全部提取，合并前中止）`);
@@ -466,13 +482,28 @@ ${JSON.stringify(partials, null, 2)}
     }
 
     /**
+     * 成片是否已由 delivery 产出：只有拿到可访问地址才算，绝不把「片段生成完」当「成片完成」。
+     * 返回登记进 stage.artifacts 的成片条目（成片本体 + 可复现清单 + 日志 + 封面）。
+     */
+    function filmArtifacts(stage) {
+        const assembly = stage.output?.assembly;
+        if (!assembly || assembly.status !== "done" || !assembly.url) return [];
+        const list = [{ id: assembly.deliverableId, kind: "film", role: "output", url: assembly.url }];
+        if (assembly.manifestUrl) list.push({ id: assembly.deliverableId, kind: "film", role: "manifest", url: assembly.manifestUrl });
+        if (assembly.logUrl) list.push({ id: assembly.deliverableId, kind: "film", role: "log", url: assembly.logUrl });
+        if (assembly.coverUrl) list.push({ id: assembly.deliverableId, kind: "film", role: "cover", url: assembly.coverUrl });
+        return list;
+    }
+
+    /**
      * 阶段状态以任务终态为准：必需 Job 全部成功才 done；
      * 全部进行中 running、部分成功 partial、全失败 error、有取消 canceled。重算 artifacts。
+     * artifacts 会重建为「片段条目 + 成片条目」，成片信息由 filmArtifacts 从 assembly 派生，天然幂等。
      */
     function recomputeStage(stage) {
         const items = stage.output?.frames || stage.output?.clips || [];
         const latest = items.map((item) => (item.candidates || []).at(-1)).filter(Boolean);
-        stage.artifacts = items.filter((item) => item.artifactUrl).map((item) => ({ jobId: item.jobId, url: item.artifactUrl }));
+        stage.artifacts = [...items.filter((item) => item.artifactUrl).map((item) => ({ jobId: item.jobId, url: item.artifactUrl })), ...filmArtifacts(stage)];
         if (!latest.length) return;
         const statuses = latest.map((candidate) => candidate.status);
         // 只要有任务还在排队/运行就是 running —— 部分已完成既不代表阶段可审阅、也不代表可续跑；
@@ -721,6 +752,113 @@ ${JSON.stringify(partials, null, 2)}
         return executeStage(beginStage(runId, stageId, runOptions), runOptions);
     }
 
+    /** 片段就绪判定：任一未成功的片段都会阻止合成，并给出人能看懂的原因。 */
+    function clipsReadiness(clips) {
+        if (!Array.isArray(clips) || !clips.length) return { ready: false, reason: "assembly 阶段还没有片段清单，请先运行「片段合成」规划片段" };
+        const unfinished = clips.filter((clip) => clip.status !== "done");
+        if (unfinished.length) {
+            const detail = unfinished.map((clip) => `${clip.id}（${clip.status || "未知"}）`).join("、");
+            return { ready: false, reason: `还有 ${unfinished.length}/${clips.length} 个片段未成功，不能合成成片：${detail}` };
+        }
+        const missing = clips.filter((clip) => !clip.artifactUrl);
+        if (missing.length) return { ready: false, reason: `片段 ${missing.map((clip) => clip.id).join("、")} 没有产物地址，不能合成成片` };
+        return { ready: true };
+    }
+
+    /**
+     * 合成成片（同步部分）：独立于阶段 LLM 编排的用户触发动作 —— D11 定了保留逐阶段人工审核门禁，
+     * 用户要先看过片段才决定拼，所以不因 clips 齐了就自动拼。
+     * 这里只做门禁与幂等判定：片段未全部成功直接抛错（不能把「片段生成完」报成「成片完成」）；
+     * 已有成片且未显式要求重拼时直接复用，不重复调 ffmpeg。慢的 ffmpeg 执行留给 executeAssemble。
+     */
+    function beginAssemble(runId, options = {}) {
+        const run = requireRun(runId);
+        const def = requireStageDef("assembly");
+        const stage = requireStage(run, def);
+        const output = stage.output;
+        if (!output || !Array.isArray(output.clips)) throw new Error("assembly 阶段还没有产物，请先运行「片段合成」规划片段");
+        const readiness = clipsReadiness(output.clips);
+        if (!readiness.ready) throw new Error(readiness.reason);
+
+        const assembly = output.assembly && typeof output.assembly === "object" ? output.assembly : (output.assembly = {});
+        const force = options.force === true || options.rerun === true;
+        if (assembly.status === "assembling" && !force) throw new Error("成片正在合成中，请等它结束（要重拼请带 force:true）");
+        if (assembly.status === "done" && assembly.url && !force) return { run, def, stage, reused: true, assembly };
+
+        // 重拼用新的产物目录，绝不覆盖上一次已成功的成片（即使这次拼失败，旧成片仍在）
+        const attempt = (Number(assembly.attempt) || 0) + 1;
+        const id = attempt > 1 ? `assembly-${run.id}-r${attempt}` : `assembly-${run.id}`;
+        assembly.attempt = attempt;
+        assembly.status = "assembling";
+        assembly.startedAt = nowIso();
+        assembly.finishedAt = undefined;
+        assembly.error = undefined;
+        // 本次调用可覆盖拼接顺序/转场；未给则沿用规划值
+        if (Array.isArray(options.order) && options.order.length) assembly.order = options.order;
+        if (typeof options.transition === "string" && options.transition) assembly.transition = options.transition;
+        saveOutput(run.id, def.id, stage.output);
+        saveRun(run);
+        return { run, def, stage, reused: false, assembly, id };
+    }
+
+    /**
+     * 合成成片（异步部分）：把片段清单与参数交给 delivery 的 assembleEpisode，产物地址与成片信息回写 assembly。
+     * 成功才写 url 并登记 artifacts；失败保留 delivery 已落盘的清单与 ffmpeg 日志地址，错误信息带原因，方便排查。
+     */
+    async function executeAssemble(begun, options = {}) {
+        const { run, def, stage, id } = begun;
+        const assembly = stage.output.assembly;
+        const clips = stage.output.clips;
+        writeProgress(run.id, { runId: run.id, stage: def.id, phase: "assembling", label: `正在把 ${clips.length} 个片段合成成片` });
+        try {
+            const result = await assemble({
+                config,
+                episodeId: run.id,
+                clips,
+                order: assembly.order,
+                transition: assembly.transition,
+                options: {
+                    id,
+                    quality: options.quality,
+                    transitionDurationSec: options.transitionDurationSec,
+                    audio: options.audio,
+                    subtitles: options.subtitles,
+                    cover: options.cover,
+                },
+                now: nowIso(),
+            });
+            assembly.status = "done";
+            assembly.deliverableId = result.id;
+            assembly.url = result.url;
+            assembly.manifestUrl = result.manifestUrl;
+            assembly.logUrl = result.logPath ? artifactUrl(config, result.id, "ffmpeg.log") : null;
+            assembly.coverUrl = result.coverUrl || null;
+            assembly.bytes = result.bytes;
+            assembly.info = result.info || null;
+            assembly.finishedAt = nowIso();
+            assembly.error = undefined;
+        } catch (error) {
+            assembly.status = "error";
+            assembly.error = `合成成片失败：${error.message}`;
+            assembly.finishedAt = nowIso();
+            // 保留 delivery 落盘的清单与日志（都在同一个交付目录下），失败也要能复现
+            const dir = safeJoin(config.dataDir, "artifacts", id);
+            assembly.manifestUrl = dir && existsSync(safeJoin(dir, "assembly-manifest.json")) ? artifactUrl(config, id, "assembly-manifest.json") : null;
+            assembly.logUrl = dir && existsSync(safeJoin(dir, "ffmpeg.log")) ? artifactUrl(config, id, "ffmpeg.log") : null;
+        }
+        recomputeStage(stage);
+        if (stage.output !== undefined && stage.output !== null) saveOutput(run.id, def.id, stage.output);
+        writeProgress(run.id, { runId: run.id, stage: def.id, phase: assembly.status === "done" ? "done" : "failed", label: assembly.status === "done" ? "成片已生成" : assembly.error, finishedAt: assembly.finishedAt });
+        return saveRun(run);
+    }
+
+    /** 同步等合成结束（测试与内部调用用）；HTTP 路由走 beginAssemble + executeAssemble 以便立刻返回 202。 */
+    async function assembleStage(runId, options = {}) {
+        const begun = beginAssemble(runId, options);
+        if (begun.reused) return begun.run;
+        return executeAssemble(begun, options);
+    }
+
     /** 轻量进度：只读 progress.json（几十字节），不返回内嵌整本小说的 run.json（可达数 MB）。 */
     const stageProgress = (runId) => readProgress(runId);
 
@@ -749,5 +887,5 @@ ${JSON.stringify(partials, null, 2)}
         return fixed;
     }
 
-    return { stages, list, get, create, estimate: estimateFor, runStage, beginStage, executeStage, stageProgress, reconcileRunning, setStageInput, projectJob, bindJobs, cancelStage };
+    return { stages, list, get, create, estimate: estimateFor, runStage, beginStage, executeStage, stageProgress, reconcileRunning, setStageInput, projectJob, bindJobs, cancelStage, beginAssemble, executeAssemble, assembleStage };
 }

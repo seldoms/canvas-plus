@@ -5,10 +5,13 @@ import { pathToFileURL } from "node:url";
 import { Readable } from "node:stream";
 
 import { loadConfig, serverRoot } from "./config.js";
+import { RESOURCE_CLASS } from "./contracts.js";
+import { createRegistry } from "./registry.js";
 import { artifactUrl, ensureDir, safeJoin, saveBuffer, sanitizeName, extensionFor, fileSize } from "./files.js";
 import { createRouter, readJson, readBody, sendError, sendJson, serveFile, applyCors } from "./http.js";
 import { createJobQueue, waitForJob } from "./jobs.js";
 import { createPipeline } from "./pipeline.js";
+import { createProjects } from "./projects.js";
 import { loadRegistry } from "./skills.js";
 import { createComfyClient, probeComfy, listComfyCapabilities, listTemplates } from "./providers/comfy.js";
 import { probeLlm, listLlmModels, forwardToLlm, chat as llmChat, externalProviders } from "./providers/llm.js";
@@ -52,7 +55,67 @@ const llm = {
 };
 const uploads = ensureDir(safeJoin(config.dataDir, "uploads"));
 
-const jobs = createJobQueue({ dataDir: config.dataDir, concurrency: 1, label: "canvas-server" });
+// Project 服务端内核：data/projects/<id>/ 落盘，路由见下方 /api/projects 系列。
+const projects = createProjects({ dataDir: config.dataDir });
+
+// Device/Provider/Tool Registry（D6 按资源调度）：把现有真实资源登记进来，
+// 供提交前能力校验、设备归属与按类别分队列使用。注册表不探活，健康状态由本层按需写回。
+const registry = createRegistry();
+const gpuDeviceId = "comfy-local-gpu";
+
+// 本地 ComfyUI：一张 16GB 卡同时承担生图与生视频，共用一条本地 GPU 队列（并发取自 config，默认 1）。
+registry.registerDevice({
+    id: gpuDeviceId,
+    label: config.comfy.deviceLabel || "本地 ComfyUI",
+    resourceClasses: [RESOURCE_CLASS.GPU_IMAGE, RESOURCE_CLASS.GPU_VIDEO],
+    maxConcurrency: Number(config.comfy.maxConcurrency) > 0 ? Number(config.comfy.maxConcurrency) : 1,
+});
+registry.registerProvider({
+    id: "comfy-local",
+    kind: "comfy",
+    label: "本地 ComfyUI",
+    resourceClasses: [RESOURCE_CLASS.GPU_IMAGE, RESOURCE_CLASS.GPU_VIDEO],
+    baseUrl: config.comfy.baseUrl,
+    deviceId: gpuDeviceId,
+});
+// 本地 LLM 与 RunningHub 云端不绑本地设备（LLM / API 类）。
+registry.registerProvider({ id: "llm-local", kind: "llm", label: "本地 LLM", resourceClasses: [RESOURCE_CLASS.LLM], baseUrl: config.llm.baseUrl });
+registry.registerProvider({ id: "runninghub", kind: "api", label: "RunningHub 云端", resourceClasses: [RESOURCE_CLASS.API], baseUrl: config.runninghub.baseUrl });
+
+// ComfyUI 模板登记为 Tool：按族推断能力与资源类别（video_* → GPU_VIDEO，其余 → GPU_IMAGE）。
+for (const template of listTemplates(config.workflowsDir)) {
+    const video = template.family === "video";
+    registry.registerTool({
+        id: template.name,
+        capability: video ? "video.generate" : "image.generate",
+        paramsSchema: {},
+        resourceClass: video ? RESOURCE_CLASS.GPU_VIDEO : RESOURCE_CLASS.GPU_IMAGE,
+        providers: ["comfy-local"],
+        cancelable: true,
+        retryable: true,
+    });
+}
+// RunningHub 云端模型同样登记为 API Tool，提交时按 endpoint 校验能力与可用性。
+const runninghubModels = listRunningHubModels(config);
+for (const model of [...runninghubModels.image, ...runninghubModels.video]) {
+    registry.registerTool({
+        id: model.id,
+        capability: model.outputType === "video" ? "video.generate" : "image.generate",
+        paramsSchema: {},
+        resourceClass: RESOURCE_CLASS.API,
+        providers: ["runninghub"],
+        cancelable: true,
+        retryable: true,
+    });
+}
+
+const jobs = createJobQueue({
+    dataDir: config.dataDir,
+    concurrency: 1,
+    label: "canvas-server",
+    // Job 落哪台设备由注册表决定（D6）；API / LLM 无本地设备时返回 null。
+    resolveDevice: (resourceClass) => registry.listDevices({ resourceClass })[0]?.id || null,
+});
 const local = createLocalRunner({ config, comfy, jobs });
 /** 后端分派：默认走本地 ComfyUI；只有显式指定 runninghub 且配置允许时才走云端。 */
 function backendOf(job) {
@@ -72,15 +135,24 @@ const pipeline = createPipeline({ config, skillsDir: config.skillsDir, jobs, com
 // 让服务重启后能从任务队列重建流水线状态（幂等）。
 pipeline.bindJobs();
 
-/** 入队入口：默认本地 ComfyUI，显式传 backend:"runninghub" 时才走云端。 */
+/** 入队入口：默认本地 ComfyUI，显式传 backend:"runninghub" 时才走云端。提交前按资源类别做 canRun 校验。 */
 function submitGeneration(kind, body) {
     const backend = String(body.backend || config.generation.defaultBackend || "local").trim();
-    if (backend === "local") return local.submit({ ...body, kind });
+    if (backend === "local") {
+        const template = String(body.template || "").trim();
+        if (!template) throw new Error("缺少 template");
+        // 能力不匹配 / 设备不可用时直接拒绝并给出可读原因，绝不静默改走别的设备。
+        const verdict = registry.canRun(template);
+        if (!verdict.ok) throw new Error(`无法提交${kind === "video" ? "生视频" : "生图"}任务：${verdict.reason}`);
+        return local.submit({ ...body, kind });
+    }
 
     if (backend !== "runninghub") throw new Error(`未知生成后端：${backend}`);
     if (!config.generation.allowRunningHub) throw new Error("RunningHub 后端已被配置禁用");
     const endpoint = String(body.params?.endpoint || body.endpoint || "").trim();
     if (!endpoint) throw new Error("RunningHub 任务缺少 params.endpoint");
+    const verdict = registry.canRun(endpoint);
+    if (!verdict.ok) throw new Error(`无法提交云端任务：${verdict.reason}`);
     const id = `${kind}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
     return jobs.enqueue(
         { id, kind, backend, template: endpoint, name: body.name || endpoint, params: { ...(body.params || {}) }, meta: body.meta },
@@ -108,7 +180,7 @@ const serviceInfo = {
     name: "canvas-server",
     description: "无限画布本地网关：内网 LLM 与 ComfyUI 生图/生视频统一出口",
     version: "0.1.0",
-    endpoints: ["/api/health", "/api/backends", "/api/providers", "/api/jobs", "/api/runninghub/models", "/api/pipeline/runs", "/v1/models", "/v1/chat/completions"],
+    endpoints: ["/api/health", "/api/backends", "/api/providers", "/api/jobs", "/api/runninghub/models", "/api/pipeline/runs", "/api/projects", "/v1/models", "/v1/chat/completions"],
 };
 
 router.get("/api", (req, res) => sendJson(res, 200, serviceInfo));
@@ -359,6 +431,75 @@ router.post("/api/pipeline/runs/:id/steps/:stage/input", async (req, res, { para
     }
 });
 
+/**
+ * 合成成片：独立于阶段 LLM 编排的用户触发动作（D11 保留逐阶段人工审核门禁——用户看过片段才决定拼）。
+ * body 可带 `{ order?, transition?, quality?, force? }`；同步部分做门禁与幂等判定：
+ * 片段未全部成功 → 400 并给出明确原因；已有成片 → 200 直接回原结果，不重复拼；否则 202 后台跑 ffmpeg。
+ * ffmpeg 命令构造与执行都在 delivery.js，这里只挂路由与转交参数。
+ */
+router.post("/api/pipeline/runs/:id/steps/assembly/assemble", async (req, res, { params }) => {
+    try {
+        const body = await readJson(req).catch(() => ({}));
+        const options = body && typeof body === "object" ? body : {};
+        const begun = pipeline.beginAssemble(params.id, options);
+        if (begun.reused) return sendJson(res, 200, { run: begun.run, reused: true, assembly: begun.assembly });
+
+        const key = `${params.id}:assembly:assemble`;
+        const controller = new AbortController();
+        inflightStages.set(key, { controller, startedAt: Date.now() });
+        void pipeline
+            .executeAssemble(begun, options)
+            .catch((error) => console.error(`[pipeline] 合成成片失败：${error.message}`))
+            .finally(() => inflightStages.delete(key));
+        sendJson(res, 202, { run: begun.run, inflight: true, assembly: begun.assembly });
+    } catch (error) {
+        sendError(res, 400, error.message);
+    }
+});
+
+// ——— P0-a Project 内核：/api/projects 系列 ———
+// 错误码约定：不存在 404、非法引用/参数 400、版本冲突 409。PATCH 冲突时回当前 version（D7 识别写入归属）。
+router.get("/api/projects", (req, res, { url }) => {
+    sendJson(res, 200, { projects: projects.list({ includeArchived: url.searchParams.get("includeArchived") === "1" }) });
+});
+
+router.post("/api/projects", async (req, res) => {
+    try {
+        sendJson(res, 201, { project: projects.create(await readJson(req)) });
+    } catch (error) {
+        sendError(res, error.status || 400, error.message);
+    }
+});
+
+router.get("/api/projects/:id/context", (req, res, { params }) => {
+    const context = projects.context(params.id);
+    if (!context) return sendError(res, 404, "项目不存在");
+    sendJson(res, 200, context);
+});
+
+router.get("/api/projects/:id", (req, res, { params }) => {
+    const project = projects.get(params.id);
+    if (!project) return sendError(res, 404, "项目不存在");
+    sendJson(res, 200, { project });
+});
+
+router.add("PATCH", "/api/projects/:id", async (req, res, { params }) => {
+    try {
+        sendJson(res, 200, { project: projects.update(params.id, await readJson(req)) });
+    } catch (error) {
+        if (error.status === 409) return sendJson(res, 409, { error: { message: error.message, code: "version_conflict" }, version: error.currentVersion });
+        sendError(res, error.status || 400, error.message);
+    }
+});
+
+router.post("/api/projects/:id/archive", (req, res, { params }) => {
+    try {
+        sendJson(res, 200, { project: projects.archive(params.id) });
+    } catch (error) {
+        sendError(res, error.status || 400, error.message);
+    }
+});
+
 const server = createServer(async (req, res) => {
     applyCors(res);
     try {
@@ -423,4 +564,4 @@ if (isMain) {
     });
 }
 
-export { server, config, jobs, pipeline, comfy, llm, local, runJob, submitGeneration, backends, waitForJob, fileSize, artifactUrl };
+export { server, config, jobs, registry, pipeline, projects, comfy, llm, local, runJob, submitGeneration, backends, waitForJob, fileSize, artifactUrl };

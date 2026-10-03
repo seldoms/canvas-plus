@@ -29,6 +29,9 @@ const DEFAULTS = {
         username: "",
         password: "",
         maxQueue: 16,
+        // 设备标识与并发上限：一台 16GB 卡同时承担生图/生视频。默认 1 与现有全局单 worker 行为一致。
+        deviceLabel: "本地 ComfyUI",
+        maxConcurrency: 1,
     },
     // 本地优先：生图/生视频默认且必须走本地 ComfyUI；RunningHub 是保留的可选云端后端。
     generation: {

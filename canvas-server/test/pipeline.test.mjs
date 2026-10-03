@@ -27,7 +27,7 @@ function makeEnv() {
         mkdirSync(join(skillsDir, id), { recursive: true });
         writeFileSync(
             join(skillsDir, id, "SKILL.md"),
-            `---\nname: ${name}\ndescription: |\n  ${description}\n---\n\n# ${name}\n\n## 输入\n\n- 编排器上下文\n\n## 输出契约\n\n字段名固定。\n\n## 提示词模板\n\n${prompt}\n\n## 校验规则\n\n- 只输出 JSON\n\n## 工具\n\n- /api/llm/*\n`,
+            `---\nname: ${name}\ndescription: |\n  ${description}\n---\n\n# ${name}\n\n## 输入\n\n- 编排器上下文\n\n## 输出契约\n\n字段名固定。\n\n## 内容创作红线（硬约束）\n\n- 测试红线-忠于原著：忠于原著，不为道德教化、过审改稿。\n- 测试红线-不教化：不注入教化式结构。\n- 测试红线-风险只提示：风险只提示、不改稿。\n\n## 提示词模板\n\n${prompt}\n\n## 校验规则\n\n- 只输出 JSON\n\n## 工具\n\n- /api/llm/*\n`,
         );
     }
     writeFileSync(
@@ -740,4 +740,86 @@ test("index 集成：模块初始化即订阅回写，取消空阶段接口回 4
     } finally {
         await new Promise((resolve) => mod.server.close(resolve));
     }
+});
+
+test("分块路径：map 与 reduce 提示词都带上阶段技能的内容创作红线", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    env.config.pipeline.maxNovelChunkChars = 100;
+    const paragraph = "这是一段小说正文内容。";
+    const novel = `【甲.txt】\n${paragraph.repeat(5)}\n\n【乙.txt】\n${paragraph.repeat(5)}`;
+    const llm = fakeLlm((content) => (content.includes("合并成一份完整剧本") ? SCRIPT : content.includes("第 1/2 块") ? CHUNK_PARTIAL_A : CHUNK_PARTIAL_B));
+    const { pipeline } = build(env, { llm });
+    const run = pipeline.create({ novel, title: "长篇" });
+
+    const done = await pipeline.runStage(run.id, "script", { model: "test-model" });
+    assert.equal(done.stages.script.status, "done");
+    assert.equal(llm.calls.length, 3);
+    const [mapA, mapB, reduce] = llm.calls.map((call) => call.messages.at(-1).content);
+    // 逐块 map 与合并 reduce 都必须带上阶段技能的「内容创作红线（硬约束）」
+    for (const [label, prompt] of [["map-1", mapA], ["map-2", mapB], ["reduce", reduce]]) {
+        assert.match(prompt, /改编必须遵守阶段技能的内容创作红线（硬约束）/, `${label} 提示词缺少红线标题`);
+        assert.match(prompt, /测试红线-忠于原著/, `${label} 提示词缺少忠于原著`);
+        assert.match(prompt, /测试红线-不教化/, `${label} 提示词缺少不注入教化结构`);
+        assert.match(prompt, /测试红线-风险只提示/, `${label} 提示词缺少风险只提示不改稿`);
+    }
+    // map 与 reduce 都要求“只输出契约允许的字段”，且保留各自契约 JSON 骨架
+    assert.match(mapA, /只输出契约允许的字段/);
+    assert.match(reduce, /只输出契约允许的字段/);
+    assert.match(mapA, /"characters"/);
+    assert.match(reduce, /"logline"/);
+});
+
+test("分块路径产物与单次调用同构：同一份 reduce 输出 → 逐字段一致", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+
+    // 单次调用：短篇不触发分块
+    const single = build(env, { llm: fakeLlm(SCRIPT) });
+    const shortRun = single.pipeline.create({ novel: "短篇小说正文" });
+    const singleDone = await single.pipeline.runStage(shortRun.id, "script");
+    assert.equal(singleDone.stages.script.chunked, undefined, "短篇应走单次调用");
+
+    // 分块调用：小阈值强制 map-reduce
+    env.config.pipeline.maxNovelChunkChars = 100;
+    const paragraph = "这是一段小说正文内容。";
+    const novel = `【甲.txt】\n${paragraph.repeat(5)}\n\n【乙.txt】\n${paragraph.repeat(5)}`;
+    const chunked = build(env, { llm: fakeLlm((content) => (content.includes("合并成一份完整剧本") ? SCRIPT : content.includes("第 1/2 块") ? CHUNK_PARTIAL_A : CHUNK_PARTIAL_B)) });
+    const longRun = chunked.pipeline.create({ novel, title: "长篇" });
+    const chunkedDone = await chunked.pipeline.runStage(longRun.id, "script");
+    assert.equal(chunkedDone.stages.script.chunked.chunks, 2);
+
+    // 两条路径最终产物逐键一致：下游 02/03 阶段零感知
+    assert.deepEqual(chunkedDone.stages.script.output, singleDone.stages.script.output);
+    assert.deepEqual(Object.keys(chunkedDone.stages.script.output).sort(), Object.keys(singleDone.stages.script.output).sort());
+});
+
+test("分块路径 resume：复用块结果不变，补跑块的提示词仍带红线", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    env.config.pipeline.maxNovelChunkChars = 100;
+    const paragraph = "这是一段小说正文内容。";
+    const novel = `【甲.txt】\n${paragraph.repeat(5)}\n\n【乙.txt】\n${paragraph.repeat(5)}`;
+
+    // 第一跑：第 2 块炸，第 1 块已落盘
+    const broken = fakeLlm((content) => {
+        if (content.includes("第 2/2 块")) throw new Error("上游 502");
+        return CHUNK_PARTIAL_A;
+    });
+    const first = build(env, { llm: broken });
+    const run = first.pipeline.create({ novel, title: "长篇" });
+    const failed = await first.pipeline.runStage(run.id, "script", { model: "test-model" });
+    assert.equal(failed.stages.script.status, "error");
+    assert.ok(existsSync(join(env.config.dataDir, "runs", run.id, "chunks", "1.json")));
+
+    // 第二跑 resume：第 1 块复用，只补第 2 块 + reduce
+    const healthy = fakeLlm((content) => (content.includes("合并成一份完整剧本") ? SCRIPT : CHUNK_PARTIAL_B));
+    const second = build(env, { llm: healthy });
+    const resumed = await second.pipeline.runStage(run.id, "script", { model: "test-model", resume: true });
+    assert.equal(resumed.stages.script.status, "done");
+    assert.equal(resumed.stages.script.chunked.reused, 1, "第 1 块应复用缓存");
+    // 补跑的第 2 块提示词仍带红线，且第 2 块结果照常落盘
+    const rerun = second.llm.calls.find((call) => /第 2\/2 块/.test(call.messages.at(-1).content));
+    assert.match(rerun.messages.at(-1).content, /测试红线-忠于原著/);
+    assert.ok(existsSync(join(env.config.dataDir, "runs", run.id, "chunks", "2.json")));
 });

@@ -6,22 +6,68 @@ import { ensureDir, saveBuffer } from "./files.js";
 
 const TERMINAL = new Set(["done", "error", "canceled"]);
 
+/**
+ * 资源类别 → 队列分组键（D6 按资源调度）。
+ * 关键约束：GPU_IMAGE / GPU_VIDEO 共用同一条本地队列 —— 147 只有一张 16GB 卡，
+ * 生图与生视频必须串行，不能因为分了两类就放开并发。
+ */
+const QUEUE_OF_CLASS = { GPU_IMAGE: "gpu", GPU_VIDEO: "gpu", CPU: "cpu", API: "api", LLM: "llm" };
+
+/** GPU 以外（CPU 后期 / 外部 API / LLM）各自独立队列，默认并发 1，可用 classConcurrency 覆盖。 */
+const DEFAULT_CLASS_CONCURRENCY = 1;
+
 function nowIso() {
     return new Date().toISOString();
 }
 
 /**
- * 单 worker 串行任务队列。
- * 16GB 显存一次只能跑一个 ComfyUI 任务，串行是硬约束而不是性能取舍。
+ * 未显式声明 resourceClass 时按现有 kind/backend 约定推断，
+ * 保证 generate.js 等既有调用方行为不变：本地生图/生视频 → 同一条 GPU 队列。
  */
-export function createJobQueue({ dataDir, concurrency = 1, label = "job" } = {}) {
+function inferResourceClass({ kind, backend }) {
+    if (backend === "runninghub") return "API";
+    if (kind === "image") return "GPU_IMAGE";
+    if (kind === "video") return "GPU_VIDEO";
+    return null;
+}
+
+/** 未识别/未声明的类别一律并入本地 GPU 队列，避免绕过单卡并发保护。 */
+function queueKeyOf(resourceClass) {
+    return QUEUE_OF_CLASS[resourceClass] || "gpu";
+}
+
+/**
+ * 按资源类别分队列的任务队列（D6，P0-d 第一步）。
+ *
+ * 默认行为与旧版单 worker 队列一致：只有一个 `concurrency`（现指本地 GPU 队列，默认 1），
+ * 未声明类别的任务全部走该队列。新增能力是 CPU / API / LLM 各自独立的队列，
+ * 不再被 GPU 队列堵住。
+ */
+export function createJobQueue({ dataDir, concurrency = 1, label = "job", classConcurrency = {}, resolveDevice } = {}) {
     const storePath = join(ensureDir(dataDir), "jobs.json");
     const jobs = new Map();
     const controllers = new Map();
-    const pending = [];
+    const queues = new Map();
     const events = new EventEmitter();
-    let running = 0;
     let persistTimer = null;
+
+    /** 取（或惰性创建）一条队列。GPU 队列并发用 concurrency，其余类别默认 1。 */
+    function queueOf(key) {
+        let queue = queues.get(key);
+        if (!queue) {
+            const limit =
+                key === "gpu"
+                    ? Number.isInteger(concurrency) && concurrency > 0
+                        ? concurrency
+                        : 1
+                    : Number.isInteger(classConcurrency[key]) && classConcurrency[key] > 0
+                      ? classConcurrency[key]
+                      : DEFAULT_CLASS_CONCURRENCY;
+            queue = { key, pending: [], running: 0, concurrency: limit };
+            queues.set(key, queue);
+        }
+        return queue;
+    }
 
     if (existsSync(storePath)) {
         try {
@@ -74,14 +120,22 @@ export function createJobQueue({ dataDir, concurrency = 1, label = "job" } = {})
         return job;
     }
 
+    /** 保持既有形状 { running, pending }：/api/health 与前端依赖它，绝不改坏。 */
     function counts() {
+        let pending = 0;
+        for (const queue of queues.values()) pending += queue.pending.length;
         return {
             running: [...jobs.values()].filter((job) => job.status === "running").length,
-            pending: pending.length,
+            pending,
         };
     }
 
-    function enqueue({ id, kind, backend, template, name, params, meta }, runner) {
+    function enqueue({ id, kind, backend, template, name, params, meta, resourceClass, deviceId }, runner) {
+        const resolvedClass = resourceClass || inferResourceClass({ kind, backend });
+        const key = queueKeyOf(resolvedClass);
+        // deviceId 优先用调用方显式传入；否则由接线方（注册表）按资源类别解析出「该在哪台设备排队」。
+        const resolvedDevice = deviceId || (resolvedClass && typeof resolveDevice === "function" ? resolveDevice(resolvedClass) : null);
+        const stamp = nowIso();
         const job = {
             id,
             kind,
@@ -90,14 +144,18 @@ export function createJobQueue({ dataDir, concurrency = 1, label = "job" } = {})
             name: name || id,
             params: params || {},
             meta: meta || {},
+            resourceClass: resolvedClass || null,
+            queue: key,
+            deviceId: resolvedDevice || null,
             status: "queued",
             outputs: [],
             progress: { value: 0, max: 0 },
-            createdAt: nowIso(),
-            updatedAt: nowIso(),
+            queuedAt: stamp,
+            createdAt: stamp,
+            updatedAt: stamp,
         };
         jobs.set(id, job);
-        pending.push({ job, runner });
+        queueOf(key).pending.push({ job, runner });
         persist();
         events.emit("change", job);
         drain();
@@ -108,21 +166,30 @@ export function createJobQueue({ dataDir, concurrency = 1, label = "job" } = {})
         const job = jobs.get(id);
         if (!job) return null;
         if (TERMINAL.has(job.status)) return job;
-        const index = pending.findIndex((item) => item.job.id === id);
-        if (index >= 0) pending.splice(index, 1);
+        const queue = queues.get(job.queue) || queues.get(queueKeyOf(job.resourceClass));
+        if (queue) {
+            const index = queue.pending.findIndex((item) => item.job.id === id);
+            if (index >= 0) queue.pending.splice(index, 1);
+        }
         controllers.get(id)?.abort();
         controllers.delete(id);
         return update(id, { status: "canceled", finishedAt: nowIso(), error: job.error });
     }
 
-    async function drain() {
-        while (running < concurrency && pending.length) {
-            const { job, runner } = pending.shift();
+    function drain() {
+        for (const queue of queues.values()) drainQueue(queue);
+    }
+
+    function drainQueue(queue) {
+        while (queue.running < queue.concurrency && queue.pending.length) {
+            const { job, runner } = queue.pending.shift();
             if (TERMINAL.has(job.status)) continue;
-            running += 1;
+            queue.running += 1;
             const controller = new AbortController();
             controllers.set(job.id, controller);
-            update(job.id, { status: "running", startedAt: nowIso() });
+            const startedAt = nowIso();
+            const queued = Date.parse(job.queuedAt || job.createdAt || startedAt);
+            update(job.id, { status: "running", startedAt, waitMs: Number.isFinite(queued) ? Date.now() - queued : undefined });
             const ctx = {
                 signal: controller.signal,
                 progress: (value, max, node) => update(job.id, { progress: { value, max, node } }),
@@ -132,9 +199,15 @@ export function createJobQueue({ dataDir, concurrency = 1, label = "job" } = {})
                 try {
                     const result = await runner(job, ctx);
                     if (controller.signal.aborted) {
-                        update(job.id, { status: "canceled", finishedAt: nowIso() });
+                        update(job.id, { status: "canceled", finishedAt: nowIso(), runMs: Date.now() - Date.parse(startedAt) });
                     } else {
-                        update(job.id, { status: "done", outputs: result?.outputs || [], finishedAt: nowIso(), error: undefined });
+                        update(job.id, {
+                            status: "done",
+                            outputs: result?.outputs || [],
+                            finishedAt: nowIso(),
+                            runMs: Date.now() - Date.parse(startedAt),
+                            error: undefined,
+                        });
                     }
                 } catch (error) {
                     const aborted = controller.signal.aborted;
@@ -142,11 +215,12 @@ export function createJobQueue({ dataDir, concurrency = 1, label = "job" } = {})
                         status: aborted ? "canceled" : "error",
                         error: aborted ? undefined : error?.message || String(error),
                         finishedAt: nowIso(),
+                        runMs: Date.now() - Date.parse(startedAt),
                     });
                 } finally {
                     controllers.delete(job.id);
-                    running -= 1;
-                    drain();
+                    queue.running -= 1;
+                    drainQueue(queue);
                 }
             })();
         }
@@ -162,7 +236,8 @@ export function createJobQueue({ dataDir, concurrency = 1, label = "job" } = {})
         return new Promise((resolve, reject) => {
             const deadline = Date.now() + timeoutMs;
             const check = () => {
-                if (!running && !pending.length) return resolve();
+                const snapshot = counts();
+                if (!snapshot.running && !snapshot.pending) return resolve();
                 if (Date.now() > deadline) return reject(new Error("等待任务队列空闲超时"));
                 setTimeout(check, intervalMs);
             };
