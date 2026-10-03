@@ -27,6 +27,8 @@ import { createLocalRunner } from "./generate.js";
 import { probeRunningHub, listRunningHubModels, runRunningHubJob } from "./providers/runninghub.js";
 import { plan as impactPlan } from "./impact.js";
 import { createModelRegistry } from "./model-registry.js";
+// 产物归档 / 彻底删除内核（索引落 data/artifacts-index.json，从 jobs.outputs[] 懒构建）。
+import { createArtifacts } from "./artifacts.js";
 import { scanTemplateDir } from "./tool-adapter.js";
 
 const config = loadConfig();
@@ -188,6 +190,30 @@ function modelRegistrySources() {
 // 启动即同步一次：注册表是模型清单的唯一读源（`/v1/models`、`/api/providers`、`/api/health` 都读它），
 // 若只在用户点「同步」时才补齐，静态清单会一直是空的。sync 幂等、只读本地模板目录与渠道表，不发任何网络请求。
 modelRegistry.sync(modelRegistrySources());
+
+/**
+ * 产物归档 / 彻底删除内核（素材生命周期）。
+ * 索引从 jobs.outputs[] 懒构建；引用反查用「流水线 run 的候选」+「项目 AssetRef」两条来源，
+ * 查不到就空数组（宁空不误拦，避免把可删的素材误判为被引用）。
+ */
+const artifacts = createArtifacts({
+    dataDir: config.dataDir,
+    listJobs: () => jobs.list({}),
+    listRuns: () => pipeline.list(),
+    // 活动 + 归档项目都算（归档项目的引用仍应阻断删除，避免删掉后引用悬空）。
+    listAssetRefs: () => {
+        const rows = [];
+        for (const summary of projects.list({ includeArchived: true })) {
+            const project = projects.get(summary.id);
+            if (!project) continue;
+            for (const ref of Array.isArray(project.assetRefs) ? project.assetRefs : []) {
+                rows.push({ ...ref, projectId: project.id, projectName: project.title });
+            }
+        }
+        return rows;
+    },
+    resolveProjectName: (projectId) => projects.get(projectId)?.title || null,
+});
 
 /** 入队入口：默认本地 ComfyUI，显式传 backend:"runninghub" 时才走云端。提交前按资源类别做 canRun 校验。 */
 function submitGeneration(kind, body) {
@@ -530,6 +556,38 @@ router.post("/api/jobs/:id/cancel", async (req, res, { params }) => {
     if (job.status === "running" || job.promptId) await comfy.interrupt().catch(() => {});
     sendJson(res, 200, { job: jobs.get(params.id) });
 });
+
+// ——— 产物归档 / 彻底删除（素材生命周期） ———
+// 归档是可逆的生产动线入口；彻底删除只在「我的资产」页，必须 confirm:true，被引用默认拒删。
+router.get("/api/artifacts", (req, res, { url }) => {
+    sendJson(
+        res,
+        200,
+        artifacts.list({
+            state: url.searchParams.get("state") || "active",
+            kind: url.searchParams.get("kind") || undefined,
+            origin: url.searchParams.get("origin") || undefined,
+            projectId: url.searchParams.get("projectId") || undefined,
+            limit: url.searchParams.get("limit") || undefined,
+            cursor: url.searchParams.get("cursor") || undefined,
+        }),
+    );
+});
+
+// createRouter 只支持 get/post/any —— 写路由用 any 承接（同时接受 POST 与 DELETE），其它方法 405。
+const artifactsWrite = (run) => async (req, res) => {
+    if (req.method !== "POST" && req.method !== "DELETE") return sendError(res, 405, `不支持的方法：${req.method}`);
+    try {
+        const body = await readJson(req).catch(() => ({}));
+        sendJson(res, 200, run(body && typeof body === "object" ? body : {}));
+    } catch (error) {
+        sendError(res, error.status || 400, error.message);
+    }
+};
+
+router.any("/api/artifacts/archive", artifactsWrite((body) => artifacts.archive(body)));
+router.any("/api/artifacts/restore", artifactsWrite((body) => artifacts.restore(body)));
+router.any("/api/artifacts/delete", artifactsWrite((body) => artifacts.remove(body)));
 
 router.get("/api/artifacts/:jobId/:filename", (req, res, { params }) => {
     const dir = safeJoin(config.dataDir, "artifacts", params.jobId);
@@ -1128,4 +1186,4 @@ if (isMain) {
     });
 }
 
-export { server, config, jobs, registry, pipeline, projects, bibles, comfy, llm, local, runJob, submitGeneration, backends, waitForJob, fileSize, artifactUrl };
+export { server, config, jobs, registry, pipeline, projects, bibles, comfy, llm, local, runJob, submitGeneration, backends, waitForJob, fileSize, artifactUrl, artifacts };
