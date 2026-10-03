@@ -109,7 +109,7 @@
 1. **角色形象固定（最高优先，阻断成片）**：把角色**定妆图**变成流水线的真实产物，并让它作为参考图喂给生图/生视频（`video_h3_ref2v_image` 已具备一张参考图锁角色的能力）。路线图已在 `skills/libraries/doubao-creative-drama/references/assets.md`（主角设定图 → 用户确认 → 配角逐位确认 → 一致性锚点），要做的是**接进 03「服化道」/04「关键帧」的产物契约**（角色 ID → 定妆图 → 参考图槽位）。见 `pilot-issues.md` #22。
 2. **角色音色固定（阻断成片）**：`voice` 字段目前无人消费。要补**音色锚点 + TTS 生成 + 音频轨作为 05 阶段必需产物**；方法论（总时长 > 15s 必须先出 1 条 5–10 秒角色台词视频建立音色基准）已在 `doubao-creative-drama/references/assets.md:25`。见 `pilot-issues.md` #23。同源解决 #24「配乐与配音不一致」。
 3. **产品拍板 D1 / D3**：D1 时长档位跟模型（H3 `24×秒+3`，仅 5/10/15s；**档位是模型能力元数据**、与模型清单同源、plan 从档位里选）；D3 关键帧单镜一次出 **≥4 张**候选、不达标自动重生成。代码位置已空出（`pipeline.js`）。见 `pilot-issues.md` §「产品负责人拍板」。
-4. **项目 ↔ run 双向绑定**：`Project.runIds[]` 从头到尾没被写过，项目页找不回自己的 run；同批还有渠道注册表双写者（前端 `POST /api/llm/providers` 整车覆盖，曾冲掉服务端配置）。见 `development-plan.md` §11.2。
+4. **多 run 与跨路径回填**：`runIds` 回填**已经通了** —— 项目内建 run 后 `attachProjectRun` 显式 `PATCH`（`use-project-run.ts:106`，`004f30a` 落地），实测 `context.runIds = ["run-murnwa81-k27eq"]` 非空；`context.runIds` 已被阶段门禁/时间线/资源面板/项目总览共用。**残留两条缺口**：① 从**流水线页**建的 run 不回填（出片 run `run-murpt28o-46f5q` 的 `options.projectId` 指向项目、却不在 `runIds[]` 里）；② 多 run 时前端只取 `runIds[0]`（`workspace-gate-panel.tsx:40`、`use-project-timeline.ts:20`）。同批还有渠道注册表双写者（前端 `POST /api/llm/providers` 整车覆盖，曾冲掉服务端配置）。见 `development-plan.md` §11.2。
 5. **解决视频速度**：turbo（8 步 LoRA + BlockCache@0.3）与 QuantFunc INT4 均已实测（见下方两份实录），当前瓶颈是 **147 的物理内存**而非引擎；先降分辨率出草稿是零成本方案。
 6. **RunningHub 真机验证**：需要用户提供**新的有效 API Key**（旧 Key 已失效，见「坑」）。拿到后跑一次最小生图任务，确认 submit/query/upload 三条链路。
 7. 前端补 RunningHub 配置与后端切换入口（如果用户要求把它做成可选 UI）。

@@ -533,9 +533,9 @@ ReviewNote { id, scope: project|episode|scene|shot, targetId?, stage,
 | 工作包 | 实际状态 | 一手证据 / 缺口 |
 | --- | --- | --- |
 | **P0-0** 冻结领域契约 | ✅ | `canvas-server/src/contracts.js`(4.6KB)、`web/src/types/domain.ts`(9.5KB)、`docs/content/docs/progress/domain-contract.md`(29.7KB)；阶段 ID 权威命名 `plan/script/storyboard/design/keyframe/assembly/post` 冻结；D1–D12 决策全部登记 |
-| **P0-a** Project 内核 | 🟡 | `canvas-server/src/projects.js`(15.1KB) 把项目落盘到 `data/projects/<id>/`（`prj_` ULID + 原子写 + 乐观版本）；网关 `/api/projects` 列表/创建/详情/上下文/归档；前端「我的项目」+ 6 个工作区骨架页（带阶段门禁）。**缺口**：`Project.runIds[]` 从头到尾没有被写过 → 项目→run 导航天然断链，项目与 run 的唯一关联是 `run.options.projectId`（活证据：`run-murpt28o-46f5q` 的 options 只有 `{"projectId":"prj_01M3ZK27NYPXRPBVRAT0SSJ2B5"}`） |
+| **P0-a** Project 内核 | 🟡 | `canvas-server/src/projects.js`(15.1KB) 把项目落盘到 `data/projects/<id>/`（`prj_` ULID + 原子写 + 乐观版本）；网关 `/api/projects` 列表/创建/详情/上下文/归档；前端「我的项目」+ 6 个工作区骨架页（带阶段门禁）。**缺口（2026-10-03 复核更正）**：会诊判定的「`Project.runIds[]` **全仓**无写入点」**只对后端成立** —— 回填实际由**前端**做：项目工作区内建 run 后 `attachProjectRun` 调 `PATCH /api/projects/:id`（`web/src/pages/projects/hooks/use-project-run.ts:106`，提交 `004f30a` 落地，失败还有 `linkFailed` 提示）。但回填**只覆盖这一条路径**：实测 `GET /api/projects/prj_01M3ZK27NYPXRPBVRAT0SSJ2B5/context` → `runIds = ["run-murnwa81-k27eq"]`（**有值** ✅），而**从流水线页建的 run 不在其中**（出片 run `run-murpt28o-46f5q` 的 `options.projectId` 指向本项目、却不在 `runIds[]` 里）。服务端侧仍无「建 run 时按 `options.projectId` 幂等追加」的逻辑（会诊建议的 `POST /api/projects/:id/runs` 未实现） |
 | **P0-b** Job→Artifact→Slot 回写断链 | ✅ | 网关订阅任务终态并重放 `jobs.json` 历史终态；`registerArtifacts`(pipeline.js:942) 幂等回写 `(projectId,runId,artifactUrl)`；阶段状态以任务终态为准（`done/running/partial/error/canceled`）。**活证据**：`run-murpt28o-46f5q` keyframe `artifacts=29`、assembly `artifacts=9`（此前恒为 0） |
-| **P0-c** run 可恢复 | 🟡 | 异步 run（`POST .../run` 立即 202）+ 轻量 `progress.json` + `GET /runs/:id/progress` + 取消贯通 LLM/Job + 断点续跑 + `run.estimate` 成本预估 + 启动收敛 `reconcileRunning()`。**缺口**：与 P0-a 同一条——项目→run 的**反向**导航（按项目列 run）仍未建立 |
+| **P0-c** run 可恢复 | 🟡 | 异步 run（`POST .../run` 立即 202）+ 轻量 `progress.json` + `GET /runs/:id/progress` + 取消贯通 LLM/Job + 断点续跑 + `run.estimate` 成本预估 + 启动收敛 `reconcileRunning()`。**缺口（复核更正）**：反向导航**已部分可用** —— `context.runIds` 已被 `workspace-gates.ts`（阶段门禁）、过程时间线、资源面板、项目总览共用，不再是空数组。残留两条：① 只覆盖「项目内建 run」路径，从流水线页建的 run 不回填（见 P0-a 更正）；② 多 run 时前端**只取 `runIds[0]`**（`workspace-gate-panel.tsx:40`、`use-project-timeline.ts:20`），第二个及以后的 run 在门禁与时间线里不可见 |
 | **P0-d** 资源调度与注册表 | ✅ | `canvas-server/src/registry.js`(12.4KB)：本地 GPU / CPU / 外部 API / LLM 四类独立队列；`canRun` 提交前能力路由（能力不匹配直接拒，不静默换设备）；`deviceLabel`/`maxConcurrency`。测试 `registry`(8) + `registry-wiring`(5) |
 | **P1-a** 项目产物图谱 | 🟡 | 生成型阶段产物自动登记 AssetRef（幂等去重）；项目工作区新增「过程时间线」，图片/视频缩略图 + 文本摘要 + 成片清单，阶段运行中 3s/8s 节流轮询。**缺口**：① 资产页只有 artifact id、无缩略图（会诊 M3）；② 「资产」页读前端本地 store，与项目 AssetRef **仍是两个数据源** |
 | **P1-b** 活扣与批量执行 | ✅ | `GenerationSlot.candidates[]` + 逐条 `regenerate` 端点（换模型只追加候选、保留历史）+ 模型别名（`alias` 字段，请求仍用原名）+ 横向候选交互 + 逐镜重试（默认 2 次） |
@@ -562,7 +562,7 @@ ReviewNote { id, scope: project|episode|scene|shot, targetId?, stage,
 
 | # | 问题 | 现状 |
 | --- | --- | --- |
-| — | `Project.runIds[]` 从未被写 | 项目→run 只有正向 `options.projectId`，反向列表不存在 → 项目页找不回自己的 run |
+| — | **多 run 只认第一个 + 跨路径不回填** | `workspace-gate-panel.tsx:40` / `use-project-timeline.ts:20` 硬编码 `runIds[0]`；回填只做在「项目内建 run」路径（`use-project-run.ts:106`），从**流水线页**建的 run 不进 `runIds[]`（实测出片 run `run-murpt28o-46f5q` 即如此）。**注**：会诊原判「`runIds[]` 从未被写」**已失效**，实测 `context.runIds=["run-murnwa81-k27eq"]` 非空 |
 | — | 渠道注册表**双写者** | 前端 `POST /api/llm/providers` **整车覆盖**写回，曾把服务端直写的 deepseek 冲掉（铁证：`data/llm-providers.json.pre-cleanup.json`）。应改为「服务端网关路由表唯一写者 / 浏览器渠道表浏览器唯一写者，只按 name 显式 upsert」 |
 | — | 关键帧与分镜对不上 | `shots[5].negativePrompt` 含 `costume change, unnatural transformation`，把正向要求的变身镜用负向词否定；`sh12` 公园抛球实际室内抱狗 |
 | — | 「2 集 × 30 秒」无人负责 | 9 个 run `episodes=[]`、分镜 16 镜 83 秒超 38%。本轮 `normalizeEpisodes` + 集数进提示词**已部分修复**，待复跑验证 |

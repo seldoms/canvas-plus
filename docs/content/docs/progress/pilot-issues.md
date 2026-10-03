@@ -359,11 +359,14 @@
 - 后果：网关侧 `渠道名::模型名` 路由全部失效，波及 #19/#20 与流水线模型下拉；只能靠外部遗留 `.bak` 手工回滚。
 - 证据：上述两文件 + `pre-cleanup`/`.bak` 三份文件对比。
 
-**C3｜严重｜Project↔Run 反向索引 `runIds` 从不写入 → 项目上下文查不到自己的 run**
+**C3｜严重｜Project↔Run 反向索引 `runIds` 从不写入 → 项目上下文查不到自己的 run**（⚠️ 2026-10-03 复核：此判**已部分失效**，见本条目末尾「复核更正」）
 - 现象：`GET /api/projects/:id/context` 的 `runIds` 恒为 `[]`，即使 `run.options.projectId` 指向该项目。
 - 根因：正向链接靠 `run.options.projectId`（`pipeline.js:906`，契约 §6.2 过渡位）；反向 `Project.runIds[]` 仅在 `create` 初始化为 `[]`（`projects.js:193`），全仓无写入点（grep `runIds` 只见 init / MUTABLE_FIELDS / PATCH / context 读取）。`p0a` §2.7 设计的 `POST /api/projects/:id/runs` 未实现。
 - 后果：前端无法从项目维度导航到关联 run；"工作区统一入口"形同虚设。
 - 证据：`projects.js:193/243/305`；`grep runIds canvas-server/src` 无 create 之外写入。
+
+- **【复核更正 · 2026-10-03】** C3 的「全仓无写入点」**只对后端成立**：回填由**前端**完成 —— 项目工作区内建 run 后 `attachProjectRun` 调 `PATCH /api/projects/:id`（`web/src/pages/projects/hooks/use-project-run.ts:106`，提交 `004f30a` 落地，失败还有 `linkFailed` 提示）。**一手证据**：`GET /api/projects/prj_01M3ZK27NYPXRPBVRAT0SSJ2B5/context` → `runIds = ["run-murnwa81-k27eq"]`（**非空**）。因此「`runIds` 恒为 `[]`」**已失效**。
+  **真正残留的两条缺口**：① 回填只覆盖「项目内建 run」路径 —— 从**流水线页**建的 run 不回填（出片 run `run-murpt28o-46f5q` 的 `options.projectId` 指向本项目、却不在 `runIds[]` 里）；② 多 run 时前端只取 `runIds[0]`（`workspace-gate-panel.tsx:40`、`use-project-timeline.ts:20`）。会诊建议的服务端 `POST /api/projects/:id/runs` 仍未实现。见 `development-plan.md` §11.2。
 
 **C4｜一般｜同一语义多入口 / 同源多端点，命名与形状不统一**
 - 模型清单**三入口**：`/v1/models`、`/api/llm/models`、`/api/providers.llm.models`——三者都走 `listLlmModels`（**同源**，含 `渠道名::模型名`）。#20 若曾观测到"不同源"，现状已收敛为同源；但仍缺"三入口等价"的显式声明。

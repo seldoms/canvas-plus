@@ -2,6 +2,7 @@
 
 ## Unreleased
 
++ [新增] 项目内直接落「源版本」：不再等到点「运行本阶段」才发现项目缺源 —— 前端新增 `source-input` / `source-import-modal` / `project-source-panel` 三件与 `use-project-source`，可在新建项目与项目工作区内粘贴或选文件导入正文；后端源版本**不可变**（同 id 重复提交被拒）、列表只回摘要（不回正文）、写入即回填 `project.sourceRevisionId`，摘要带 `sha256` 与 `chars`。项目内建 run 优先取该源版本作为 `novel`，取不到再回落 `project.script`。
 + [文档] 维护开发计划（回答「做到什么程度、遇到哪些问题」）：`development-plan.md` 新增 **§11 进度快照与问题台账**，对着 §8 工作包（P0-0/P0-a…P2）逐项给出实际状态与一手证据（文件路径、接口响应、测试计数），并附按严重度分级的问题清单与本轮风险面；`pilot-issues.md` 把第一轮 21 条的状态从「一律待讨论」按复核结果逐条更新（**12 条已验证 / 4 条待讨论 / 1 条已定整改方案 / 1 条部分修复 / 3 条已修复待验证**），并**追加 #22–#24**——用户 2026-10-03 报的**角色形象未固定**、**角色音色未固定**与**配乐与配音不一致**，三条都给到根因证据与「方法论已在仓库、缺的是接进 03/04/05 产物契约」的结论；`todo.mdx` / `todo.zh-CN.mdx` 同步修正三处滞后状态（P0-c 源版本、P1-b 活扣/逐镜重试、P1-c 阶段 0 规划、P1-d 字幕/封面已落地）并补三条缺口。复核基线：后端 `node --test` **206/206 pass**。
 
 + [修复] 让项目 `styleAnchor` 成为风格维度唯一事实源，修掉「同一条生图/生视频 PROMPT 里『二维动画』与『35mm 胶片实拍』互相否定」：`pipeline.js` 的 `buildContext` 现在把项目级 `styleAnchor`（其次 `run.options.styleAnchor`）与 `plan` 注入模板上下文，04 技能里的 `{{options.styleAnchor}}` **一定被替换**（缺锚点时注入中性兜底锚点 `统一视觉方向，自然光，干净画面`，不再回落 `35mm film still, expired Kodak Gold 200`）；胶片/Luster 风格层从「无条件叠加」改为**条件叠加** —— 只有最终锚点命中胶片/写实关键词（`胶片/菲林/写实/实拍/film/Kodak/35mm/grain/颗粒`）才由 `productionDefaults`/`withPromptHead` 追加，二维动画等非胶片锚点默认关闭；`withPromptHead` 同时去重，锚点已由模型写在首句时不再重复前置。
