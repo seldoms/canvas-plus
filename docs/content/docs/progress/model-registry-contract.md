@@ -27,6 +27,7 @@
   "alias": "千问2.1 文生图",        // ★ 展示名（可空；空则回落 label → name）。改名不影响请求
   "category": "image",             // ★ text | image | video | audio   ← 「三类区分开」的落点
   "enabled": true,                 // ★ 是否启用（false = 不在工作台出现，但保留登记与别名）
+  "runtime": "local",              // ★ local | cloud —— 云端项在 UI 上加 ☁️ 图标区分
   "provider": "comfy",             // comfy | llm | ...（来源大类）
   "source": "template",            // template | channel | manual
   "template": "img_qwen21_t2i",    // 若来自模板（provider=comfy）时的模板名
@@ -58,6 +59,62 @@
 > 说明：产品负责人点了三类（文字/生图/生视频）。本表把**音频**单列成第四类，
 > 而不是硬塞进「生图」—— 否则音频模型会出现在生图下拉里，属于错配。UI 按四组分开呈现。
 
+## 2.1 别名规范（**硬规则** · 2026-10-03 产品负责人当面定）
+
+> 原话：「**i2v 这样的不够直接，你直接写中文**，云端 api 加个 **☁️** 图标就行，**模型的昵称就这么干**」
+
+1. **别名一律写中文，禁止缩写与黑话。** `i2v` / `t2i` / `t2v` / `ref2v` / `fl2v` 这类**不得出现在别名里**；
+   要写「图生视频」「文生图」「首尾帧生视频」「参考图生视频」这种**一眼能懂的词**。
+   （原始标识 `name` 里带缩写没关系 —— 它只在「真实名」等宽小字里露出，不作为展示名。）
+2. **厂商名可保留通用写法**（H3 / Flux / Krea2 / ZImage / Boogu / Wan / 千问 / DeepSeek…），
+   其余部分必须中文。
+3. **云端 vs 本地靠 `runtime` 字段区分，UI 上云端的加 ☁️** —— **不要把「云端」写进别名文字里**
+   （图标已经表达了，名字里再写一遍是冗余）。
+4. 同一类下取**最短能区分**的写法（如「千问2.1 文生图」而不是「Qwen-Image 2.1 文生图模型」）。
+
+## 2.2 默认别名表（`sync` 首次登记时用它填 `alias`，避免同步下来是一堆原始名）
+
+> `sync` 时：命中本表 → 用表里的中文别名；未命中 → `alias` 留空，UI 回落 `meta.title` → `name`。
+> 用户改过别名的条目，**同步不覆盖**（见 §3 行为约定）。
+
+| name | category | runtime | 默认别名 |
+|---|---|---|---|
+| `img_qwen21_t2i` | image | local | 千问2.1 文生图 |
+| `img_qwen21_edit` | image | local | 千问2.1 改图 |
+| `img_flux_artistic` | image | local | Flux 艺术生图 |
+| `img_krea2_artistic` | image | local | Krea2 艺术生图 |
+| `img_zimage_artistic` | image | local | ZImage 艺术生图 |
+| `img_boogu_outfit_edit` | image | local | Boogu 换装 |
+| `scail2_action_transfer` | image | local | Scail2 动作迁移 |
+| `upscale_4x` | image | local | 4 倍放大 |
+| `video_h3_i2v` | video | local | H3 图生视频 |
+| `video_h3_i2v_fl` | video | local | H3 首尾帧生视频 |
+| `video_h3_talk` | video | local | H3 台词对口型 |
+| `video_h3_ref2v_image` | video | local | H3 参考图生视频 |
+| `video_h3_ref2v_image_turbo` | video | local | H3 参考图生视频 快速版 |
+| `video_h3_quantfunc_ref2v` | video | local | H3 参考图生视频 省显存版 |
+| `video_h3_ref2v` | video | local | H3 参考视频生视频 |
+| `video_minimax_h3_t2v` | video | local | H3 文生视频 |
+| `video_wan_animate` | video | local | Wan 动作驱动 |
+| `audio_qwen3_tts` | audio | local | 千问3 语音合成 |
+| （LLM 渠道模型，如 `deepseek`）| text | **cloud** | 按渠道配置的展示名 |
+
+> ⚠️ 这张表是**默认值**、不是白名单：服务端出现表里没有的新模板时，`sync` 照常登记（只是别名留空）。
+> 但**新模板的 `meta.title` / 中文标题必须在模板登记处补齐**（`providers/comfy.js` 的 `TITLES`），
+> 否则别名回落时会露出 `video_h3_i2v_fl` 这种原始名 —— 这正是本次要消灭的情况。
+
+## 2.3 runtime（local / cloud）判定
+
+| 来源 | runtime |
+|---|---|
+| 本地 ComfyUI 模板（`workflows/*.json`）| `local` |
+| 本地 LLM（ollama 等）| `local` |
+| LLM 云端渠道（deepseek / gpt / kimi…）| `cloud` |
+| 云端 ComfyUI（RunningHub 等）| `cloud` |
+
+**UI 规则**：`runtime === "cloud"` 的条目在别名前加 **☁️**（`☁️ DeepSeek 对话`）；
+`local` 不加图标。**别名文字里不得再出现「云端 / 云 API」字样。**
+
 ## 3. 端点契约（冻结）
 
 | 方法 | 路径 | 用途 |
@@ -85,7 +142,8 @@
    - 生图工作台 → `category=image`
    - 视频创作台 → `category=video`
    - 文本类选择（LLM）→ `category=text`
-   - **只出现 `enabled: true` 的项**；展示用 `alias || meta.title || name`
+   - **只出现 `enabled: true` 的项**；展示名回落 `alias → meta.title → name`；
+     `runtime === "cloud"` 的条目**别名前加 ☁️**
    - 请求侧仍用 `name`（**别名只影响显示**）
 4. **浏览器渠道不再作为模型清单来源**（渠道只保留连接/凭据职责）；`use-asset-store.ts` 与其它既有本地存储不动。
 5. **UI 铁律**：禁止解释性小字；筛选项/分组名从接口 `category` 来，**不硬编码**。
