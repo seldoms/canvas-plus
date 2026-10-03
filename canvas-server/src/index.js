@@ -17,6 +17,7 @@ import { createComfyClient, probeComfy, listComfyCapabilities, listTemplates } f
 import { probeLlm, listLlmModels, forwardToLlm, chat as llmChat, externalProviders } from "./providers/llm.js";
 import { createLocalRunner } from "./generate.js";
 import { probeRunningHub, listRunningHubModels, runRunningHubJob } from "./providers/runninghub.js";
+import { plan as impactPlan } from "./impact.js";
 
 const config = loadConfig();
 
@@ -712,6 +713,163 @@ router.get("/api/projects/:id/gates", routeHandler((req, res, { params }) => {
     const gates = projects.gates(params.id);
     if (!gates) return sendError(res, 404, "项目不存在");
     sendJson(res, 200, { gates });
+}));
+
+// ——— P0-e 回马枪·影响分析查询（只算不跑）———
+// 把已交付的 impact.js 纯逻辑接到 HTTP：POST 只返回「改这个会连累哪些东西」的分析结果，
+// 不建分支 run、不入队 job、不改 pipeline.js（真跑留给下一批）；GET .../options 供前端下拉选变更对象。
+const IMPACT_CHANGE_TYPES = new Set(["assetRef", "shot", "scene", "script"]);
+/** 用户可读 type → impact.plan 内部 type：shot/scene 复用 plan 的 shotCamera/storyboard 级联分支。 */
+const IMPACT_PLAN_TYPE = Object.freeze({ assetRef: "assetRef", script: "script", shot: "shotCamera", scene: "storyboard" });
+const ASSET_ROLE_LABEL = Object.freeze({ character: "角色", scene: "场景", prop: "道具", keyframe: "关键帧", clip: "片段" });
+
+const impactBadRequest = (message) => Object.assign(new Error(message), { status: 400 });
+
+/** changed[] 逐项校验：类型必须在白名单内、id 必填；非法即 400 且信息可读（可直接展示给用户）。 */
+function normalizeImpactChanged(body) {
+    const list = body && typeof body === "object" ? body.changed : undefined;
+    if (list === undefined || list === null) throw impactBadRequest('缺少 changed：请求体形如 { changed: [{ type: "assetRef", id: "c1" }] }');
+    if (!Array.isArray(list)) throw impactBadRequest("changed 必须是数组");
+    if (!list.length) throw impactBadRequest("changed 不能为空：至少指定一个变更对象");
+    return list.map((raw) => {
+        if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw impactBadRequest(`changed 项必须是对象：${JSON.stringify(raw)}`);
+        const type = String(raw.type ?? "").trim();
+        if (!IMPACT_CHANGE_TYPES.has(type)) throw impactBadRequest(`变更类型非法：${type || "(空)"}（允许 assetRef / shot / scene / script）`);
+        const id = String(raw.id ?? "").trim();
+        if (!id) throw impactBadRequest(`changed 项缺少 id：${JSON.stringify(raw)}`);
+        return { type, id, revision: raw.revision === undefined ? null : raw.revision };
+    });
+}
+
+/**
+ * 组装喂给 impact.plan 的「项目视图」：plan 需要 episodes[].scenes[]/shots[]，
+ * 而 project.json 的 episodes 只是索引（shots 在 episodes/<id>.json 详情里），这里把详情并回。
+ * 同时把存储上的 audioCues 映射成 plan 认识的 cues；deliverables 尚未落盘，缺失即空数组。
+ */
+function impactView(id) {
+    const project = projects.get(id);
+    if (!project) return null;
+    const details = projects.episodes.listDetails(id);
+    const byId = new Map(details.map((episode) => [String(episode.id), episode]));
+    const episodes = (Array.isArray(project.episodes) ? project.episodes : []).map((entry) => byId.get(String(entry.id)) || entry);
+    for (const episode of details) if (!episodes.some((entry) => String(entry.id) === String(episode.id))) episodes.push(episode);
+    return {
+        ...project,
+        episodes,
+        assetRefs: Array.isArray(project.assetRefs) ? project.assetRefs : [],
+        cues: Array.isArray(project.audioCues) ? project.audioCues : [],
+        deliverables: Array.isArray(project.deliverables) ? project.deliverables : [],
+    };
+}
+
+/** changed 项 → 可读中文主语短语（用于 reasons.text）。 */
+function impactChangedPhrase(item, assetRefs) {
+    if (item.type === "assetRef") {
+        const bare = item.id.startsWith("aref_") ? item.id.slice(5) : item.id;
+        const ref = assetRefs.find((row) => row && typeof row === "object" && [row.id, row.bindingId].some((value) => value !== undefined && value !== null && (String(value) === item.id || String(value) === bare)));
+        const role = ref?.role || "";
+        const name = ref?.metadata?.name || ref?.metadata?.title || ref?.metadata?.label || ref?.bindingId || item.id;
+        return `${ASSET_ROLE_LABEL[role] || "资产"}「${name}」的${role === "character" ? "三视图" : "素材"}已变`;
+    }
+    if (item.type === "script") return "剧本已变更";
+    if (item.type === "shot") return `镜头「${item.id}」已变更`;
+    return `场「${item.id}」已变更`;
+}
+
+/** 单条 changed 项 → 可读中文 reason（含它单独造成的受影响集合）。 */
+function impactReason(item, one, assetRefs) {
+    const shots = one.staleShots.length;
+    const phrase = impactChangedPhrase(item, assetRefs);
+    let text;
+    if (item.type === "assetRef") text = shots > 0 ? `${phrase}，引用其的 ${shots} 个镜头需要重跑` : `${phrase}，当前没有镜头引用它`;
+    else if (item.type === "script") text = shots > 0 ? `${phrase}，下游 ${shots} 个镜头需要整体重跑` : `${phrase}，当前没有需要重跑的镜头`;
+    else if (item.type === "shot") text = shots > 0 ? `${phrase}，本镜及下游共 ${shots} 个镜头需要重跑` : `${phrase}，没有需要重跑的下游`;
+    else text = shots > 0 ? `${phrase}，该场及镜头共 ${shots} 个镜头需要重跑` : `${phrase}，没有需要重跑的下游`;
+    return {
+        changed: { type: item.type, id: item.id, revision: item.revision },
+        text,
+        affected: {
+            shots: one.staleShots,
+            scenes: one.staleScenes,
+            episodes: one.staleEpisodes,
+            cues: one.staleCues,
+            deliverables: one.staleDeliverables,
+        },
+    };
+}
+
+/**
+ * 影响分析查询：返回 stale / keep / reasons / summary。纯分析：不建 run、不入队 job、不改任何存储（只读 project）。
+ * 项目不存在 → 404；changed 缺失/为空/格式非法 → 400 且错误可解释。
+ */
+router.post("/api/projects/:id/impact", routeHandler(async (req, res, { params }) => {
+    const view = impactView(params.id);
+    if (!view) return sendError(res, 404, "项目不存在");
+    let body;
+    try {
+        body = await readJson(req);
+    } catch (error) {
+        throw impactBadRequest(`请求体不是合法 JSON：${error.message}`);
+    }
+    const changed = normalizeImpactChanged(body);
+    const planChanged = changed.map((item) => ({ type: IMPACT_PLAN_TYPE[item.type], id: item.id, revision: item.revision }));
+    const merged = impactPlan({ project: view, sourceRevisionId: view.sourceRevisionId ?? null, changed: planChanged });
+    // 逐项再算一次，让每条 reason 只讲「这一个变更」造成的影响（plan 的 reasons 是多项并集归属）。
+    const reasons = changed.map((item) => impactReason(item, impactPlan({ project: view, sourceRevisionId: view.sourceRevisionId ?? null, changed: [{ type: IMPACT_PLAN_TYPE[item.type], id: item.id, revision: item.revision }] }), view.assetRefs));
+    sendJson(res, 200, {
+        projectId: view.id,
+        sourceRevisionId: merged.sourceRevisionId,
+        changed,
+        stale: merged.stale,
+        keep: merged.keep,
+        reasons,
+        summary: {
+            total: merged.stale.length,
+            affectedShots: merged.staleShots.length,
+            affectedScenes: merged.staleScenes.length,
+            affectedEpisodes: merged.staleEpisodes.length,
+            affectedCues: merged.staleCues.length,
+            affectedDeliverables: merged.staleDeliverables.length,
+        },
+        staleShots: merged.staleShots,
+        staleScenes: merged.staleScenes,
+        staleEpisodes: merged.staleEpisodes,
+        staleCues: merged.staleCues,
+        staleDeliverables: merged.staleDeliverables,
+        warnings: merged.warnings,
+    });
+}));
+
+/** 可选变更对象清单（前端下拉）：当前项目的 assetRefs / shots / scenes，带名字与 revision。 */
+router.get("/api/projects/:id/impact/options", routeHandler((req, res, { params }) => {
+    const view = impactView(params.id);
+    if (!view) return sendError(res, 404, "项目不存在");
+    const revision = view.version ?? null;
+    const assetRefs = view.assetRefs.map((ref) => ({
+        type: "assetRef",
+        id: ref.id,
+        role: ref.role || "",
+        bindingId: ref.bindingId || null,
+        name: ref.metadata?.name || ref.metadata?.title || ref.metadata?.label || ref.bindingId || ref.id,
+        revision: ref.revision ?? revision,
+        selectedArtifactId: ref.selectedArtifactId ?? null,
+    }));
+    const shots = [];
+    const scenes = [];
+    for (const episode of view.episodes) {
+        const episodeId = episode.id ?? null;
+        for (const scene of episode.scenes ?? []) {
+            if (!scene || scene.id === undefined || scene.id === null) continue;
+            scenes.push({ type: "scene", id: String(scene.id), episodeId: scene.episodeId ?? episodeId, index: scene.index ?? null, name: scene.title || scene.locationId || String(scene.id), revision: scene.revision ?? revision });
+        }
+        for (const shot of episode.shots ?? []) {
+            if (!shot || shot.id === undefined || shot.id === null) continue;
+            shots.push({ type: "shot", id: String(shot.id), episodeId: shot.episodeId ?? episodeId, sceneId: shot.sceneId ?? null, index: shot.index ?? null, name: shot.storyboard?.summary || shot.storyboard?.description || String(shot.id), revision: shot.revision ?? revision });
+        }
+    }
+    const optionLabel = (row) => (row.type === "assetRef" ? `${ASSET_ROLE_LABEL[row.role] || "资产"}：${row.name}` : row.type === "shot" ? `镜头：${row.name}` : `场：${row.name}`);
+    const options = [...assetRefs, ...shots, ...scenes].map((row) => ({ type: row.type, id: row.id, label: optionLabel(row), revision: row.revision }));
+    sendJson(res, 200, { projectId: view.id, sourceRevisionId: view.sourceRevisionId ?? null, assetRefs, shots, scenes, options });
 }));
 
 const server = createServer(async (req, res) => {
