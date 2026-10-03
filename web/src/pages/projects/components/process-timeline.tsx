@@ -1,5 +1,5 @@
-import { Button, Card, Typography } from "antd";
-import { useMemo } from "react";
+import { Button, Card, Image, Modal, Typography } from "antd";
+import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 
@@ -198,11 +198,14 @@ function StageRow({
             ) : null}
 
             {stage.media.length ? (
-                <div className="mt-2 flex flex-wrap gap-1.5">
-                    {stage.media.map((artifact) => (
-                        <Thumb key={artifact.url} artifact={artifact} kind={artifactKind(artifact, stage.id)} registered={registered.has(artifact.url)} />
-                    ))}
-                </div>
+                // 同阶段图片共用一个预览组，弹窗里可左右切换看多张；视频走独立弹窗，不进预览组。
+                <Image.PreviewGroup preview={{ closeIcon: false }}>
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                        {stage.media.map((artifact) => (
+                            <Thumb key={artifact.url} artifact={artifact} kind={artifactKind(artifact, stage.id)} registered={registered.has(artifact.url)} />
+                        ))}
+                    </div>
+                </Image.PreviewGroup>
             ) : null}
 
             {stage.files.length ? (
@@ -218,9 +221,10 @@ function StageRow({
     );
 }
 
-/** 产物缩略图：图片/视频统一尺寸，点开在新标签查看大图或播放；已登记为资产者右上角带绿点。 */
+/** 产物缩略图：图片/视频统一尺寸，点开在站内弹窗预览或播放；已登记为资产者右上角带绿点。 */
 function Thumb({ artifact, kind, registered }: { artifact: TimelineArtifact; kind: "image" | "video" | "file"; registered: boolean }) {
     const { t } = useTranslation();
+    const [videoOpen, setVideoOpen] = useState(false);
     const src = resolveGatewayUrl(artifact.url);
     const label = lastSegment(artifact.url);
     const box =
@@ -233,16 +237,36 @@ function Thumb({ artifact, kind, registered }: { artifact: TimelineArtifact; kin
     ) : null;
     if (kind === "video") {
         return (
-            <a href={src} target="_blank" rel="noreferrer" className={box} title={label}>
-                <video src={src} muted preload="metadata" className="h-full w-full object-cover" />
-                {badge}
-            </a>
+            <>
+                <button
+                    type="button"
+                    className={cn(box, "block cursor-pointer")}
+                    title={label}
+                    aria-label={t("projects.timeline.previewVideo")}
+                    onClick={() => setVideoOpen(true)}
+                >
+                    <video src={src} muted preload="metadata" className="h-full w-full object-cover" />
+                    {badge}
+                </button>
+                {/* 不留 × 按钮：点遮罩或按 Esc 关闭（maskClosable / keyboard 均为 antd 默认 true）。 */}
+                <Modal open={videoOpen} footer={null} centered closable={false} destroyOnHidden onCancel={() => setVideoOpen(false)}>
+                    <video src={src} controls autoPlay className="max-h-[76vh] w-auto" />
+                </Modal>
+            </>
         );
     }
     return (
-        <a href={src} target="_blank" rel="noreferrer" className={box} title={label}>
-            <img src={src} alt={label} loading="lazy" className="h-full w-full object-cover" />
+        <span className={cn(box, "block")}>
+            <Image
+                src={src}
+                alt={label}
+                title={label}
+                loading="lazy"
+                rootClassName="block h-full w-full cursor-pointer"
+                className="h-full w-full object-cover"
+                preview={{ cover: false, closeIcon: false }}
+            />
             {badge}
-        </a>
+        </span>
     );
 }

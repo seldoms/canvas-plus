@@ -545,6 +545,7 @@ export default {
             count: "{{count}} 项",
             viewRun: "查看全文",
             registered: "已登记资产",
+            previewVideo: "预览视频",
             loadFailed: "过程时间线读取失败",
             summary: {
                 logline: "主线：{{value}}",

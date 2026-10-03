@@ -556,6 +556,7 @@ export default {
             count: "{{count}} item(s)",
             viewRun: "View full text",
             registered: "Registered asset",
+            previewVideo: "Preview video",
             loadFailed: "Failed to load the process timeline",
             summary: {
                 logline: "Logline: {{value}}",
