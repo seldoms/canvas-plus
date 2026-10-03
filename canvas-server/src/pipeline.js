@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { dirname, join } from "node:path";
 
 import { splitNovelIntoChunks } from "./chunk-novel.js";
 import { ASSET_ROLE } from "./contracts.js";
@@ -106,6 +107,26 @@ function withPromptHead(style, text) {
 
 function nowIso() {
     return new Date().toISOString();
+}
+
+/** Crockford Base32（去掉易混的 I/L/O/U），用于从哈希派生稳定 id 片段。 */
+const ID_BASE32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+
+/**
+ * 由 (projectId, 分镜 shot id) 派生稳定的 `sh_` 主键（契约 §3.4：手写 `sh_<创建时生成>`）。
+ * 同输入恒同值：关键帧投影重复执行也只会拿到同一个 id，绝不重复建镜（幂等前提）。
+ */
+function derivedShotId(projectId, storyboardShotId) {
+    const digest = createHash("sha256").update(`${projectId}:${storyboardShotId}`).digest();
+    let text = "";
+    for (let index = 0; text.length < 26; index += 1) text += ID_BASE32[digest[index % digest.length] % 32];
+    return `sh_${text}`;
+}
+
+/** 取结尾阿拉伯数字（sc1 / sc_0001 / scene-3 → 1/1/3）；抽不出返回 null。仅用于场次跨命名体系比对。 */
+function trailingNumber(value) {
+    const match = String(value ?? "").trim().match(/(\d{1,6})\s*$/);
+    return match ? Number(match[1]) : null;
 }
 
 /**
@@ -1111,6 +1132,10 @@ ${JSON.stringify(partials, null, 2)}
         else if (statuses.includes("canceled")) stage.status = "canceled";
         else stage.status = "error";
         if (TERMINAL_JOB.has(stage.status)) stage.finishedAt = stage.finishedAt || nowIso();
+        // 关键帧终态：把 frames[] 产物投影进 Project 侧 shots[].generationSlots[]（#48 门禁依据）。
+        // 放在 recomputeStage 收口 = 全部回写路径（projectJob / attachGeneration / executeRegenerate）都覆盖；
+        // 对「已跑完的历史 run」由 bindJobs() 启动重放终态 Job 时同样命中。
+        if (stage.id === "keyframe") projectKeyframeFacts(run, stage);
     }
 
     /** 按 id 取项目（未注入 getProject / 查不到 / 抛错一律 null，永不抛）。 */
@@ -1290,6 +1315,188 @@ ${JSON.stringify(partials, null, 2)}
         }
         if (normalized.warnings.length) stage.warnings = [...(Array.isArray(stage.warnings) ? stage.warnings : []), ...normalized.warnings];
         persistProjectEpisodeShotIds(run, normalized.episodes);
+    }
+
+    /** 原子写 JSON（临时文件 + 同目录 rename，与 projects.js 的写盘约定一致）。 */
+    function persistJsonAtomic(file, value) {
+        ensureDir(dirname(file));
+        const temp = `${file}.${process.pid}${Math.random().toString(36).slice(2, 8)}.tmp`;
+        writeFileSync(temp, JSON.stringify(value, null, 2));
+        renameSync(temp, file);
+    }
+
+    /**
+     * 分镜 shot 内嵌的分镜数据（契约 §3.4 的 `storyboard`）：取分镜产物里除稳定 id / 归属键 /
+     * index 外的全部字段（含 prompt/action/durationSec/cameraSpec/textOverlays…），保证新建镜
+     * 也带完整分镜事实，供前端与下游消费。
+     */
+    function storyboardPayloadOf(shot) {
+        const payload = {};
+        for (const key of Object.keys(shot || {})) {
+            if (key === "id" || key === "episodeId" || key === "sceneId" || key === "index" || key === "generationSlots" || key === "status") continue;
+            payload[key] = shot[key];
+        }
+        return payload;
+    }
+
+    /** 分镜场次 id（sc1）→ 集内真实场次 id（sc_0001）：精确命中优先，其次结尾序号宽松匹配，最后回落原值。 */
+    function resolveEpisodeSceneId(currentSceneId, storyboardSceneId, episodeSceneIds) {
+        const ids = Array.isArray(episodeSceneIds) ? episodeSceneIds : [];
+        const wanted = String(storyboardSceneId ?? "").trim();
+        if (wanted && ids.includes(wanted)) return wanted;
+        if (ids.includes(String(currentSceneId ?? "").trim())) return String(currentSceneId).trim();
+        const ordinal = trailingNumber(wanted);
+        if (ordinal) {
+            const hit = ids.find((id) => trailingNumber(id) === ordinal);
+            if (hit) return hit;
+        }
+        if (ids.length) return ids[0];
+        return String(currentSceneId ?? wanted ?? "").trim();
+    }
+
+    /** 关键帧帧 → 契约 §3.5 GenerationSlot[]：一帧一槽，selected 指向采用候选的 jobId，candidates 全量保留。 */
+    function generationSlotsFor(frames, shotId) {
+        return (Array.isArray(frames) ? frames : []).map((frame) => {
+            const role = String(frame?.role ?? "key");
+            return {
+                id: `slot_${shotId}_${role}`,
+                shotId,
+                role,
+                selected: frame?.selected ?? null,
+                candidates: (Array.isArray(frame?.candidates) ? frame.candidates : []).map((candidate) => ({
+                    template: String(candidate?.template ?? ""),
+                    jobId: String(candidate?.jobId ?? ""),
+                    artifactUrl: candidate?.artifactUrl ?? null,
+                    status: String(candidate?.status ?? ""),
+                    ...(candidate?.params !== undefined ? { params: candidate.params } : {}),
+                    ...(candidate?.createdAt !== undefined ? { createdAt: candidate.createdAt } : {}),
+                })),
+            };
+        });
+    }
+
+    /**
+     * 一集的关键帧镜：把归一后的分镜 shot 逐个落到 Project 侧 Shot（契约 §3.4），并挂上 frames 派生的
+     * `generationSlots`（§3.5）。已存在的镜**按 id / 分镜顺序**复用（保留其稳定 `sh_` 主键与人工编辑），
+     * 缺镜才新建（id 用 derivedShotId，稳定幂等）。绝不为分镜没覆盖的旧镜删数据。
+     */
+    function buildKeyframeShots({ projectId, episodeId, epShots, existing, framesByShot, scenes }) {
+        const ordered = existing.slice().sort((a, b) => (Number(a.index) || 0) - (Number(b.index) || 0));
+        const byShotId = new Map(ordered.map((shot) => [String(shot.id), shot]));
+        const episodeSceneIds = (Array.isArray(scenes) ? scenes : []).map((scene) => String(scene?.id ?? "")).filter(Boolean);
+        const consumed = new Set();
+        const next = [];
+        epShots.forEach((source, position) => {
+            const storyboardShotId = String(source.id ?? "").trim() || `${episodeId}-${position + 1}`;
+            const known = byShotId.get(storyboardShotId);
+            const match = known && !consumed.has(known) ? known : ordered[position] && !consumed.has(ordered[position]) ? ordered[position] : null;
+            if (match) consumed.add(match);
+            const shotId = match?.id ? String(match.id) : derivedShotId(projectId, storyboardShotId);
+            const shot = match ? { ...match } : { id: shotId, episodeId, sceneId: "", index: 0, storyboard: {}, generationSlots: [], status: "pending" };
+            shot.id = shotId;
+            shot.episodeId = episodeId;
+            const sceneId = resolveEpisodeSceneId(shot.sceneId, source.sceneId, episodeSceneIds);
+            if (sceneId) shot.sceneId = sceneId;
+            const storyboardPayload = storyboardPayloadOf(source);
+            if (!shot.storyboard || (typeof shot.storyboard === "object" && !Array.isArray(shot.storyboard) && Object.keys(shot.storyboard).length === 0)) shot.storyboard = storyboardPayload;
+            if (!(Number(shot.index) > 0)) shot.index = Number(source.index) > 0 ? Number(source.index) : position + 1;
+            shot.generationSlots = generationSlotsFor(framesByShot.get(storyboardShotId), shotId);
+            if (shot.status !== "done" && shot.generationSlots.some((slot) => (slot.candidates || []).some((candidate) => candidate.status === "done"))) shot.status = "done";
+            next.push(shot);
+        });
+        for (const shot of existing) if (!consumed.has(shot)) next.push(shot);
+        return next;
+    }
+
+    /**
+     * 关键帧事实链（修 #48）：把 keyframe 阶段 `frames[]` 的产物幂等投影进 Project 侧
+     * `episodes[].shots[].generationSlots[]`（gates.js 判 keyframe done 的唯一依据），并补齐
+     * shots[] 本体与 episodes[].shotIds（复用上一波交付的 normalizeShotEpisodeIds 与同语义原子回填）。
+     *
+     * 触发点 = keyframe 阶段终态（recomputeStage 收口），因此对「关键帧已跑完、当时尚无投影代码」的
+     * 历史 run 同样生效：服务重启时 bindJobs() 重放 jobs.json 里已终态的 Job → projectJob → recomputeStage。
+     * 仅当阶段 status === "done" 才投影；运行中 / 未完成绝不写，避免「关键帧未完成却误判 done」。
+     * 幂等：集详情与 project.json 都做深比较，无变化不写盘；两者都不 bump version（走 persistDerived 语义）。
+     * 未绑项目 / project.json 缺失 / 无可判定依据 → 空操作；写入失败只告警，绝不拖垮生成阶段。
+     */
+    function projectKeyframeFacts(run, stage) {
+        if (!run || stage?.id !== "keyframe" || stage.status !== "done") return;
+        const projectId = run?.options?.projectId;
+        if (!projectId) return;
+        const frames = (Array.isArray(stage.output?.frames) ? stage.output.frames : []).filter((frame) => frame && typeof frame === "object");
+        if (!frames.length) return;
+        const project = projectById(projectId);
+        if (!project || !Array.isArray(project.episodes) || !project.episodes.length) return;
+        const storyboard = run.stages?.storyboard?.output && typeof run.stages.storyboard.output === "object" ? run.stages.storyboard.output : {};
+        const storyboardShots = (Array.isArray(storyboard.shots) ? storyboard.shots : []).filter((shot) => shot && typeof shot === "object");
+        if (!storyboardShots.length) return;
+        const dir = projectDataDir(projectId);
+        if (!dir) return;
+
+        // 复用归一：把分镜 shot 落到真实集 id（项目侧 ep_0001 优先，否则剧本 ep1）。
+        const normalized = normalizeShotEpisodeIds({ shots: storyboardShots, episodes: storyboardEpisodeAuthority(run) });
+        const framesByShot = new Map();
+        for (const frame of frames) {
+            const key = String(frame.shotId ?? "").trim();
+            if (!key) continue;
+            if (!framesByShot.has(key)) framesByShot.set(key, []);
+            framesByShot.get(key).push(frame);
+        }
+
+        const projected = new Map();
+        for (const episode of normalized.episodes) {
+            const episodeId = String(episode.id);
+            const epShots = normalized.shots.filter((shot) => String(shot.episodeId) === episodeId);
+            if (!epShots.length) continue;
+            const indexEntry = project.episodes.find((row) => String(row?.id) === episodeId);
+            const detailFile = safeJoin(dir, "episodes", `${episodeId}.json`);
+            const stored = readJsonFile(detailFile);
+            const detail = stored && typeof stored === "object" ? stored : null;
+            const existing = detail && Array.isArray(detail.shots) ? detail.shots.filter((shot) => shot && typeof shot === "object") : [];
+            // 集内场次：优先盘上详情，其次索引条目内嵌的 scenes（脚本投影把 scenes 落在索引里，别用空数组覆盖、否则 storyboard 门禁会被遮断）。
+            const scenes = Array.isArray(detail?.scenes) && detail.scenes.length ? detail.scenes : Array.isArray(indexEntry?.scenes) ? indexEntry.scenes : Array.isArray(episode.scenes) ? episode.scenes : [];
+            const nextShots = buildKeyframeShots({ projectId, episodeId, epShots, existing, framesByShot, scenes });
+            if (!detail || JSON.stringify(detail.shots) !== JSON.stringify(nextShots)) {
+                const nextDetail = {
+                    ...(detail || {}),
+                    id: episodeId,
+                    projectId,
+                    index: detail?.index ?? indexEntry?.index ?? episode.index ?? 1,
+                    title: String(detail?.title ?? indexEntry?.title ?? episode.title ?? ""),
+                    scenes,
+                    shots: nextShots,
+                };
+                try {
+                    persistJsonAtomic(detailFile, nextDetail);
+                } catch (error) {
+                    console.warn(`[pipeline] 关键帧集详情投影失败（不影响生成）：${error.message}`);
+                    continue;
+                }
+            }
+            projected.set(episodeId, {
+                sceneIds: (Array.isArray(episode.sceneIds) && episode.sceneIds.length ? episode.sceneIds : []).map(String),
+                shotIds: nextShots.map((shot) => String(shot.id)),
+                shots: nextShots,
+            });
+        }
+        if (!projected.size) return;
+
+        // 把 shots/shotIds/sceneIds 回写 project.episodes（保持 persistDerived 语义：更新 updatedAt、不改 version、无变化不写）。
+        let changed = false;
+        const nextEpisodes = project.episodes.map((row) => {
+            const hit = projected.get(String(row?.id));
+            if (!hit) return row;
+            const sceneIds = Array.isArray(row.sceneIds) && row.sceneIds.length ? row.sceneIds.map(String) : hit.sceneIds;
+            changed = true;
+            return { ...row, shots: hit.shots, shotIds: hit.shotIds, sceneIds };
+        });
+        if (!changed) return;
+        if (JSON.stringify(nextEpisodes) === JSON.stringify(project.episodes)) return;
+        try {
+            persistJsonAtomic(safeJoin(dir, "project.json"), { ...project, episodes: nextEpisodes, updatedAt: nowIso() });
+        } catch (error) {
+            console.warn(`[pipeline] 关键帧产物投影失败（不影响生成）：${error.message}`);
+        }
     }
 
     /**
