@@ -40,6 +40,194 @@ const num = (value) => {
 const nonEmpty = (value) => typeof value === "string" && value.trim() !== "";
 
 // ---------------------------------------------------------------------------
+// 0. 台词清洗与语速解析（括号表演注解不进生产参数）
+// ---------------------------------------------------------------------------
+
+/**
+ * 表演注解括号：中文全角 `（）` / `【】` 与半角 `()` / `[]`。
+ * 括号里的内容是**给人看的表演提示**（语气 / 音量 / 语速 / 情绪），不是要朗读的台词，
+ * 也**不得**驱动 TTS 的生产参数（见 resolveSpeechSpeed —— 默认忽略注解，需显式 `honorPerformance: true` 才采纳）。
+ */
+const BRACKET_PAIRS = {
+    "（": "）",
+    "(": ")",
+    "【": "】",
+    "[": "]",
+};
+const CLOSING_BRACKETS = new Set(Object.values(BRACKET_PAIRS));
+
+/** 包裹台词的外层引号对（只剥掉「整段被引号包住」的成对引号，段内引号原样保留）。 */
+const WRAPPING_QUOTE_PAIRS = [
+    ["「", "」"], ["『", "』"], ["“", "”"], ["‘", "’"], ["\"", "\""], ["'", "'"],
+];
+
+/** 正常语速（倍率，1 = 正常）。无显式语速且无有效线索时的默认值。 */
+export const SPEED_NORMAL = 1;
+/** 语速下限保护：注解最多把语速压到这里（正常语速的 0.85 倍），绝不允许更低。 */
+export const SPEED_LOWER_BOUND = 0.85;
+/** 语速上限保护：注解最多把语速提到这里（正常语速的 1.15 倍），绝不允许更高。 */
+export const SPEED_UPPER_BOUND = 1.15;
+/** 单条语速线索对语速的调整步长（先得 0.8 / 1.2，再由上下限收敛到边界）。 */
+const SPEED_HINT_STEP = 0.2;
+
+/** 空白归一：全角空格→半角、连续空白（含换行）折叠为单个空格、去首尾空白。 */
+function normalizeWhitespace(value) {
+    return String(value ?? "").replace(/\u3000/g, " ").replace(/\s+/g, " ").trim();
+}
+
+/** 归一朗读文本：空白归一 + 反复剥掉整段外层成对引号（段内引号保留）。 */
+function normalizeSpokenText(value) {
+    let text = normalizeWhitespace(value);
+    let changed = true;
+    while (changed && text.length >= 2) {
+        changed = false;
+        for (const [open, close] of WRAPPING_QUOTE_PAIRS) {
+            if (text.startsWith(open) && text.endsWith(close) && text.length > open.length + close.length - 1) {
+                text = normalizeWhitespace(text.slice(open.length, text.length - close.length));
+                changed = true;
+                break;
+            }
+        }
+    }
+    return text;
+}
+
+/**
+ * 把分镜台词的**括号表演注解**从台词正文里剥出来。
+ *
+ * 分镜阶段产出的 `dialogue` 常写成
+ * 「姑娘，这么晚，去哪儿？（低声、音量低、语速慢、略带关心）」——
+ * 括号里是给配音 / 口型参考的**表演提示**，不是要朗读的台词。若原样送进 TTS，
+ * 注解里的「语速慢」会被当成指令把语音拖慢。本函数把两者拆开：正文只留纯台词，注解另存。
+ *
+ * 规则：
+ *   - 剥掉 `（）` `()` `【】` `[]` 及其内容（支持嵌套），全角 / 半角混用都能处理；
+ *   - 纯台词做空白归一（多段换行折叠为空格）、剥掉整段外层成对引号；段内引号原样保留；
+ *   - 若剥完为空（整条台词都是注解），**回退原文**并给出 warning（绝不静默丢台词）。
+ *
+ * @param {string} raw 原始 dialogue 字符串。
+ * @returns {{ text: string, performance: string, warnings: Array<{code:string, reason:string}> }}
+ *          text=纯台词；performance=表演注解（多段用「；」连接，无注解为空串）；warnings=可解释告警。
+ */
+export function splitDialogue(raw) {
+    const source = typeof raw === "string" ? raw : "";
+    const warnings = [];
+    const performances = [];
+    const removed = new Array(source.length).fill(false);
+    const stack = [];
+    for (let i = 0; i < source.length; i += 1) {
+        const ch = source[i];
+        if (BRACKET_PAIRS[ch] !== undefined) {
+            stack.push({ open: ch, start: i });
+            continue;
+        }
+        if (CLOSING_BRACKETS.has(ch) && stack.length > 0 && BRACKET_PAIRS[stack[stack.length - 1].open] === ch) {
+            const top = stack.pop();
+            if (stack.length === 0) {
+                for (let j = top.start; j <= i; j += 1) removed[j] = true;
+                const inner = normalizeWhitespace(source.slice(top.start + 1, i));
+                if (inner !== "") performances.push(inner);
+            }
+            continue;
+        }
+        // 不匹配的右括号 / 普通字符：一律当正文保留，不丢字。
+    }
+
+    let kept = "";
+    for (let i = 0; i < source.length; i += 1) {
+        if (!removed[i]) kept += source[i];
+    }
+    const text = normalizeSpokenText(kept);
+    const performance = performances.join("；");
+
+    if (text === "") {
+        const fallback = normalizeSpokenText(source);
+        warnings.push({
+            code: "empty_after_cleaning",
+            reason: `台词剥掉括号注解后为空，已回退原文「${fallback}」并告警，请人工确认该行是否为纯表演提示`,
+        });
+        return { text: fallback, performance, warnings };
+    }
+    return { text, performance, warnings };
+}
+
+/** 从表演注解里探测语速线索：慢 → -step，快 → +step，both/无 → 0。 */
+function detectSpeedHint(performance) {
+    const source = String(performance ?? "");
+    const slow = /慢|缓/.test(source);
+    const fast = /快|急促|加速/.test(source);
+    if (slow && !fast) return -SPEED_HINT_STEP;
+    if (fast && !slow) return SPEED_HINT_STEP;
+    return 0;
+}
+
+/**
+ * 解析一条对白的**显式语速**（倍率，1 = 正常语速）。
+ *
+ * 优先级（显式 > 线索 > 默认）：
+ *   1. `voiceProfile.speed` 显式给定 → 直接采用（权威配置，不再受注解影响）；
+ *   2. `options.speed` 调用方显式给定 → 采用；
+ *   3. 否则取**正常语速**（SPEED_NORMAL）。
+ * 表演注解里的「语速慢 / 语速快」**只作线索、不是指令**：最多把语速在
+ * [SPEED_LOWER_BOUND, SPEED_UPPER_BOUND] 内小幅收敛，绝不会把语速压到下限以下。
+ *
+ * @param {object} args
+ * @param {object} [args.voiceProfile] VoiceProfile；其 `speed` 为显式语速时最优先。
+ * @param {string} [args.performance]  splitDialogue 剥出的表演注解。
+ * @param {object} [args.options]      调用方覆盖项，支持 `{ speed }`。
+ * @returns {{ speed: number, source: "voiceProfile"|"options"|"performance"|"default", reason: string }}
+ */
+export function resolveSpeechSpeed({ voiceProfile, performance, options } = {}) {
+    const opt = options && typeof options === "object" ? options : {};
+
+    const profileSpeed = num(voiceProfile?.speed);
+    if (profileSpeed !== null && profileSpeed > 0) {
+        return {
+            speed: profileSpeed,
+            source: "voiceProfile",
+            reason: `VoiceProfile 显式指定 speed=${profileSpeed}，以显式配置为准（注解不参与）`,
+        };
+    }
+
+    const optionSpeed = num(opt.speed);
+    if (optionSpeed !== null && optionSpeed > 0) {
+        return {
+            speed: optionSpeed,
+            source: "options",
+            reason: `调用方显式指定 speed=${optionSpeed}，以显式配置为准（注解不参与）`,
+        };
+    }
+
+    // 注解（LLM 自己写的表演提示）**默认不参与生产参数**：它是文学发挥，不是用户指令。
+    // 只有调用方显式传 `honorPerformance: true` 才把它当线索；默认取正常语速。
+    if (opt.honorPerformance !== true) {
+        return {
+            speed: SPEED_NORMAL,
+            source: "default",
+            reason: "默认正常语速 1.0（表演注解不参与生产参数；如需采纳注解请显式传 honorPerformance: true）",
+        };
+    }
+
+    const hint = detectSpeedHint(performance);
+    if (hint === 0) {
+        return {
+            speed: SPEED_NORMAL,
+            source: "default",
+            reason: "无显式语速且注解未给语速线索，取正常语速 1.0",
+        };
+    }
+
+    const desired = SPEED_NORMAL + hint;
+    const speed = Math.min(SPEED_UPPER_BOUND, Math.max(SPEED_LOWER_BOUND, desired));
+    const direction = hint > 0 ? "偏快" : "偏慢";
+    const bound = hint > 0 ? SPEED_UPPER_BOUND : SPEED_LOWER_BOUND;
+    const reason = speed === desired
+        ? `注解提示语速${direction}，仅作线索小幅收敛 → speed=${speed}`
+        : `注解提示语速${direction}，但注解不是指令，已按${hint > 0 ? "上" : "下"}限保护收敛到 ${speed}（正常语速的 ${bound} 倍）`;
+    return { speed, source: "performance", reason };
+}
+
+// ---------------------------------------------------------------------------
 // 1. TTS 请求体构造
 // ---------------------------------------------------------------------------
 
@@ -53,7 +241,8 @@ const nonEmpty = (value) => typeof value === "string" && value.trim() !== "";
  * @param {object}        args.voiceProfile VoiceProfile 对象；`speaker` 作为 `voice`，`design` 作为 `instructions`。
  * @param {string}        args.text         要合成的文本（台词/旁白）。
  * @param {string}        [args.format]     音频格式，默认 "mp3"（对齐前端 audioFormat 默认值）。
- * @param {number|string} [args.speed]      语速，默认 1（对齐前端 audioSpeed 默认值）。
+ * @param {number|string|object} [args.speed] 语速，默认 1（对齐前端 audioSpeed 默认值）。
+ *        既接受数字/字符串，也接受 `resolveSpeechSpeed()` 的返回值对象（取其 `.speed`）。
  * @returns {object} 可直接作为 POST body 的纯数据对象；只包含 TTS_BODY_KEYS 中的字段。
  */
 export function buildTtsRequest({ voiceProfile, text, format, speed } = {}) {
@@ -68,11 +257,13 @@ export function buildTtsRequest({ voiceProfile, text, format, speed } = {}) {
         throw new Error("VoiceProfile 缺少 speaker：无法构造 TTS 请求");
     }
 
+    // speed 可以是数字/字符串，也可以是 resolveSpeechSpeed 的 `{ speed, source, reason }` 结果对象。
+    const speedValue = speed && typeof speed === "object" ? speed.speed : speed;
     const body = {
         input: text,
         voice,
         response_format: nonEmpty(format) ? format : "mp3",
-        speed: num(speed) ?? 1,
+        speed: num(speedValue) ?? SPEED_NORMAL,
     };
     // model 是 OpenAI 兼容接口的必填项；由调用方（productionAudio.dialogue 的 toolId/model）注入。
     if (nonEmpty(voiceProfile.model)) body.model = voiceProfile.model;
@@ -87,7 +278,7 @@ export function buildTtsRequest({ voiceProfile, text, format, speed } = {}) {
 // ---------------------------------------------------------------------------
 
 /** 把镜头台词切成句子：按中英文句末标点与换行切。 */
-function splitDialogue(text) {
+function splitSentences(text) {
     return String(text)
         .split(/[\n\r]+|(?<=[。！？!?；;])/)
         .map((part) => part.trim())
@@ -103,11 +294,13 @@ function resolveCharacterId(shot, characters) {
     return hit?.id || null;
 }
 
-/** 按 characterId 找 VoiceProfile；shot.voiceProfileId 显式指定时优先。 */
-function resolveVoiceProfileId(shot, characterId, voiceProfiles) {
-    if (nonEmpty(shot.voiceProfileId)) return shot.voiceProfileId;
-    const hit = (voiceProfiles || []).find((profile) => profile?.characterId === characterId);
-    return hit?.id || null;
+/** 按 characterId 找 VoiceProfile 对象；shot.voiceProfileId 显式指定时优先。 */
+function findVoiceProfile(shot, characterId, voiceProfiles) {
+    if (nonEmpty(shot.voiceProfileId)) {
+        const explicit = (voiceProfiles || []).find((profile) => profile?.id === shot.voiceProfileId);
+        if (explicit) return explicit;
+    }
+    return (voiceProfiles || []).find((profile) => profile?.characterId === characterId) || null;
 }
 
 /**
@@ -137,10 +330,15 @@ export function cuesFromShots({ shots, characters = [], voiceProfiles = [] } = {
         const total = duration !== null && duration > 0 ? duration : CUE_FALLBACK_SEC;
 
         const dialogue = typeof shot.dialogue === "string" ? shot.dialogue : "";
-        const sentences = splitDialogue(dialogue);
+        // 台词清洗：括号表演注解不进 TTS 文本，只有纯台词进 `text`，注解挂到 `performance`。
+        const cleaned = splitDialogue(dialogue);
+        const sentences = splitSentences(cleaned.text);
         if (sentences.length > 0) {
             const characterId = resolveCharacterId(shot, characters);
-            const voiceProfileId = resolveVoiceProfileId(shot, characterId, voiceProfiles);
+            const voiceProfile = findVoiceProfile(shot, characterId, voiceProfiles);
+            const voiceProfileId = voiceProfile?.id || null;
+            // 语速是显式参数：默认正常；注解里「语速慢」只作线索，且有下限保护。
+            const { speed } = resolveSpeechSpeed({ voiceProfile, performance: cleaned.performance });
             const step = total / sentences.length;
             sentences.forEach((text, index) => {
                 cues.push({
@@ -150,18 +348,23 @@ export function cuesFromShots({ shots, characters = [], voiceProfiles = [] } = {
                     startSec: round3(index * step),
                     endSec: round3((index + 1) * step),
                     text,
+                    performance: cleaned.performance,
+                    speed,
                     characterId,
                     voiceProfileId,
                     artifactId: null,
                     status: "draft",
+                    warnings: cleaned.warnings,
                 });
             });
         }
 
-        // 可选：旁白（shot.narration）——同样支持多句均分。
+        // 可选：旁白（shot.narration）——同样支持多句均分，并做同样的清洗。
         for (const [field, type] of [["narration", "narration"]]) {
-            const lines = splitDialogue(shot[field] || "");
+            const narration = splitDialogue(typeof shot[field] === "string" ? shot[field] : "");
+            const lines = splitSentences(narration.text);
             if (lines.length === 0) continue;
+            const { speed } = resolveSpeechSpeed({ performance: narration.performance });
             const step = total / lines.length;
             lines.forEach((text, index) => {
                 cues.push({
@@ -171,10 +374,13 @@ export function cuesFromShots({ shots, characters = [], voiceProfiles = [] } = {
                     startSec: round3(index * step),
                     endSec: round3((index + 1) * step),
                     text,
+                    performance: narration.performance,
+                    speed,
                     characterId: null,
                     voiceProfileId: null,
                     artifactId: null,
                     status: "draft",
+                    warnings: narration.warnings,
                 });
             });
         }
