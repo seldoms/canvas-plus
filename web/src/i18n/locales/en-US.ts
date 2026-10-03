@@ -901,6 +901,17 @@ export default {
         stages: { script: "Script", storyboard: "Storyboard", design: "Design", keyframe: "Keyframes", assembly: "Assembly" },
         status: { pending: "Pending", running: "Running", partial: "Partial", done: "Done", error: "Failed", blocked: "Blocked", canceled: "Canceled" },
         blockedItem: "{{itemId}}: {{reason}}",
+        blocked: {
+            title: "This stage is blocked — nothing was generated",
+            hint: "The character / scene reference assets below are missing, so identities can't be locked. Add the references, or enter from a project so they are registered automatically.",
+            refresh: "Refresh status",
+            openProjects: "Go to projects",
+        },
+        guide: {
+            title: "For full production (character consistency), enter from a project",
+            body: "This standalone pipeline entry creates a run that is not bound to a project, so design references cannot be registered and the keyframe stage gets blocked for missing character / scene references. For full production, create a project under “My Projects”, then start a pipeline run from inside it.",
+            open: "Go to “My Projects”",
+        },
         candidates: {
             regenerate: "Try another model",
             selected: "Selected",

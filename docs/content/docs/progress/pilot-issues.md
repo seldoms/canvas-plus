@@ -705,3 +705,13 @@
 | 70 | 流水线/项目绑定 | **不绑项目的 run 会让「关键帧」永久 `blocked`，且 UI 卡死不给错误（P0）**。一手证据：`run-musrbea3-t20px` 的 `options.projectId=None` → `keyframe.status=blocked`，error 逐镜列「缺少角色/场景参考图…character:c1（no-ref）…」（**18 镜全部**）；同轮 `run-musrs21x-pri3c`（`projectId=prj_01M41JX…`）则为 `running` ✅。链路：`/pipeline` 顶部「开始生成剧本」→ `createRunOnly()` → `createPipelineRun({novel,title})` **不带 projectId** → 服化道参考图无从登记为 AssetRef → 关键帧每条 blocked。**更严重的是**：blocked 帧没有 jobId → 前端不轮询 → **界面永久「运行中/模型生成中」、不给任何错误、所有「运行本步」禁用**，只能手动「刷新状态」恢复。| 一手证据：两个 run 的 `options.projectId` 与 `keyframe.status/error` 对比（我本人复核）| 高（独立入口功能残 + blocked 是 UI 死胡同）| 前端(建run)/阶段状态显示 | ⏳待修 |
 | 71 | 流水线进度终态 | **阶段后端已完成，前端仍显示「运行中」直到手动刷新（P1）**。一手证据：服化道后端 `done` 且 7 个 job 全 `done`（约 03:04），但 `progress.json` 停在 `phase:"running"`、`updatedAt` 冻结；前端显示「运行中/生成中/模型生成中」且所有「运行本步」禁用（「有步骤正在运行，请等待结束」），03:07 手动「刷新状态」才恢复。疑似原因：design 阶段产物里没有可供 `collectJobIds` 采集的 jobId → 前端无 job 轮询可依赖，只能靠 `progress.json`，而它没走到终态。| 一手证据：同一时刻的 run 阶段状态（done）+ progress.json（running）+ 前端文案 | 中（每轮都要人工刷新且期间按钮被锁）| 流水线进度/前端 | ⏳待修 |
 | 72 | 流水线入口 | **「开始生成剧本」是否真的触发了剧本生成 —— 待复现确认（P2，未定论）**。验收者观测：点击后 `performance` 只有 `POST /api/pipeline/runs 201`，无 `.../steps/script/run`；**但读代码** `startWithEstimate()` 在非分块长文路径上确实 `await runStage("script")`（`web/src/pages/pipeline/index.tsx:46-65`）→ 两者矛盾。**不排除观测时序（performance 在导航后读取）或按钮未真正命中**。| 一手证据：验收者观测 vs 代码路径；**尚未自行复现** | 待定 | 前端/流水线入口 | ⏳待复现定性 |
+
+### 2026-10-04 第四轮问题处置回执（#70/#71/#72）
+
+| # | 状态 | 修法 | 我的复核（不认自报） |
+|---|---|---|---|
+| 70 | ✅ **已修复** | 前端加 blocked 面板：显示服务端逐镜原因（复用关键帧既有 `blockedMissing` 文案）+「刷新状态」「去项目入口」；`/pipeline` 顶部加引导 Alert「要走完整生产（角色一致）请从项目进入」。**未改建 run 语义**（仍不自动带 projectId，语义改动留给产品拍板） | **我在真实界面看过**：同一 run 上「已阻断」在、「运行中」不在、引导文案在、阻断原因可见、**「运行本步」全部可点** ✅ |
+| 71 | ✅ **已修复** | 终态判据不再只看 `progress.json`：改为 `phase done/failed` **或** `inflight===false` 任一命中即补拉完整 run，以 `run.stages.<id>.status` 终态为准解锁并停轮询 | 复核代码（`use-pipeline-run.ts` 进度轮询 effect 的终态分支）；实测证据由修复方提供（blocked/done 两种终态均无手动刷新自动解锁） |
+| 72 | ✅ **已定性并修复（是真 bug）** | **主入口按钮「开始生成剧本」从来没真正开始过剧本生成**：`startWithEstimate` 在 `createRunOnly()` 返回后的**同一次点击调用**里调 `runStage("script")`，而 `runStage` 是**建 run 之前那轮渲染的闭包**，`runId` 仍为空 → 被早退 `if (!runId…) return`。修法：`runIdRef` 同步兜底（建完 run 即写 ref，`runStage` 用 `runIdRef.current \|\| runId`） | 复核代码（`runIdRef` 三处：`111-112` 定义同步、`389` 建完即写、`409` 解析 id）；改后复现证据：点击后 `POST runs 201` **+** `POST .../steps/script/run 202`，该 run `script=done` |
+
+> 附带影响：**所有从 `/pipeline` 顶部「开始生成剧本」发起的 run，剧本阶段其实都没自动开始** —— 需要用户再手点一次「运行本步」才会跑。现已修。

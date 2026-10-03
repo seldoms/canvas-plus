@@ -1,7 +1,8 @@
-import { Button, Input, Modal, Select } from "antd";
+import { Alert, Button, Input, Modal, Select } from "antd";
 import { FileText, History, Pencil, RefreshCw, Sparkles } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useNavigate } from "react-router-dom";
 
 import { StageCard } from "./components/stage-card";
 import { PipelineHistory } from "./components/pipeline-history";
@@ -18,6 +19,7 @@ async function readNovelFiles(files: File[]) {
 
 export default function PipelinePage() {
     const { t } = useTranslation();
+    const navigate = useNavigate();
     const { novel, setNovel, run, views, starting, busyStage, runningStage, progress, error, createRunOnly, runStage, cancelStage, saveStageOutput, refresh, openRun, resetRun, loadHistory, historyLoading, renameRun, modelOptions, stageModels, setStageModel, templates, regeneratingItem, regenerateItem } = usePipelineRun();
     const [editing, setEditing] = useState<{ id: string; title: string; text: string; error: string } | null>(null);
     const [imported, setImported] = useState<{ names: string[]; rejected: number } | null>(null);
@@ -125,6 +127,20 @@ export default function PipelinePage() {
                     <h1 className="text-xl font-semibold text-stone-950 dark:text-stone-100">{t("pipeline.title")}</h1>
                     <p className="mt-1 text-sm text-stone-500 dark:text-stone-400">{t("pipeline.description")}</p>
 
+                    {/* 独立入口建的是不绑项目的 run，走到关键帧必然因缺参考图被阻断；这里给出明确引导与跳转，不擅自改 run 语义。 */}
+                    <Alert
+                        className="mt-4"
+                        type="info"
+                        showIcon
+                        message={t("pipeline.guide.title")}
+                        description={t("pipeline.guide.body")}
+                        action={
+                            <Button size="small" onClick={() => navigate("/projects")}>
+                                {t("pipeline.guide.open")}
+                            </Button>
+                        }
+                    />
+
                     <div className="mt-5">
                         <div
                             onDragOver={(event) => event.preventDefault()}
@@ -206,6 +222,8 @@ export default function PipelinePage() {
                                     onCancel={() => void cancelStage(view.id)}
                                     onEdit={() => openEditor(view)}
                                     onRegenerate={regenerateItem}
+                                    onRefresh={() => void refresh()}
+                                    onOpenProjects={() => navigate("/projects")}
                                 />
                             ))}
                         </div>

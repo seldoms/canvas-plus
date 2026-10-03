@@ -89,6 +89,12 @@ export function usePipelineRun() {
     const [progress, setProgress] = useState<GatewayStageProgress | null>(null);
     /** 01 剧本多步：上次见到的已完成子步骤数。仅在子步骤推进时拉一次完整 run 取中间产物，不轮询大 run。 */
     const scriptStepsDone = useRef(0);
+    /**
+     * 上一轮 progress 轮询看到的 inflight 标志（null=本轮还没打过）。
+     * 用于在后端「由执行中转为不再执行」的那一刻补拉一次完整 run：blocked 这类终态不会写进 progress.json
+     * （phase 仍停在 running），只看 progress 会让前端永远停在「运行中」（#70/#71）。
+     */
+    const progressInflight = useRef<boolean | null>(null);
     const [historyLoading, setHistoryLoading] = useState(false);
     /** 恢复只做一次，之后不再被本地恢复逻辑覆盖当前 run。 */
     const [restored, setRestored] = useState(false);
@@ -96,6 +102,14 @@ export function usePipelineRun() {
     const storedActiveRunId = usePipelineStore((state) => state.activeRunId);
     // 当前 run 的 id：内存里的 run 优先，刷新后 run 尚未拉回时用本地记住的 activeRunId，轮询据此重建。
     const runId = run?.id || storedActiveRunId;
+    /**
+     * 与 runId 同步的 ref：`startWithEstimate` 建完 run 后会在**同一次点击调用**里立刻 `runStage("script")`，
+     * 此时 React 还没重渲染，`runStage` 闭包里的 `runId` 仍是空 → 被 `!runId` 早退掉，剧本永远不开始
+     * （#72 已复现：点击后只有 POST /runs 201，没有 steps/script/run，新 run 的 script 停在 pending）。
+     * 用 ref 兜住这个同步时序，不改变「建 run / 跑 stage」的语义。
+     */
+    const runIdRef = useRef(runId);
+    runIdRef.current = runId;
     const channels = useConfigStore((state) => state.config.channels);
 
     // 后端 202 之后阶段在后台跑，「有没有在跑」只能从 run 的状态看，不能再靠 await 那个 POST
@@ -275,6 +289,8 @@ export function usePipelineRun() {
     // 所以这里独立轮询轻量进度端点；阶段落终态后再拉一次完整 run 取产物。
     useEffect(() => {
         if (!runId || !runningStage) return;
+        // 每轮轮询（换 run / 换正在跑的阶段）重置基线：第一次打点只建立 inflight 基线，不触发补拉。
+        progressInflight.current = null;
         let alive = true;
         const load = () => {
             void fetchPipelineProgress(runId, gwBase || undefined)
@@ -290,9 +306,17 @@ export function usePipelineRun() {
                         scriptStepsDone.current = doneCount;
                         void refresh();
                     }
-                    if (phase === "done" || phase === "failed") {
-                        scriptStepsDone.current = 0;
+                    const phaseTerminal = phase === "done" || phase === "failed";
+                    // 后端已不再执行该阶段（inflight 由 true 翻成 false）时也补拉一次完整 run：
+                    // blocked 这类终态只落在 run 的 stages.<id>.status 上，progress.json 仍停在 running，
+                    // 只靠 progress 判定会让前端永远「运行中」且按钮永久禁用（#70/#71）。
+                    const stoppedExecuting = data.inflight === false && progressInflight.current !== false;
+                    if (phaseTerminal || stoppedExecuting) {
+                        if (phaseTerminal) scriptStepsDone.current = 0;
+                        progressInflight.current = false;
                         void refresh();
+                    } else {
+                        progressInflight.current = data.inflight;
                     }
                 })
                 .catch(() => {
@@ -361,6 +385,8 @@ export function usePipelineRun() {
         setError("");
         try {
             const created = await createPipelineRun({ novel: text, title: deriveTitle(text) || undefined }, gwBase || undefined);
+            // 立刻同步 ref：startWithEstimate 会在本函数返回后、下一次重渲染之前就调 runStage("script")。
+            runIdRef.current = created.id;
             usePipelineStore.getState().setActiveRun(created.id);
             usePipelineStore.getState().upsertRun({ id: created.id, title: created.title, createdAt: created.createdAt, stages: summarizeRunStages(created.stages) });
             setRun(created);
@@ -379,11 +405,13 @@ export function usePipelineRun() {
      */
     const runStage = useCallback(
         async (stageId: string, options?: { resume?: boolean }) => {
-            if (!runId || busyStage || runningStage) return;
+            // 用 ref 兜底：createRunOnly 刚建的 run 在同一轮调用里就要能直接开跑（#72）。
+            const id = runIdRef.current || runId;
+            if (!id || busyStage || runningStage) return;
             setBusyStage(stageId);
             setError("");
             try {
-                setRun(await requestStageRun(runId, stageId, { model: stageModels[stageId] || undefined, resume: options?.resume }, gwBase || undefined));
+                setRun(await requestStageRun(id, stageId, { model: stageModels[stageId] || undefined, resume: options?.resume }, gwBase || undefined));
             } catch (caught) {
                 setError(messageOf(caught));
             } finally {

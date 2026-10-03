@@ -1,5 +1,5 @@
 import { Button, Select } from "antd";
-import { ChevronDown, ChevronUp, Pencil, Play, RotateCcw, XCircle } from "lucide-react";
+import { ChevronDown, ChevronUp, FolderOpen, Pencil, Play, RefreshCw, RotateCcw, XCircle } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -56,7 +56,7 @@ function StageProgress({ progress }: { progress: GatewayStageProgress }) {
     );
 }
 
-export function StageCard({ index, view, busy, progress, resumeChunks, disabledReason, modelOptions, model, templates, regeneratingItem, onModelChange, onRun, onRerun, onCancel, onEdit, onRegenerate }: { index: number; view: PipelineStageView; busy: boolean; progress: GatewayStageProgress | null; resumeChunks: number; disabledReason: string; modelOptions: Array<{ label: string; options: Array<{ value: string; label: string }> }>; model: string; templates: GatewayTemplateInfo[]; regeneratingItem: string; onModelChange: (model: string) => void; onRun: () => void; onRerun: () => void; onCancel: () => void; onEdit: () => void; onRegenerate: (stageId: string, itemId: string, template: string) => Promise<string> }) {
+export function StageCard({ index, view, busy, progress, resumeChunks, disabledReason, modelOptions, model, templates, regeneratingItem, onModelChange, onRun, onRerun, onCancel, onEdit, onRegenerate, onRefresh, onOpenProjects }: { index: number; view: PipelineStageView; busy: boolean; progress: GatewayStageProgress | null; resumeChunks: number; disabledReason: string; modelOptions: Array<{ label: string; options: Array<{ value: string; label: string }> }>; model: string; templates: GatewayTemplateInfo[]; regeneratingItem: string; onModelChange: (model: string) => void; onRun: () => void; onRerun: () => void; onCancel: () => void; onEdit: () => void; onRegenerate: (stageId: string, itemId: string, template: string) => Promise<string>; onRefresh: () => void; onOpenProjects: () => void }) {
     const { t } = useTranslation();
     const [expanded, setExpanded] = useState(false);
     const output = view.stage?.output;
@@ -74,6 +74,22 @@ export function StageCard({ index, view, busy, progress, resumeChunks, disabledR
     const stageTemplates = generative ? templatesForStage(templates, view.id) : [];
     const itemsWithCandidates = items.filter((item) => (item.candidates || []).length);
     const looseArtifacts = orphanArtifacts(view.artifacts, items);
+    /** blocked 阶段：前端必须显示服务端给的原因并解锁操作，不能显示成「运行中/生成中」（#70）。 */
+    const blocked = view.status === "blocked";
+    // 逐镜缺哪些参考素材（角色/场景/道具）——去重后列表，复用项目关键帧工作区同一套文案，不另造一套。
+    const missingRefs = (() => {
+        const seen = new Set<string>();
+        const out: Array<{ role: string; bindingId: string; reason: string }> = [];
+        for (const item of items) {
+            for (const entry of item.blockedMissing || []) {
+                const key = `${entry.role}:${entry.bindingId}:${entry.reason}`;
+                if (seen.has(key)) continue;
+                seen.add(key);
+                out.push(entry);
+            }
+        }
+        return out;
+    })();
 
     return (
         <section className="px-1 py-3 transition hover:bg-black/[0.02] dark:hover:bg-white/[0.03]">
@@ -119,17 +135,46 @@ export function StageCard({ index, view, busy, progress, resumeChunks, disabledR
             {running && ownProgress ? <StageProgress progress={ownProgress} /> : null}
             {stepView.length ? <StageSteps steps={stepView} outputs={view.stage?.steps} /> : null}
             {disabledReason ? <div className="mt-1 text-xs text-stone-500 dark:text-stone-400">{disabledReason}</div> : null}
-            {view.stage?.blocked?.length ? (
-                <div className="mt-1 space-y-0.5 text-xs text-violet-600 dark:text-violet-400">
-                    {view.stage.blocked.map((entry) => (
-                        <div key={entry.itemId} className="break-words">
-                            {t("pipeline.blockedItem", { itemId: entry.itemId, reason: entry.reason })}
+            {blocked ? (
+                <div className="mt-2 rounded-md border border-violet-200 bg-violet-50/70 p-2 text-xs dark:border-violet-900/60 dark:bg-violet-950/30">
+                    <div className="font-medium text-violet-700 dark:text-violet-300">{t("pipeline.blocked.title")}</div>
+                    <div className="mt-0.5 text-violet-700/90 dark:text-violet-300/90">{t("pipeline.blocked.hint")}</div>
+                    {missingRefs.length ? (
+                        <ul className="mt-1 list-disc space-y-0.5 pl-4 text-violet-700 dark:text-violet-300">
+                            {missingRefs.map((entry) => (
+                                <li key={`${entry.role}:${entry.bindingId}:${entry.reason}`} className="break-words">
+                                    {t("projects.keyframes.blockedMissing", {
+                                        role: t(`projects.keyframes.roles.${entry.role}`, { defaultValue: entry.role }),
+                                        bindingId: entry.bindingId,
+                                        reason: t(`projects.keyframes.blockedReasons.${entry.reason}`, { defaultValue: t("projects.keyframes.blockedReasons.other") }),
+                                    })}
+                                </li>
+                            ))}
+                        </ul>
+                    ) : null}
+                    {view.stage?.blocked?.length ? (
+                        <div className="mt-1 space-y-0.5 text-violet-700/90 dark:text-violet-300/90">
+                            {view.stage.blocked.map((entry) => (
+                                <div key={entry.itemId} className="break-words">
+                                    {t("pipeline.blockedItem", { itemId: entry.itemId, reason: entry.reason })}
+                                </div>
+                            ))}
                         </div>
-                    ))}
+                    ) : view.stage?.error ? (
+                        <div className="mt-1 break-words text-violet-700/90 dark:text-violet-300/90">{view.stage.error}</div>
+                    ) : null}
+                    <div className="mt-2 flex flex-wrap gap-2">
+                        <Button size="small" icon={<RefreshCw className="size-3.5" />} onClick={onRefresh}>
+                            {t("pipeline.blocked.refresh")}
+                        </Button>
+                        <Button size="small" icon={<FolderOpen className="size-3.5" />} onClick={onOpenProjects}>
+                            {t("pipeline.blocked.openProjects")}
+                        </Button>
+                    </div>
                 </div>
             ) : null}
-            {/* 纯 blocked 阶段后端会把同样的原因同时写进 stage.error，这里去重，只留上面的阻断行。 */}
-            {view.stage?.error && view.status !== "blocked" ? <div className="mt-1 text-xs text-red-600 dark:text-red-400">{view.stage.error}</div> : null}
+            {/* 非 blocked 阶段：服务端 error 直接展示；blocked 的原因已在上面面板里，避免重复。 */}
+            {view.stage?.error && !blocked ? <div className="mt-1 text-xs text-red-600 dark:text-red-400">{view.stage.error}</div> : null}
             {expanded ? <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-words text-xs leading-relaxed text-stone-600 dark:text-stone-300">{output === undefined ? t("pipeline.noOutput") : JSON.stringify(output, null, 2)}</pre> : null}
             {itemsWithCandidates.length ? (
                 <div className="mt-2 space-y-1">

@@ -890,6 +890,17 @@ export default {
         stages: { script: "剧本", storyboard: "分镜", design: "服化道", keyframe: "关键帧", assembly: "片段合成" },
         status: { pending: "待运行", running: "运行中", partial: "部分成功", done: "已完成", error: "失败", blocked: "已阻断", canceled: "已取消" },
         blockedItem: "{{itemId}}：{{reason}}",
+        blocked: {
+            title: "本步被阻断，未开始生成",
+            hint: "缺少以下角色/场景参考素材，无法锁定人物身份。请补齐参考图，或从项目进入以自动登记素材。",
+            refresh: "刷新状态",
+            openProjects: "去项目入口",
+        },
+        guide: {
+            title: "要走完整生产（角色一致）请从项目进入",
+            body: "这里是影视流水线独立入口，建的是不绑定项目的 run，服化道的参考图无法登记，关键帧会因缺少角色/场景参考图而被阻断。完整生产请在「我的项目」里创建项目，再在项目内新建流水线并运行。",
+            open: "去「我的项目」",
+        },
         candidates: {
             regenerate: "换个模型再出一张",
             selected: "当前采用",
