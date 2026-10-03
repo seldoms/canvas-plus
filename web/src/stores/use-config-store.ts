@@ -4,6 +4,7 @@ import { persist } from "zustand/middleware";
 import { nanoid } from "nanoid";
 
 import i18n from "@/i18n";
+import { listModelRegistry } from "@/services/api/model-registry";
 
 export type ApiCallFormat = "openai" | "gemini";
 export type ModelCapability = "image" | "video" | "text" | "audio";
@@ -210,9 +211,56 @@ export function resolveModelScript(config: AiConfig, value: string) {
     return findChannelModel(config, value)?.model.script?.trim() || "";
 }
 
+/**
+ * 本地模型名集合：注册表里 `runtime === "local"` 的模型。
+ *
+ * 这些模型（comfy 等）的生成跑在后端，不需要浏览器侧的渠道地址与 API Key，
+ * 因此配置门禁不能拿 baseUrl/apiKey 拦它们。
+ *
+ * 懒加载 + 缓存 + 启动预取；注册表尚未加载完成前一律回退旧门禁（宁可拦，不可误放行）。
+ */
+const localModelNames = new Set<string>();
+let localModelNamesLoaded = false;
+let localModelNamesLoading: Promise<void> | null = null;
+
+/** 拉取一次注册表（enabled=true），登记 `runtime === "local"` 的模型名；失败保持「未加载」。 */
+export function prefetchLocalModelNames(): Promise<void> {
+    if (localModelNamesLoaded) return Promise.resolve();
+    if (localModelNamesLoading) return localModelNamesLoading;
+    localModelNamesLoading = listModelRegistry({ enabled: true })
+        .then((models) => {
+            for (const entry of models) {
+                if (entry.runtime === "local" && entry.name) localModelNames.add(entry.name);
+            }
+            localModelNamesLoaded = true;
+        })
+        .catch(() => {
+            /* 注册表不可用：保持「未加载」，门禁按旧逻辑拦。 */
+        })
+        .finally(() => {
+            localModelNamesLoading = null;
+        });
+    return localModelNamesLoading;
+}
+
+/** 该模型是否由后端本地运行时承载（无需浏览器渠道/Key）。注册表未加载时返回 false → 回退旧行为。 */
+export function isLocalRuntimeModel(model: string): boolean {
+    if (!localModelNamesLoaded) {
+        // 顺带后台补拉，本次仍按旧行为判断（不阻塞、不误放行）。
+        if (!localModelNamesLoading) void prefetchLocalModelNames();
+        return false;
+    }
+    const name = modelOptionName((model || "").trim());
+    return Boolean(name) && localModelNames.has(name);
+}
+
 function isAiConfigReady(config: AiConfig, model: string) {
-    const channel = resolveModelChannel(config, model);
-    return Boolean(model.trim() && channel.baseUrl.trim() && channel.apiKey.trim());
+    const trimmedModel = model.trim();
+    if (!trimmedModel) return false;
+    // 本地模型只要求 model 非空；云端模型照旧要求渠道 baseUrl + apiKey。
+    if (isLocalRuntimeModel(trimmedModel)) return true;
+    const channel = resolveModelChannel(config, trimmedModel);
+    return Boolean(channel.baseUrl.trim() && channel.apiKey.trim());
 }
 
 export const useConfigStore = create<ConfigStore>()(
@@ -546,4 +594,9 @@ export function withLocalProxy(url: string) {
     const base = normalizeLocalProxyUrl(proxyUrl);
     if (!base || url.startsWith(`${base}/`)) return url;
     return `${base}/${url}`;
+}
+
+// 应用启动即预取一次本地模型清单（微任务延后到模块图加载完成），缩短「注册表尚未加载」的窗口。
+if (typeof window !== "undefined") {
+    void Promise.resolve().then(() => prefetchLocalModelNames());
 }
