@@ -1,7 +1,7 @@
 ---
 name: keyframes
 description: |
-  为分镜逐个镜头生成关键帧（首帧/尾帧）任务。用于把分镜提示词与服化道方案合成为生图参数、选择模板、串起首帧到尾帧的图生图链路，输出严格 JSON（frames）。这是五段式流水线的第四段：关键帧，属于生成型阶段。画面里任何要出现的文字都必须在 textOverlays 里逐字列明确切字样并在 prompt 中原样引用，不得留空让模型自行发挥。
+  为分镜逐个镜头生成关键帧（首帧/尾帧）任务。用于把分镜提示词与服化道方案合成为生图参数、选择模板、串起首帧到尾帧的图生图链路，输出严格 JSON（frames）。这是五段式流水线的第四段：关键帧，属于生成型阶段。画上文字由分镜（02-storyboard）的 textOverlays 逐字给定，本阶段只逐字消费拼进 prompt，不得翻译改写、不得自行编字；分镜缺失该字段时只报 QC warning。
 ---
 
 # 关键帧：分镜 + 服化道 → 首尾帧
@@ -24,7 +24,7 @@ description: |
 
 | 字段 | 必填 | 说明 |
 | --- | --- | --- |
-| `storyboard` | 是 | 上游分镜产物，提供 `shots[]` |
+| `storyboard` | 是 | 上游分镜产物，提供 `shots[]`（含逐镜 `textOverlays` 画上文字清单，本阶段文字的唯一事实源） |
 | `design` | 是 | 上游服化道产物，提供角色造型与场景美术 |
 | `options.image` | 否 | 透传到生图任务的参数，如 `WIDTH` `HEIGHT` `SEED` `STEPS` `LORA_FILE` |
 
@@ -54,7 +54,7 @@ description: |
 }
 ```
 
-- `textOverlays`：本帧画面里**要渲染的确切文字**清单，与 `prompt` 一一对应；每条含 `text` / `kind` / `position` / `style` 四个键（`text` 是**要渲染的确切文字**，中文原样给出）。`kind` 取 `sign` | `ticket` | `screen` | `logo` | `subtitle` | `none`。**画面里任何文字都必须逐字列明并写进 `prompt`**；确无文字时显式写 `[{"text":"","kind":"none","position":"","style":""}]`（键不得缺、不得为 `null`）。详见「提示词模板 → 五」。
+- `textOverlays`：本帧画面上**要渲染的确切文字**清单，**逐字抄自上流分镜 `storyboard.shots[].textOverlays`**（分镜是文字的唯一事实源）、与 `prompt` 一一对应；每条含 `text` / `kind` / `position` / `style` 四个键（`text` 是**要渲染的确切文字**，中文原样给出，**不得翻译、不得改写**）。`kind` 取 `sign` | `ticket` | `screen` | `logo` | `subtitle` | `none`。**本阶段只照抄拼装、绝不自行创造文字**；确无文字时显式写 `[{"text":"","kind":"none","position":"","style":""}]`（键不得缺、不得为 `null`）。**若分镜未提供该字段，只能产生 QC warning，不得静默丢弃、也不得自己编字**。详见「提示词模板 → 五」。
 - `role` 只能是 `start` / `end` / `key`。
 - `template` 由编排器按 `config.pipeline.imageTemplate` / `editTemplate` 填写，不由模型决定。
 - `jobId`、`artifactUrl`、`status` 由编排器回填：入队后 `jobId` 为任务 id，产物完成后 `artifactUrl` 为 `/api/artifacts/<jobId>/<filename>`；**模型不得编造 jobId 或 artifactUrl**。
@@ -77,7 +77,7 @@ description: |
 
 1. 每个镜头输出 1~{{pipeline.maxKeyframesPerShot}} 帧；默认只写 `start`，需要尾帧衔接时再加 `end`。
 2. `prompt` 是完整的英文生图提示词：主体外观与服装必须与服化道方案一致，场景陈设与布光沿用对应地点，最后补构图景别与画质词。
-3. **图上文字必须逐字指定**：画面里任何要出现的文字（站牌名、车票字样、线路号、目的地显示屏、店铺招牌、路牌、手机屏幕内容、字幕）都要在 `textOverlays` 里逐条列明**要渲染的确切文字**（中文原样给出、用引号包住），并在同帧 `prompt` 里**原样引用**；**绝不允许留空让模型自行发挥**，确无文字时显式写 `kind: "none"`（见「五」）。
+3. **图上文字逐字消费分镜**：本阶段不自己造字。分镜（`storyboard.shots[]`）已经用 `textOverlays` 逐条给出这一镜画面上要渲染的**确切文字**（站牌名、车票字样、线路号、目的地显示屏、招牌、路牌、手机屏幕内容、字幕）——原样搬进本帧 `textOverlays`，并在同帧 `prompt` 里用英文双引号**原样引用**（中文照抄、**不得翻译改写**）；**绝不允许留空让模型自行发挥、不得自己编字**；分镜若给 `kind: "none"`（空镜）照抄即可，分镜缺失该字段只报 QC warning（见「五」）。
 4. `role` 为 `start` 时描述动作的起始姿态与空间关系；`role` 为 `end` 时描述同一空间中动作的落点，人物身份、服装、光线必须与首帧完全一致，只改变姿态与景别。
 5. 保持单个连续空间，不要引入首帧里不存在的人物、门窗或道具。
 6. `template`、`jobId`、`artifactUrl`、`status` 由编排器回填：原样保留这几个字段并留空或置 null，不要自己编造。
@@ -130,20 +130,28 @@ description: |
 3. **单镜帧数**不超过 `{{pipeline.maxKeyframesPerShot}}`（默认 2）。
 4. 真实生图由 canvas-server 任务队列执行；本阶段只产出提示词与清单，不伪造产物。
 
-### 五、图上文字（textOverlays 契约，必须逐字指定）
+### 五、图上文字（textOverlays 契约，消费侧，逐字照抄）
 
-**这是硬规则，不是可选项。** 画面里任何要出现的文字——公交站牌名、车票字样、线路号、目的地显示屏、店铺招牌、路牌、手机屏幕内容、字幕——都**必须**在 `textOverlays` 里逐条列明**要渲染的确切文字**，并在同帧 `prompt` 里**原样引用**（用英文双引号把原文字样包住）。**绝不允许留空让模型自行发挥**：模型不会读心，你不给确切字样，它就会把车牌渲染成「MH 00 000」这类伪文字、把站牌画成一堆不可读的糊字。确无文字时，`textOverlays` 必须保留键并**显式写 `kind: "none"`**。
+**画上文字的唯一事实源是上流分镜（`skills/02-storyboard`）。**「这一镜画面上该出现什么字」在分镜阶段就已经逐字定死；本阶段**不再自行创造文字**，只做一件事：**把分镜 `shots[].textOverlays` 里的每条 `text` 逐字拼接进本帧 `prompt`**——中文原样照抄、**不得翻译、不得改写、不得只写 `a sign` / `站名` / `一块招牌`**。分镜给了确切字样，出图才不会把站牌画成乱码、把线路号渲染成「MH 00 000」这类伪文字。
 
-**字段形状**：`textOverlays: [{ text, kind, position, style }]`，每条四个键都要在：
+**字段形状（原样透传，形状不改）**：`textOverlays: [{ text, kind, position, style }]`，每条四个键都要在：
 
-- `text`：**要渲染的确切文字**，中文原样给出（如 `"老城南路公交站"`、`"3路"`、`"末班车"`）。**不得翻译、不得改写、不得只写 `a sign` / `站名` / `一块招牌`**。同一屏有多行文字，就分条列清，或把多行写进同一条 `text`。
-- `kind`：`sign` | `ticket` | `screen` | `logo` | `subtitle` | `none`。站牌 / 招牌 / 路牌 = `sign`；车票 = `ticket`；显示屏 / 手机屏 = `screen`；商标 = `logo`；字幕 = `subtitle`；**确无文字 = `none`**。
+- `text`：**分镜给定的确切文字**，中文原样照抄（如 `"老城南路公交站"`、`"3路"`、`"末班车"`）。本阶段**只搬不改**。
+- `kind`：`sign` | `ticket` | `screen` | `logo` | `subtitle` | `none`。站牌 / 招牌 / 路牌 = `sign`；车票 = `ticket`；显示屏 / 手机屏 = `screen`；商标 = `logo`；字幕 = `subtitle`；无文字 = `none`。
 - `position`：文字在画面里的位置与载体（如 `画面左上方的公交站牌主标题`）。
 - `style`：字体 / 颜色 / 材质 / 新旧（如 `白底黑体、边缘轻微锈蚀`）。
 
+**硬规则（不可违反）**：
+
+1. **只消费、不创造**：本帧 `textOverlays` 的每一条都必须来自分镜 `shots[].textOverlays`；本阶段不得新增、改写、翻译或删减分镜给的文字。
+2. **逐字引用进 `prompt`**：`textOverlays` 里每一条 `text` 都要在同帧 `prompt` 里用英文双引号把**原文字样**包住原样引用；「写什么」和「画在哪、什么字体」都要给全。
+3. **禁占位 / 禁空转**：不得把文字留空让模型自行发挥，也不得只写 `a sign` 这类泛指。
+4. **分镜缺失该字段时**：**只能产生 QC warning**（项目层 `reviewNotes[]` / 帧上 QC warning），**不得静默丢弃、也不得自己编字**——宁可显式留空 + 告警，也不要凭空造字样。
+5. **确无文字**：分镜若给 `kind: "none"`（如空镜），本帧照抄 `[{"text":"","kind":"none","position":"","style":""}]`，键不得缺、不得为 `null`。
+
 **性质说明**：这些文字是**模型必须逐字渲染的内容**，与画面描述（氛围、光线、动作）性质不同——画面描述可以概括，文字**只能逐字照抄**。有几种文字就列几条；`textOverlays` 里每一条 `text` 都必须在同帧 `prompt` 里找到对应引用，否则等于没告诉模型要写什么。
 
-**完整示例（有站牌的镜头）**：
+**完整示例（分镜带来站牌文字 → 关键帧逐字消费）**：
 
 ```json
 {
@@ -163,7 +171,9 @@ description: |
 }
 ```
 
-**拼法要点**：`prompt` 里用 `a worn bus stop sign reading \"老城南路公交站\" with route number \"3路\" printed in its lower right corner`、`a paper bus ticket in her hand showing \"3路 末班车\"` 把 `textOverlays` 的三条字样**原样夹进画面描述**，`textOverlays` 再逐条给足确切字样 + 位置 + 字体——「写什么」和「画在哪、什么字体」都要给全。**中文原样保留、不要翻成英文**（Qwen-Image 2.1 等中文字形强的模型能直接渲染中文）；确无文字的帧写 `[{"text":"","kind":"none","position":"","style":""}]`。
+**拼法要点**：`prompt` 里用 `a worn bus stop sign reading \"老城南路公交站\" with route number \"3路\" printed in its lower right corner`、`a paper bus ticket in her hand showing \"3路 末班车\"` 把 `textOverlays` 的三条字样**原样夹进画面描述**，`textOverlays` 再逐条给足确切字样 + 位置 + 字体——「写什么」和「画在哪、什么字体」都要给全。**中文原样保留、不要翻成英文**（Qwen-Image 2.1 等中文字形强的模型能直接渲染中文）；分镜确无文字时照抄 `[{"text":"","kind":"none","position":"","style":""}]`。
+
+
 
 ### 六、自检
 
@@ -172,7 +182,7 @@ description: |
 3. 人物外观 / 服装是否与 `design` 一致、场景是否与该镜一致、有没有引入首帧不存在的人物 / 道具？
 4. 有没有显式声明画面人数、场景有没有实物锚点、情绪有没有写成可见微动作？
 5. 有没有误写 `--ar` / `--style` 等尾参或尺寸？`template` / `jobId` / `artifactUrl` / `status` 是否已留空或置 null？
-6. 画面里的文字是否都逐条写进了 `textOverlays`、并在 `prompt` 里原样引用？有没有留空、只写 `a sign`、或让模型自行发挥？确无文字时是否显式写了 `kind: "none"`？
+6. 画面里的文字是否**逐字来自分镜的 `textOverlays`**、并在 `prompt` 里原样引用？有没有翻译 / 改写 / 新增分镜没给的文字、留空、或只写 `a sign`？分镜缺失该字段时是否只报 QC warning、没有自己编字？确无文字时是否照抄了 `kind: "none"`？
 
 ## 校验规则
 
@@ -183,8 +193,8 @@ description: |
 - 每帧恰好一个光学事件；**胶片 / 介质层由编排器按锚点条件叠加，`prompt` 内不得出现与锚点冲突的胶片介质词**（「二维动画」锚点不得出现 `film / Kodak / grain / tack-sharp / light leak`）。
 - 画面要显式声明可见人数、场景要有实物锚点、情绪要写成可见微动作（质量要求，来自 Luster 踩坑清单）。
 - `prompt` 内不得出现 `--ar` / `--style` / `--s` / `--no` 等生成器尾参，也不得残留 `{{...}}` 占位符。
-- 每帧必须含 `textOverlays` 数组；每条含 `text` / `kind` / `position` / `style` 键，`kind` 取 `sign` / `ticket` / `screen` / `logo` / `subtitle` / `none`。
-- 画面里出现的文字（分镜 / 服化道提到的招牌、站牌、车票、屏幕、字幕等）必须在 `textOverlays` 逐条列出**确切文字**、并在 `prompt` 内原样引用；`textOverlays` 缺键 / 为 `null` / 画面有文字却写成 `kind: "none"` 一律 QC warning；确无文字时必须显式 `kind: "none"`。
+- 每帧必须含 `textOverlays` 数组；每条含 `text` / `kind` / `position` / `style` 键，`kind` 取 `sign` / `ticket` / `screen` / `logo` / `subtitle` / `none`；每条 `text` 必须与上游 `storyboard.shots[].textOverlays` **逐字一致**，不得翻译 / 改写 / 新增。
+- 分镜给的每条文字都要在 `prompt` 内用引号原样引用；**分镜缺失 `textOverlays` 字段时只能产生 QC warning，不得静默丢弃、也不得自行编字**；`textOverlays` 缺键 / 为 `null` / 画面有文字却写成 `kind: "none"` 一律 QC warning；确无文字时必须显式 `kind: "none"`。
 - `role: "end"` 的帧必须等本镜 `start` 帧拿到 `artifactUrl` 后才能入队，此时才写 `INPUT_IMAGE`；在此之前保持 `status: "queued"`、`jobId: null`。
 - 不伪造产物：没有真实任务时只留 `queued`，不允许填假的 `artifactUrl`。
 
@@ -207,5 +217,5 @@ description: |
 - **风格锚点注入路径（已落地）**：`pipeline.js` 的 `buildContext` 现在把项目级 `styleAnchor`（其次 `run.options.styleAnchor`）注入 `options.styleAnchor`、把项目 `plan` 注入 `options.plan`，所以 `{{options.styleAnchor}}` **一定被替换**；缺锚点时注入中性兜底锚点，不再回落胶片默认锚点。胶片层由 `productionDefaults` / `withPromptHead` 判定为**条件叠加**（见「二」）。
 - **尺寸与采样参数由编排器填**：`WIDTH` / `HEIGHT` / `BATCH` / `SEED` / `LORA_FILE` 由 `generativePlan` 从 `config.pipeline` 与 `run.options.image` 取，模型不改。默认 `imageWidth/imageHeight` 为 `768×1344`（竖屏 9:16，均为 32 的倍数）。
 - **本项目生图模板以肯定式 `PROMPT` 为主**（如默认 `img_zimage_artistic` 不设独立负向 token），因此 Luster 的 `--no text, words, watermark` 不接线；正文一律用肯定式。**画上文字一律走 `textOverlays` 正向逐字指定**——没有全局负向 token，模型只会渲染你明确告诉它的文字，这正是「不写 textOverlays 就出伪文字 / 乱码」的根因。
-- **`textOverlays` 契约（本次新增）**：模型必须逐字渲染的画上文字在此逐条声明；服务端解析 / 校验尚未接线，在映射完成前缺失或不合规只能产生 QC warning，不得静默丢弃。注意与 `03-costume-props` 的参考图提示词（`closeupPrompt` / `turnaroundPrompt` / `sceneMasterPrompt` 要求 `no text`）相反：关键帧要写清指定文字、参考图要干净无字，两者不要混用。
+- **`textOverlays` 契约（消费侧）**：画上文字的唯一事实源是 `02-storyboard` 的 `shots[].textOverlays`（分镜阶段逐字定死）；**本阶段只逐字消费拼进 `prompt`，不自行创造文字**。**若分镜缺失该字段，只能产生 QC warning，不得静默丢弃、也不得自己编字**；服务端解析 / 校验尚未接线，在映射完成前缺失或不合规只能产生 QC warning。注意与 `03-costume-props` 的参考图提示词（`closeupPrompt` / `turnaroundPrompt` / `sceneMasterPrompt` 要求 `no text`）相反：关键帧要写清指定文字、参考图要干净无字，两者不要混用。
 - 本阶段的方法论只影响 `prompt` 内容与清单结构；不引入 Midjourney 尾参、Seedance 参数或任何云端平台专属格式（云端配额 / 时长不在本阶段）。
