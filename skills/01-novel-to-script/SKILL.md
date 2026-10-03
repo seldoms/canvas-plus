@@ -29,7 +29,7 @@ description: |
 
 ## 输出契约
 
-只返回一个 JSON 对象，字段名固定，不要增删、改名或嵌套到别的键里：
+只返回一个 JSON 对象。除下方**可选**字段 `planSuggestion` 外，字段名固定，不要增删、改名，或把现有字段嵌套到别的键里：
 
 ```json
 {
@@ -43,12 +43,22 @@ description: |
   ],
   "episodes": [
     { "id": "ep1", "title": "第一集", "sceneIds": ["sc1", "sc2"] }
-  ]
+  ],
+  "planSuggestion": {
+    "genre": "题材",
+    "tone": "基调",
+    "visualStyle": "视觉呈现形式",
+    "dramaMode": "叙事取向",
+    "audience": "目标受众",
+    "episodeCount": 0,
+    "episodeDurationSec": 0
+  }
 }
 ```
 
 - `characters[].id`、`scenes[].id` 必须唯一且稳定，后续阶段靠它们建立引用。
 - `episodes` 可选：短篇可以整段省略。
+- `planSuggestion` 可选：本阶段从原文分析出的**创作设定建议**，供后端回填项目 `plan`（字段语义见 `docs/content/docs/progress/domain-contract.md` §3.1 的 `Plan`）。`genre` / `tone` / `visualStyle` / `dramaMode` / `audience` 是字符串，值优先取前端预置项（单一来源 `web/src/constant/drama-presets.ts`），确无合适项才自拟中文短语；`episodeCount` / `episodeDurationSec` 是可选数字，仅在原文体量足以判断时才给。它**不参与下游 02~05 的消费**，缺失或留空都不影响流水线。
 
 ## 提示词模板
 
@@ -92,14 +102,29 @@ description: |
 4. `beats` 写 3~8 条可拍摄的动作 / 台词节拍，只写镜头里能看到、能演出的内容，不写文学抒情和心理描写。
 5. 关键道具、转折与台词都要能追溯到原文。
 
-### 五、输出
+### 五、设定建议（planSuggestion）
+
+完成剧本后，再从原文本身提炼一份设定建议填进 `planSuggestion`，供系统回填项目 plan、用户在生成前按需微调（不改变你对剧本的判断）。
+
+1. 只依据原文：每一项都从原文的人物、场景、语言与情绪里得出，不要套用「短剧就该怎样」的通用模板（例如原文是都市情感，就不要因为要改成短剧而建议古风）。`genre`（题材）与 `visualStyle`（视觉形式）是两个独立维度，不要因为题材是「都市」就默认推「写实真人」。
+2. 优先从预置项里选（与前端下拉一致），确无合适项才自拟中文短语。代表项（非全集）：
+   - `genre`：现实向（都市 / 家庭 / 职场 / 校园 / 年代 / 悬疑 / 犯罪…）；幻想向（玄幻 / 奇幻 / 科幻 / 末世 / 穿越…）；古风向（古装 / 武侠 / 仙侠 / 宫斗 / 历史…）；动画与偶戏（动画 / 儿童 / 童话 / 俳偶戏…）。
+   - `tone`：热血 / 燃 / 励志 / 甜宠 / 治愈 / 温情 / 搞笑 / 爽感 / 虐心 / 暗黑 / 悬疑 / 冷峻 / 史诗…。
+   - `visualStyle`：写实真人 / 二维动画 / 三维动画 / 定格动画 / 俳偶戏 / 像素风 / 水墨风 / 漫画分镜…。
+   - `dramaMode`：短剧向 / 微电影向 / 单元剧 / 连续剧。
+   - `audience`：男性向 / 女性向 / 全年龄 / 青少年 / 中老年 / 儿童 / 合家欢 / 二次元向。
+3. `episodeCount`（目标集数）与 `episodeDurationSec`（单集时长，秒）是可选数字：只有原文体量、结构或用户已给出的分集信息足以判断时才填，判断不了就省略这两个键，不要脑补。
+4. 某一项原文信息不足，宁可留空也不要硬填。
+5. 设定建议只做「题材 / 基调 / 呈现形式 / 取向 / 受众」这类设定层面的分析，**不得反过来改动原著的人物、情节、结局或台词**——上面「一、创作底线」的红线对设定建议同样有效。
+
+### 六、输出
 
 1. 先提炼 `logline`（一句话故事线）与 `synopsis`（不超过 300 字的故事梗概），再拆人物与场次。
 2. `characters[].id`、`scenes[].id` 唯一且稳定，只允许 `[A-Za-z0-9_-]`。
 3. `episodes` 可选：短篇可整段省略；若给出，`sceneIds` 必须都能在 `scenes` 里找到。
 4. 只输出下面结构的 JSON 本体，字段名不得改动，不要 Markdown 代码块、不要解释文字：
 
-{"logline":"","synopsis":"","characters":[{"id":"c1","name":"","profile":"","appearance":"","voice":""}],"scenes":[{"id":"sc1","title":"","location":"","time":"","intent":"","beats":[""]}],"episodes":[]}
+{"logline":"","synopsis":"","characters":[{"id":"c1","name":"","profile":"","appearance":"","voice":""}],"scenes":[{"id":"sc1","title":"","location":"","time":"","intent":"","beats":[""]}],"episodes":[],"planSuggestion":{"genre":"","tone":"","visualStyle":"","dramaMode":"","audience":""}}
 
 ## 校验规则
 
@@ -110,6 +135,7 @@ description: |
 - `scenes` 至少 1 条；每条 `beats` 至少 1 条非空字符串；`intent` 不能为空。
 - `characters[].appearance`、`characters[].voice` 不能为空：前者供关键帧阶段写提示词，后者供 TTS 使用。
 - 允许省略 `episodes`；若给出，`sceneIds` 必须都能在 `scenes` 里找到。
+- `planSuggestion` 可选、不参与上述硬校验：不产出或留空都不算失败。
 - 只输出 JSON 本体。编排器解析失败会自动重试一次（只返回 JSON），再失败则整步标记 `error` 并保留模型原文。
 
 ## 工具
@@ -129,4 +155,5 @@ description: |
 
 - 编排器（`canvas-server/src/pipeline.js` 的 `readPromptTemplate` → `extractSection`）只把本文的 **`## 提示词模板`** 一节发给模型；其余章节是给人 / Agent 看的，不会进模型上下文。所以**新方法论必须写进「提示词模板」**，写在外面的章节约等于没写。
 - 长篇小说（填充后的提示词超过 `pipeline.maxNovelChunkChars`，默认 16000 字）会走 `pipeline.js` 内**硬编码的 map-reduce 提示词**，绕开本模板。因此本方法论目前只对单次调用（短篇 / 中小体量）生效；这是编排器源码限制，不在本阶段可改范围（改 `pipeline.js` 属越界）。
+- `planSuggestion` 目前**只由本阶段产出**，且只在**单次调用路径**（长篇走 map-reduce 绕道时不产出，见上一条），供后端回填项目 `plan`、前端展示与微调；本阶段只负责产出，**后端消费与前端展示由后续批次实现**。它不在 02~05 的消费链里，**即使没有任何下游消费也不影响流水线**。
 - 本阶段的方法论只影响内容与结构；`appearance` / `voice` 已按本地生图与 TTS 的可用形态要求书写，不引入 Midjourney 尾参、Seedance 参数或任何云端平台专属格式。
