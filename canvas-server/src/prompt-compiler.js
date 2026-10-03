@@ -844,18 +844,17 @@ function tierOneSync(input) {
 }
 
 /**
- * 一级块（改写成功产物）：画幅·比例 → 负面策略 → 画面内文字（英文口径）。
- * 风格锚点仅在**存在画幅事实**时前置 —— 无画幅事实时若也前置，会破坏既有
- * 「有效改写稿原样透传」契约（test/prompt-compile-pipeline.test.mjs 锁定）；此时风格锚点
- * 改随二级源交付（见 tierTwoSourceText），保证产物里风格锚点恒在。
+ * 一级块（改写成功产物）：风格锚点 → 画幅·比例 → 负面策略 → 画面内文字（英文口径），顺序固定。
+ *
+ * ⚠️ 风格锚点**无条件**由编译器直拼（不依赖是否存在画幅事实）：产品口径把「风格」定死为一级，
+ * 改写器既不该看到它、也不该改写它。此前「仅在有画幅事实时前置、无画幅时随二级交付改写器」的
+ * 例外已按本轮需求整块拆除 —— 无论有无画幅事实，锚点都只在一级块出现。
  */
 function tierOneRewrite(input) {
     const { style, template, overlays } = input;
     const clauses = [];
-    if (aspectRatioFact(style)) {
-        const { anchor } = readStyleFields(style);
-        if (anchor) clauses.push(anchor);
-    }
+    const { anchor } = readStyleFields(style);
+    if (anchor) clauses.push(anchor);
     const aspect = aspectRatioClauseCn(style);
     if (aspect) clauses.push(aspect);
     const neg = negativeClause(template);
@@ -1115,13 +1114,13 @@ function rewriteSourceText(input) {
 }
 
 /**
- * 二级源文本（分级模型专用）：主体 / 景别 / 场景 / 画面内容 / 机位与运镜 / 台词（± 风格锚点）。
- * **绝不含任何一级强约束**（画幅·比例 / 负面 / 画面内文字）—— 改写器看不到、也改不了它们。
- * 风格锚点：有画幅事实时改由一级块 tierOneRewrite 直拼（此处不写，避免重复）；无画幅事实时
- * 随本源交付，保证产物里风格锚点恒在。
+ * 二级源文本（分级模型专用）：主体 / 景别 / 场景 / 画面内容 / 机位与运镜 / 台词。
+ * **绝不含任何一级强约束**（风格锚点 / 画幅·比例 / 负面 / 画面内文字）——
+ * 改写器看不到、也改不了它们。风格锚点无条件归一级块（tierOneRewrite）直拼，
+ * 此前「无画幅事实时随二级源交付改写器」的例外已整块拆除。
  */
 function tierTwoSourceText(input) {
-    const { shot, scene, characters, style } = input;
+    const { shot, scene, characters } = input;
     const names = characterNames(characters);
     const sceneName = hasText(scene?.name) ? String(scene.name).trim() : hasText(scene?.location) ? String(scene.location).trim() : "";
     const action = stripTail(splitEndState(shot?.action).process || shot?.action);
@@ -1132,8 +1131,6 @@ function tierTwoSourceText(input) {
     if (action) bits.push(`画面内容：${action}`);
     const camera = cameraSentence(shot);
     if (camera) bits.push(`机位与运镜：${stripTail(camera)}`);
-    const { anchor: styleAnchor } = readStyleFields(style);
-    if (styleAnchor && !aspectRatioFact(style)) bits.push(`风格：${styleAnchor}`);
     if (hasText(shot?.dialogue)) bits.push(`台词：${String(shot.dialogue).trim()}`);
     return bits.join("；");
 }
@@ -1181,8 +1178,8 @@ async function rewriteTierTwoOnce(input, llmCall, { correction = false } = {}) {
 
 /**
  * async 编译入口（分级版）：模型官方要英文时，**只把二级画面细节**交给改写器 ——
- *   · 一级强约束（画幅·比例 / 负面 / 文字，及有画幅事实时的风格锚点）由编译器直拼，
- *     不进改写器输入、不参与其输出；
+ *   · 一级强约束（风格锚点 / 画幅·比例 / 负面 / 文字）由编译器直拼，
+ *     不进改写器输入、不参与其输出（风格锚点**无条件**归一级，无论有无画幅事实）；
  *   · 二级经官方改写器（rewriterForTemplate 命中）或项目补充的通用英文化路径改写；
  *   · 二级出现相反画幅 → **不整稿弃用**：先纠正/重写二级块一次；仍冲突 → 只保留一级 + 同步结构稿的二级，
  *     并记 warning（宁可少写二级细节，也绝不把错误的画幅方向交给生成模型）；

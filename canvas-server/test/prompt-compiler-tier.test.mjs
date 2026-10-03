@@ -94,6 +94,33 @@ test("② 改写器拿不到一级：回显 llmCall 看不到画幅/比例/画�
     assert.ok(out.includes("末班车"), "画面内文字逐字进产物");
 });
 
+test("②′ 风格锚点无条件锁一级：无/有画幅事实两种情形，锚点都在产物、都不在改写器输入/输出", async () => {
+    for (const [label, style] of [["无画幅事实", STYLE], ["有画幅事实", VERTICAL_STYLE]]) {
+        const seen = [];
+        const echo = async ({ system, user }) => {
+            seen.push({ system, user });
+            return user; // 回显输入 —— 锚点若被喂进去，必然出现在返回里
+        };
+        const out = await compilePromptForTemplateAsync(asyncInput({ style, llmCall: echo }));
+        assert.equal(seen.length, 1, `${label}：应恰好调用改写器一次`);
+        const got = seen[0].user;
+        // ① 改写器「收到」的内容不含锚点（二级源不再有「风格：」行）。
+        assert.ok(!got.includes(STYLE.anchor), `${label}：锚点不得进改写器输入`);
+        assert.ok(!got.includes("风格："), `${label}：二级源不得带「风格：」行`);
+        // 官方 system 里也不得被塞入我们的锚点。
+        assert.ok(!seen[0].system.includes(STYLE.anchor), `${label}：官方 system 不得含锚点`);
+        // ② 产物里锚点恒在（一级直拼），且排在二级回显稿之前。
+        assert.ok(out.includes(STYLE.anchor), `${label}：产物必须含一级风格锚点`);
+        assert.ok(out.includes(got), `${label}：二级回显稿作为二级块保留`);
+        assert.ok(out.indexOf(STYLE.anchor) < out.indexOf(got), `${label}：一级锚点排在二级之前`);
+        // ③ 同步产物同样恒含锚点。
+        assert.ok(compilePromptForTemplate(asyncInput({ style })).includes(STYLE.anchor), `${label}：同步产物也含锚点`);
+        // ④ 画幅事实仍按有无如实呈现。
+        if (style.ratio) assert.match(out, /画幅：9:16（竖屏构图/, `${label}：画幅事实一级直拼`);
+        else assert.ok(!/画幅/.test(out), `${label}：无画幅事实时产物不含画幅句`);
+    }
+});
+
 /* ————————————————————— ③ 真实故障句：一级保留、二级被纠正 ————————————————————— */
 
 test("③ 二级出现相反画幅 → 一级照旧、二级被纠正一次；产物无相反画幅", async () => {

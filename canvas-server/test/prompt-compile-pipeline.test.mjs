@@ -260,7 +260,12 @@ test("显式重跑重新编译并保留旧 Job 参数快照", async (t) => {
     const retryJob = jobs.get(retry.jobId);
     assert.notEqual(retryJob.id, startJob.id);
     assert.notEqual(retryJob.params.PROMPT, initialPrompt, "重跑必须重新编译当前提示词");
-    assert.equal(retryJob.params.PROMPT, rewrites.at(-1));
+    // 本轮新行为（风格锚点无条件锁进一级块）：产物 = 一级风格锚点（本项目无画幅事实）+ 二级改写稿；
+    // 有效改写稿只作二级块原样保留，**不再整稿透传** —— 锚点恒由编译器直拼在产物里。
+    const ANCHOR = "写实电影感，暖色路灯与冷调夜色的对比，浅景深";
+    assert.ok(retryJob.params.PROMPT.includes(rewrites.at(-1)), "二级改写稿原样保留");
+    assert.ok(retryJob.params.PROMPT.includes(ANCHOR), "风格锚点无条件由一级块直拼（无画幅事实亦如此）");
+    assert.notEqual(retryJob.params.PROMPT, rewrites.at(-1), "产物不再等于改写稿：锚点已锁进一级");
     assert.equal(jobs.get(startJob.id).params.PROMPT, initialPrompt, "旧 Job 参数不可变");
     assert.ok(pipeline.get(run.id).stages.keyframe.output.frames.find((frame) => frame.id === "sh1-start").promptCompilation);
 });
