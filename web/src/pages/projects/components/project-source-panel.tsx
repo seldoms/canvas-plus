@@ -33,7 +33,7 @@ export function ProjectSourcePanel({ projectId, sourceRevisionId, refresh }: { p
 
     return (
         <section>
-            <Typography.Title level={5} className="!mb-3">
+            <Typography.Title level={5} className="!mb-2">
                 {t("projects.source.title")}
             </Typography.Title>
             <Card size="small">

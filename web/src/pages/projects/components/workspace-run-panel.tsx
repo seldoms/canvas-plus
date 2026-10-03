@@ -63,7 +63,7 @@ export function WorkspaceRunPanel({
 
     return (
         <section>
-            <Typography.Title level={5} className="!mb-3">
+            <Typography.Title level={5} className="!mb-2">
                 {t("projects.workspace.run.title")}
             </Typography.Title>
             <Card size="small">

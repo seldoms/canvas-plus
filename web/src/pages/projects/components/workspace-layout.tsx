@@ -77,13 +77,13 @@ export function WorkspaceLayout({
 
     return (
         <div className="flex h-full flex-col overflow-hidden bg-background text-stone-900 dark:text-stone-100">
-            <main className="min-h-0 flex-1 overflow-y-auto px-6 py-8">
+            <main className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
                 <div className="mx-auto max-w-6xl">
                     <Button type="text" icon={<ArrowLeft className="size-4" />} className="!px-0" onClick={() => navigate(`/projects/${projectId}`)}>
                         {t("projects.workspace.back")}
                     </Button>
 
-                    <nav className="mt-4 flex flex-wrap gap-1 border-b border-stone-200 pb-2 dark:border-stone-800">
+                    <nav className="mt-3 flex flex-wrap gap-1 border-b border-stone-200 pb-2 dark:border-stone-800">
                         {WORKSPACES.map(({ key, icon: Icon }) => (
                             <Link
                                 key={key}
@@ -124,7 +124,7 @@ export function WorkspaceLayout({
                     {!loading && !error && !project ? <Empty className="py-24" description={t("projects.detail.notFound")} /> : null}
 
                     {project && context ? (
-                        <div className="mt-4 space-y-6">
+                        <div className="mt-3 space-y-4">
                             <div className="flex flex-wrap items-end justify-between gap-3">
                                 <div>
                                     <Typography.Text type="secondary">{project.title}</Typography.Text>

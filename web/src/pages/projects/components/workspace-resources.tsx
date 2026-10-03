@@ -20,7 +20,7 @@ export function WorkspaceResources({ context, activeRunId }: { context: ProjectC
 
     return (
         <section>
-            <Typography.Title level={5} className="!mb-3">
+            <Typography.Title level={5} className="!mb-2">
                 {t("projects.workspace.resourcesTitle")}
             </Typography.Title>
             <div className="grid gap-6 lg:grid-cols-3">

@@ -45,7 +45,7 @@ export function WorkspaceGatePanel({
 
     return (
         <section>
-            <Typography.Title level={5} className="!mb-3">
+            <Typography.Title level={5} className="!mb-2">
                 {t("projects.workspace.gateTitle")}
             </Typography.Title>
             <Card size="small">
