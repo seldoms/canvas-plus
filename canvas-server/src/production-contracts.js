@@ -683,3 +683,208 @@ export function normalizeShotEpisodeIds({ shots, episodes } = {}) {
 
     return { shots: cleanShots, episodes: normalized, warnings };
 }
+
+
+/* ------------------------------------------------------------------ *
+ * 9. Project 侧 ↔ Run 侧 shotId 映射（修 #51）
+ *
+ * 背景：Project 侧 Shot.id 是为「增删镜头后旧引用不失效」而由 (projectId, 分镜 shot id)
+ * hash 派生的**稳定主键**（`sh_…`），诉求正确、不推翻；但它与运行侧一直在用的 shot id
+ * （`sh1`/`sh2`…：storyboard.shots[].id、assembly.clips[].shotId）是两套完全不同的 id。
+ * 投影层当初只造了稳定 id、没留下任何指回运行侧的东西 —— 断链由此产生，导出剪映素材包
+ * 按 shotId 配对必然配不上。
+ *
+ * 本节只做**新增**：给 Project 侧 shot 落一个指回运行侧的字段 `runShotId`，并提供
+ * 可查询的双向解析（projectShotId ⇄ runShotId）与存量回填所需的配对纯函数。
+ * 命名冻结：`runShotId`（见 domain-contract.md §3.4 / §10.10）。
+ * ------------------------------------------------------------------ */
+
+/**
+ * Project 侧 Shot 上「指回运行侧 shot id」的字段名（契约冻结）。
+ * 运行侧 shot id = storyboard.shots[].id 与 assembly.clips[].shotId 所用的那套（如 `sh1`）。
+ */
+export const RUN_SHOT_ID_FIELD = "runShotId";
+
+/** Project 侧 shot 的稳定主键（非空字符串化；缺则 ""）。 */
+function projectShotIdOf(shot) {
+    const id = shot?.id;
+    return id === undefined || id === null || String(id).trim() === "" ? "" : String(id).trim();
+}
+
+/**
+ * Project 侧 shot 上「指回运行侧」的值：优先冻结字段 `runShotId`，兼容别名 `sourceShotId`
+ * （历史/外部导入可能用别的名字，但都以 `runShotId` 为准）。缺则 ""。
+ */
+function projectRunShotIdOf(shot) {
+    const raw = shot?.[RUN_SHOT_ID_FIELD] ?? shot?.sourceShotId;
+    return raw === undefined || raw === null || String(raw).trim() === "" ? "" : String(raw).trim();
+}
+
+const asMapKey = (value) => (value === undefined || value === null ? "" : String(value).trim());
+
+/**
+ * 纯函数：从 Project 侧 shots（带 `id` 与 `runShotId`）建立**双向**索引。
+ * 返回 `{ byRunShotId, byProjectShotId, warnings }`（两个普通对象）：
+ *   - `byRunShotId`: runShotId → projectShotId
+ *   - `byProjectShotId`: projectShotId → runShotId
+ * 缺 `runShotId` 的 shot 不进映射（无法指回运行侧）；同一 runShotId 指到多个 project shot
+ * → 记一条 `{ code:"duplicate" }` warning 并保留先到者（不静默覆盖）。纯函数：不改入参。
+ */
+export function buildShotIdMap(shots = []) {
+    const warnings = [];
+    const byRunShotId = {};
+    const byProjectShotId = {};
+    for (const shot of Array.isArray(shots) ? shots : []) {
+        if (!isPlainObject(shot)) continue;
+        const projectShotId = projectShotIdOf(shot);
+        const runShotId = projectRunShotIdOf(shot);
+        if (!projectShotId || !runShotId) continue;
+        if (byRunShotId[runShotId] && byRunShotId[runShotId] !== projectShotId) {
+            warnings.push({ field: RUN_SHOT_ID_FIELD, code: "duplicate", runShotId, got: projectShotId, message: `runShotId ${runShotId} 同时指向 ${byRunShotId[runShotId]} 与 ${projectShotId}，保留先到者（不静默覆盖）` });
+            continue;
+        }
+        byRunShotId[runShotId] = projectShotId;
+        byProjectShotId[projectShotId] = runShotId;
+    }
+    return { byRunShotId, byProjectShotId, warnings };
+}
+
+const asShotIdMap = (mapOrShots) => (isPlainObject(mapOrShots) && mapOrShots.byRunShotId ? mapOrShots : buildShotIdMap(Array.isArray(mapOrShots) ? mapOrShots : mapOrShots?.shots));
+
+/** 纯函数：runShotId → Project 侧稳定 shotId；查不到返回 null。`mapOrShots` 可传 buildShotIdMap 结果或 shots 列表。 */
+export function resolveProjectShotId(mapOrShots, runShotId) {
+    const map = asShotIdMap(mapOrShots);
+    return map.byRunShotId[asMapKey(runShotId)] ?? null;
+}
+
+/** 纯函数：Project 侧 shotId → runShotId；查不到返回 null。`mapOrShots` 可传 buildShotIdMap 结果或 shots 列表。 */
+export function resolveRunShotId(mapOrShots, projectShotId) {
+    const map = asShotIdMap(mapOrShots);
+    return map.byProjectShotId[asMapKey(projectShotId)] ?? null;
+}
+
+/** 把 shots 列表按 episodeId 分组（保留出现顺序）；无集号的归到 "" 组。 */
+function groupShotsByEpisode(shots) {
+    const groups = new Map();
+    for (const shot of shots) {
+        const key = String(shot?.episodeId ?? "").trim();
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(shot);
+    }
+    return groups;
+}
+
+/**
+ * 纯函数：把 Project 侧 shot 与 Run 侧 shot 配对（**存量回填 runShotId 与导出按映射归属的唯一依据**）。
+ *
+ * 配对依据（按优先级，先到先得；同一个 run shot / 同一个 project shot 只配一次）：
+ *   ① `stored`：Project shot 已带 runShotId，且该 runShotId 在 run shots 里存在；
+ *   ② `index`：两侧全局 `index` 相同（且该 index 在运行侧唯一）；
+ *   ③ `order`：同一 `episodeId` 内按出现顺序对位（第 k 个 ↔ 第 k 个）。
+ * 配不上的**两侧都显式列出**（`unmatchedProject` / `unmatchedRun`），绝不静默丢弃。
+ * 纯函数：不改入参，返回新对象。
+ *
+ * @returns {{pairs: Array, byProjectShotId: Object, byRunShotId: Object, unmatchedProject: Array, unmatchedRun: Array, warnings: Array}}
+ */
+export function matchProjectShotsToRunShots({ projectShots = [], runShots = [] } = {}) {
+    const pShots = (Array.isArray(projectShots) ? projectShots : []).filter(isPlainObject);
+    const rShots = (Array.isArray(runShots) ? runShots : []).filter(isPlainObject);
+    const warnings = [];
+    const pairs = [];
+    const usedProject = new Set();
+    const usedRun = new Set();
+
+    const runIdSet = new Set();
+    for (const shot of rShots) {
+        const id = projectShotIdOf(shot);
+        if (id) runIdSet.add(id);
+    }
+
+    const pair = (projectShot, runShotId, via) => {
+        const projectShotId = projectShotIdOf(projectShot);
+        if (!projectShotId || !runShotId || usedProject.has(projectShotId) || usedRun.has(runShotId)) return false;
+        usedProject.add(projectShotId);
+        usedRun.add(runShotId);
+        pairs.push({ projectShotId, runShotId, via });
+        return true;
+    };
+
+    // ① stored：已落地的 runShotId 优先（幂等前提：再次运行结果不变）
+    for (const shot of pShots) {
+        const runShotId = projectRunShotIdOf(shot);
+        if (!runShotId) continue;
+        if (runIdSet.has(runShotId)) pair(shot, runShotId, "stored");
+        else warnings.push({ field: RUN_SHOT_ID_FIELD, code: "dangling", projectShotId: projectShotIdOf(shot), got: runShotId, message: `Project shot ${projectShotIdOf(shot)} 的 runShotId ${runShotId} 在运行侧不存在` });
+    }
+
+    // ② index：全局镜序相同（运行侧该 index 唯一时才算数）
+    const runByIndex = new Map();
+    const duplicateIndex = new Set();
+    for (const shot of rShots) {
+        const index = Number(shot?.index);
+        if (!Number.isFinite(index) || index <= 0) continue;
+        if (runByIndex.has(index)) duplicateIndex.add(index);
+        else runByIndex.set(index, shot);
+    }
+    for (const shot of pShots) {
+        if (usedProject.has(projectShotIdOf(shot))) continue;
+        const index = Number(shot?.index);
+        if (!Number.isFinite(index) || index <= 0 || duplicateIndex.has(index)) continue;
+        const candidate = runByIndex.get(index);
+        if (!candidate) continue;
+        pair(shot, projectShotIdOf(candidate), "index");
+    }
+
+    // ③ order：同集内按出现顺序对位
+    const runGroups = groupShotsByEpisode(rShots);
+    const projectGroups = groupShotsByEpisode(pShots);
+    for (const [episodeId, projectList] of projectGroups) {
+        if (!episodeId) continue;
+        const candidates = (runGroups.get(episodeId) || []).filter((shot) => !usedRun.has(projectShotIdOf(shot)));
+        const targets = projectList.filter((shot) => !usedProject.has(projectShotIdOf(shot)));
+        targets.forEach((shot, position) => {
+            const candidate = candidates[position];
+            if (candidate) pair(shot, projectShotIdOf(candidate), "order");
+        });
+    }
+
+    const unmatchedProject = pShots
+        .filter((shot) => !usedProject.has(projectShotIdOf(shot)))
+        .map((shot) => ({ projectShotId: projectShotIdOf(shot), episodeId: String(shot?.episodeId ?? "").trim(), index: Number(shot?.index) > 0 ? Number(shot.index) : null, reason: "运行侧无对应 shot" }));
+    const unmatchedRun = rShots
+        .filter((shot) => !usedRun.has(projectShotIdOf(shot)))
+        .map((shot) => ({ runShotId: projectShotIdOf(shot), episodeId: String(shot?.episodeId ?? "").trim(), index: Number(shot?.index) > 0 ? Number(shot.index) : null, reason: "Project 侧无对应 shot" }));
+
+    const byProjectShotId = {};
+    const byRunShotId = {};
+    for (const item of pairs) {
+        byProjectShotId[item.projectShotId] = item.runShotId;
+        byRunShotId[item.runShotId] = item.projectShotId;
+    }
+
+    return { pairs, byProjectShotId, byRunShotId, unmatchedProject, unmatchedRun, warnings };
+}
+
+/**
+ * 纯函数：把 `runShotId` 回填进 Project 侧 shots（幂等；用 matchProjectShotsToRunShots 得配对）。
+ * 返回 `{ shots, changed, mapping, unmatchedProject, unmatchedRun, warnings }`；`shots` 是新数组、
+ * 每个被改动的 shot 是新对象（不改入参）。已带正确 runShotId 的 shot 逐字保留（重复运行结果不变）。
+ *
+ * @param {{episodes?: Array, runShots?: Array, projectShots?: Array}} [input]
+ */
+export function backfillProjectShotRunIds({ episodes = [], projectShots = null, runShots = [] } = {}) {
+    const sourceShots = Array.isArray(projectShots)
+        ? projectShots
+        : (Array.isArray(episodes) ? episodes : []).flatMap((episode) => (Array.isArray(episode?.shots) ? episode.shots.map((shot) => ({ ...asObject(shot), episodeId: asObject(shot).episodeId ?? episode?.id })) : []));
+    const matching = matchProjectShotsToRunShots({ projectShots: sourceShots, runShots });
+    let changed = false;
+    const shots = sourceShots.map((shot) => {
+        const projectShotId = projectShotIdOf(shot);
+        const runShotId = projectShotId ? matching.byProjectShotId[projectShotId] : null;
+        if (!runShotId || projectRunShotIdOf(shot) === runShotId) return shot;
+        changed = true;
+        return { ...shot, [RUN_SHOT_ID_FIELD]: runShotId };
+    });
+    return { shots, changed, mapping: { byProjectShotId: matching.byProjectShotId, byRunShotId: matching.byRunShotId }, unmatchedProject: matching.unmatchedProject, unmatchedRun: matching.unmatchedRun, warnings: matching.warnings };
+}
+

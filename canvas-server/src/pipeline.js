@@ -10,7 +10,7 @@ import { durationsForTemplate, durationMetaForTemplate, isDurationAllowed, skele
 import { artifactUrl, ensureDir, safeJoin } from "./files.js";
 import { listTemplates } from "./providers/comfy.js";
 import { buildShotBinding, missingRefsReport, resolveSelectedArtifacts, stableSeed } from "./reference-lock.js";
-import { normalizeShotEpisodeIds } from "./production-contracts.js";
+import { normalizeShotEpisodeIds, RUN_SHOT_ID_FIELD } from "./production-contracts.js";
 import { loadRegistry, readSkill } from "./skills.js";
 import { listReferenceCapableTemplates, resolveToolForShot, scanTemplateDir } from "./tool-adapter.js";
 
@@ -1173,7 +1173,11 @@ ${JSON.stringify(partials, null, 2)}
         // 关键帧终态：把 frames[] 产物投影进 Project 侧 shots[].generationSlots[]（#48 门禁依据）。
         // 放在 recomputeStage 收口 = 全部回写路径（projectJob / attachGeneration / executeRegenerate）都覆盖；
         // 对「已跑完的历史 run」由 bindJobs() 启动重放终态 Job 时同样命中。
-        if (stage.id === "keyframe") projectKeyframeFacts(run, stage);
+        // 同时回填 Run 侧存量产物的 episodeId（#51 附带问题）：storyboard shots / assembly clips 的归属集。
+        if (stage.id === "keyframe") {
+            projectKeyframeFacts(run, stage);
+            backfillRunEpisodeIds(run);
+        }
     }
 
     /** 按 id 取项目（未注入 getProject / 查不到 / 抛错一律 null，永不抛）。 */
@@ -1457,7 +1461,7 @@ ${JSON.stringify(partials, null, 2)}
     function storyboardPayloadOf(shot) {
         const payload = {};
         for (const key of Object.keys(shot || {})) {
-            if (key === "id" || key === "episodeId" || key === "sceneId" || key === "index" || key === "generationSlots" || key === "status") continue;
+            if (key === "id" || key === "episodeId" || key === "sceneId" || key === "index" || key === "generationSlots" || key === "status" || key === "runShotId") continue;
             payload[key] = shot[key];
         }
         return payload;
@@ -1519,6 +1523,10 @@ ${JSON.stringify(partials, null, 2)}
             const shot = match ? { ...match } : { id: shotId, episodeId, sceneId: "", index: 0, storyboard: {}, generationSlots: [], status: "pending" };
             shot.id = shotId;
             shot.episodeId = episodeId;
+            // #51：落一个指回运行侧的桥字段。Project 侧 id 是为「增删镜头后旧引用不失效」派生的稳定主键，
+            // 与运行侧（storyboard.shots[].id / assembly.clips[].shotId）是两套 id；runShotId 记录本镜回指运行侧的 id，
+            // 供导出剪映素材包按映射配对、以及双向解析。幂等：同一 storyboardShotId 重复投影得到同一值。
+            shot[RUN_SHOT_ID_FIELD] = storyboardShotId;
             const sceneId = resolveEpisodeSceneId(shot.sceneId, source.sceneId, episodeSceneIds);
             if (sceneId) shot.sceneId = sceneId;
             const storyboardPayload = storyboardPayloadOf(source);
@@ -1621,6 +1629,58 @@ ${JSON.stringify(partials, null, 2)}
         } catch (error) {
             console.warn(`[pipeline] 关键帧产物投影失败（不影响生成）：${error.message}`);
         }
+    }
+
+    /**
+     * 回填 Run 侧存量产物的 episodeId（#51 附带问题二）。
+     *
+     * 背景：`normalizeShotEpisodeIds` 的归一线早已提交，但提交当时服务未重启、且**运行侧的存量产物没有被回填**，
+     * 于是 `run.stages.storyboard.output.shots[].episodeId` 与 `assembly.output.clips[].episodeId` 一直是 null，
+     * 即便 shotId 能配上、按集分组也做不了。
+     *
+     * 本函数把存量 run 的 shot 集号归一到真实集 id（项目侧 `ep_0001` 优先，未绑项目回落剧本侧 `ep1`），
+     * 并按 runShotId 把 clips 的 episodeId 同步为所属集。**幂等**（值一致不改动 → 调用方 saveRun 不写盘）；
+     * 只改 run 记录里的归属键，**绝不改任何产物文件本身**。触发点与 projectKeyframeFacts 相同（recomputeStage
+     * 收口）：历史 run 由服务重启时 bindJobs() 重放终态 Job → projectJob → recomputeStage 命中。
+     */
+    function backfillRunEpisodeIds(run) {
+        const storyboard = run?.stages?.storyboard?.output;
+        const shots = storyboard?.shots;
+        if (!Array.isArray(shots) || !shots.length) return false;
+        const normalized = normalizeShotEpisodeIds({ shots, episodes: storyboardEpisodeAuthority(run) });
+        let changed = false;
+        normalized.shots.forEach((shot, position) => {
+            const current = shots[position];
+            if (!current) return;
+            if (current.episodeId !== shot.episodeId) {
+                current.episodeId = shot.episodeId;
+                changed = true;
+            }
+        });
+        // clips 的归属集跟着 shot 走（按 shotId 找 owner，不重复读故事）。
+        const ownerByShotId = new Map(normalized.shots.map((shot) => [String(shot.id ?? ""), shot.episodeId]));
+        for (const clip of Array.isArray(run?.stages?.assembly?.output?.clips) ? run.stages.assembly.output.clips : []) {
+            const owner = ownerByShotId.get(String(clip?.shotId ?? ""));
+            if (owner !== undefined && clip.episodeId !== owner) {
+                clip.episodeId = owner;
+                changed = true;
+            }
+        }
+        // 分镜产物里的 slim episodes 同步（幂等）：与 normalizeStoryboardEpisodes 落盘形状一致，不把项目集内嵌对象带进来。
+        if (normalized.episodes.length) {
+            const slim = normalized.episodes.map((episode) => ({
+                id: episode.id,
+                index: episode.index,
+                title: String(episode.title ?? ""),
+                sceneIds: episode.sceneIds.map(String),
+                shotIds: episode.shotIds.map(String),
+            }));
+            if (JSON.stringify(storyboard.episodes) !== JSON.stringify(slim)) {
+                storyboard.episodes = slim;
+                changed = true;
+            }
+        }
+        return changed;
     }
 
     /**

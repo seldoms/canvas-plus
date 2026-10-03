@@ -19,6 +19,7 @@ import { basename, join, relative, resolve } from "node:path";
 import { splitDialogue } from "./audio.js";
 import { DEFAULT_TRANSITION_SEC, assembleEpisode, probeMedia } from "./delivery.js";
 import { artifactUrl, ensureDir, safeJoin, sanitizeName } from "./files.js";
+import { RUN_SHOT_ID_FIELD, matchProjectShotsToRunShots } from "./production-contracts.js";
 
 /** 缺片段时抛出的错误：带 .missing 明细，调用方可据此原样把「缺哪几段、缺多长」报给用户。 */
 export class MissingClipsError extends Error {
@@ -30,9 +31,12 @@ export class MissingClipsError extends Error {
     }
 }
 
-/** 人读的缺段提示：第 N 段(shotId) 缺 Xs。 */
+/** 人读的缺段提示：第 N 段(shotId)[（集 episodeId）] 缺 Xs。 */
 export function formatMissingClips(missing = []) {
-    const items = missing.map((item) => `第${item.shotIndex}段(${item.shotId}) 缺 ${item.durationSec ?? "?"}s`);
+    const items = missing.map((item) => {
+        const episode = item?.episodeId ? `（集 ${item.episodeId}）` : "";
+        return `第${item.shotIndex}段(${item.shotId}) 缺 ${item.durationSec ?? "?"}s${episode}`;
+    });
     return `成片缺 ${missing.length} 段，不能静默出半条片：${items.join("、")}`;
 }
 
@@ -73,16 +77,99 @@ export function listEpisodes({ episodes, shots = [] } = {}) {
     ];
 }
 
-/** 取某集的分镜：按 episode.sceneIds 过滤（无 sceneIds 则全集），再按镜号/次序排序。 */
+/**
+ * 取某集的分镜：**优先按映射归属**（episode.runShotIds 是 Project 侧经映射指回的运行侧 shot id），
+ * 其次按 episode.sceneIds 过滤（无 sceneIds 则全集），最后按镜号/次序排序。
+ * 这样不再假定 Project 侧与 Run 侧 shotId 相同（#51）。
+ */
 export function shotsForEpisode(episode, shots = []) {
     const list = Array.isArray(shots) ? shots.slice() : [];
-    const sceneIds = episode?.sceneIds;
-    const filtered = Array.isArray(sceneIds) && sceneIds.length ? list.filter((shot) => sceneIds.includes(shot?.sceneId)) : list;
+    const runShotIds = Array.isArray(episode?.runShotIds) ? episode.runShotIds.map(String) : null;
+    let filtered;
+    if (runShotIds && runShotIds.length) {
+        const set = new Set(runShotIds);
+        filtered = list.filter((shot) => set.has(String(shot?.id ?? "")));
+    } else {
+        const sceneIds = episode?.sceneIds;
+        filtered = Array.isArray(sceneIds) && sceneIds.length ? list.filter((shot) => sceneIds.includes(shot?.sceneId)) : list;
+    }
     return filtered.sort((a, b) => {
         const ai = Number(a?.index) || 0;
         const bi = Number(b?.index) || 0;
         return ai - bi;
     });
+}
+
+/**
+ * 纯函数：把「Project 侧集」与「Run 侧 shots」建立归属（#51 的核心：两侧 shotId 是两套）。
+ *
+ * Project 侧 shot.id 是 hash 派生的稳定主键（`sh_…`），Run 侧 shot.id 是 `sh1` 一类；
+ * 这里用 `shot.runShotId`（已落地的桥字段）或就地配对（matchProjectShotsToRunShots 按
+ * index→同集顺序对位）把每个 Project 集映射成一组运行侧 shot id（`runShotIds`）。
+ *
+ * 返回：
+ *   - `episodes[]`：`{ id, index, title, sceneIds, runShotIds[], projectShotIds{runShotId:projectShotId}, missingProjectShots[] }`；
+ *   - `unmatchedRun[]` / `unmatchedProject[]` / `warnings[]`：不匹配处**显式报告**，绝不静默丢弃；
+ *   - `pairs[]`：全部配对明细（含 via: stored|index|order）。
+ */
+export function resolveEpisodeShotAttribution({ project = null, runShots = [] } = {}) {
+    const warnings = [];
+    const episodes = Array.isArray(project?.episodes) ? project.episodes : [];
+    if (!episodes.length) return { episodes: [], pairs: [], unmatchedProject: [], unmatchedRun: [], warnings };
+
+    const projectShots = [];
+    for (const episode of episodes) {
+        for (const shot of Array.isArray(episode?.shots) ? episode.shots : []) {
+            if (!shot || typeof shot !== "object") continue;
+            projectShots.push({ ...shot, episodeId: shot.episodeId ?? episode?.id });
+        }
+    }
+    const match = matchProjectShotsToRunShots({ projectShots, runShots });
+    warnings.push(...match.warnings);
+
+    const list = episodes.map((episode) => {
+        const id = String(episode?.id ?? "");
+        const runShotIds = [];
+        const projectShotIds = {};
+        const missingProjectShots = [];
+        for (const shot of Array.isArray(episode?.shots) ? episode.shots : []) {
+            const projectShotId = String(shot?.id ?? "").trim();
+            if (!projectShotId) continue;
+            const runShotId = match.byProjectShotId[projectShotId];
+            if (runShotId) {
+                runShotIds.push(runShotId);
+                projectShotIds[runShotId] = projectShotId;
+            } else {
+                missingProjectShots.push(projectShotId);
+                warnings.push({ field: RUN_SHOT_ID_FIELD, code: "unmapped", projectShotId, episodeId: id, message: `Project shot ${projectShotId} 未映射到运行侧 shot（导出按映射归属时会跳过）` });
+            }
+        }
+        return {
+            id,
+            index: Number(episode?.index) > 0 ? Number(episode.index) : null,
+            title: episode?.title || id,
+            sceneIds: Array.isArray(episode?.sceneIds) ? episode.sceneIds : null,
+            runShotIds,
+            projectShotIds,
+            missingProjectShots,
+        };
+    });
+
+    return { episodes: list, pairs: match.pairs, unmatchedProject: match.unmatchedProject, unmatchedRun: match.unmatchedRun, warnings };
+}
+
+/** 只读加载 run 绑定的 Project（未绑 / 文件缺失 / 损坏 → null，永不抛）。 */
+export function loadProjectForRun(config, run) {
+    const projectId = run?.options?.projectId;
+    if (!config?.dataDir || !projectId) return null;
+    const file = safeJoin(config.dataDir, "projects", String(projectId), "project.json");
+    if (!file || !existsSync(file)) return null;
+    try {
+        const parsed = JSON.parse(readFileSync(file, "utf8"));
+        return parsed && typeof parsed === "object" ? parsed : null;
+    } catch {
+        return null;
+    }
 }
 
 /** 从某镜的候选片段里挑一条「已产出」的（status=done 且有产物），优先 selected。 */
@@ -148,6 +235,9 @@ export function planRoughCut({ episodeId = null, shots = [], clips = [], allowPa
         segments.push({
             index: segments.length,
             shotId,
+            // #51：同时记下两侧 id——shotId 是运行侧（配对 clips 用），projectShotId 是 Project 侧稳定主键（追溯用）。
+            runShotId: shot?.runShotId ?? shotId,
+            projectShotId: shot?.projectShotId ?? null,
             shotIndex,
             clipId: clip.id || null,
             jobId: trace.jobId,
@@ -601,11 +691,24 @@ export async function exportDeliveryPackage({
     const allClips = clipsInput || assemblyStage.clips || [];
     const resolvedTransition = transition || assemblyStage.assembly?.transition || run?.options?.transition || "cut";
 
+    // #51：Project 侧与 Run 侧 shotId 是两套。若 run 绑定了项目，改用「项目侧集 + 映射归属」来分集与配对，
+    // 而不是假定两侧 shotId 相同（project sh_… vs run sh1）或集 id 相同（project ep_0001 vs 剧本 ep1）。
+    // 映射优先读 Project shot 上已落地的 runShotId；存量项目未回填时用 matchProjectShotsToRunShots 就地配对（按 index/同集顺序）。
+    const project = loadProjectForRun(config, run);
+    const attribution = project ? resolveEpisodeShotAttribution({ project, runShots: allShots }) : null;
+
     const episodeList = (() => {
+        if (attribution && attribution.episodes.length) {
+            return episodeId ? attribution.episodes.filter((episode) => episode.id === episodeId) : attribution.episodes;
+        }
         const list = listEpisodes({ episodes: episodesInput || scriptOutput.episodes, shots: allShots });
         return episodeId ? list.filter((episode) => episode.id === episodeId) : list;
     })();
-    if (!episodeList.length) throw new Error(`没有可导出的集（episodeId=${episodeId}）`);
+    if (!episodeList.length) {
+        const projectIds = project && Array.isArray(project.episodes) ? project.episodes.map((episode) => episode.id).join("、") : "";
+        const hint = episodeId && projectIds ? `（Project 侧集 id 形如 ep_0001，本项目有：${projectIds}）` : "";
+        throw new Error(`没有可导出的集（episodeId=${episodeId}）${hint}`);
+    }
 
     const runSteps = new Set(steps);
     let plan = null;
@@ -616,12 +719,18 @@ export async function exportDeliveryPackage({
         const episodes = [];
         let firstProbe = null;
         for (const episode of episodeList) {
-            const episodeShots = shotsForEpisode(episode, allShots);
+            // 按映射归属取本集运行侧分镜，并把两侧 id 一并挂上（runShotId 用于配对 clips；projectShotId 用于追溯）。
+            const episodeShots = shotsForEpisode(episode, allShots).map((shot) => ({
+                ...shot,
+                runShotId: String(shot?.id ?? ""),
+                projectShotId: episode.projectShotIds?.[String(shot?.id ?? "")] ?? null,
+            }));
+            // 始终以 allowPartial=true 规划，好把**全部集**的缺段一次算齐；最终是否拒绝出片由下方统一判定。
             const planResult = planRoughCut({
                 episodeId: episode.id,
                 shots: episodeShots,
                 clips: allClips,
-                allowPartial,
+                allowPartial: true,
                 transition: resolvedTransition,
             });
             const segments = [];
@@ -666,6 +775,7 @@ export async function exportDeliveryPackage({
             kind: "edit-export-plan",
             pkgId,
             runId,
+            projectId: run?.options?.projectId || null,
             createdAt,
             transition: resolvedTransition,
             transitionDurationSec: resolvedTransition === "cut" ? 0 : transitionDurationSec,
@@ -674,11 +784,21 @@ export async function exportDeliveryPackage({
             fps: options.fps || config.pipeline?.videoFps || 24,
             quality: options.quality || "standard",
             allowPartial: allowPartial === true,
+            // #51：映射归属明细（两侧配对 / 不一致处）——显式落盘，不静默。
+            attribution: attribution
+                ? {
+                      pairs: attribution.pairs.length,
+                      unmatchedRun: attribution.unmatchedRun,
+                      unmatchedProject: attribution.unmatchedProject,
+                      warnings: attribution.warnings,
+                  }
+                : null,
             episodes,
             missing: missingAll,
         };
         writeFileSync(planPath, JSON.stringify(plan, null, 2), "utf8");
         writeLog(`[plan] 完成：有片段 ${episodes.reduce((n, ep) => n + ep.segments.length, 0)} 段，缺 ${missingAll.length} 段`);
+        // 严格模式：把**全部集**的缺段一次性报出（不再是抛在某一集上），并拒绝出片（plan.json 已落盘可复现）。
         if (missingAll.length && !allowPartial) throw new MissingClipsError(missingAll);
     } else {
         plan = JSON.parse(readFileSync(planPath, "utf8"));
@@ -796,6 +916,7 @@ export async function exportDeliveryPackage({
             kind: "edit-export-package",
             pkgId,
             runId,
+            projectId: plan.projectId || run?.options?.projectId || null,
             createdAt,
             transition: plan.transition,
             transitionDurationSec: plan.transitionDurationSec,
@@ -805,6 +926,7 @@ export async function exportDeliveryPackage({
             allowPartial: plan.allowPartial,
             partial: plan.missing.length > 0,
             missing: plan.missing,
+            attribution: plan.attribution || null,
             episodes: plan.episodes.map((episode) => ({
                 episodeId: episode.episodeId,
                 index: episode.episodeIndex,
@@ -819,6 +941,8 @@ export async function exportDeliveryPackage({
                     index,
                     order: index + 1,
                     shotId: seg.shotId,
+                    runShotId: seg.runShotId ?? seg.shotId,
+                    projectShotId: seg.projectShotId ?? null,
                     shotIndex: seg.shotIndex,
                     clipId: seg.clipId,
                     jobId: seg.jobId,

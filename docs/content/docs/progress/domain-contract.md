@@ -610,3 +610,32 @@
 
 **落点**：存储内核与类别映射 `canvas-server/src/bible.js`（新增导出）；门禁判据 `canvas-server/src/gates.js`；路由接线 `canvas-server/src/index.js`。
 单测 `canvas-server/test/bible-wiring.test.mjs`（存储 + 门禁）、`canvas-server/test/bible-wiring-http.test.mjs`（HTTP 实打）。
+
+---
+
+## 11. Project 侧 / Run 侧 shotId 映射（#51 追加，只增不改）
+
+> 本节为**追加**：§1–§10.9 一字不动。修「Project 侧与 Run 侧的 `shotId` 是两套」导致导出剪映素材包永远配不上（#51）。
+
+**问题**：Project 侧 `Shot.id` 是为「增删镜头后旧引用不失效」而由 `(projectId, 分镜 shot id)` hash 派生的稳定主键（`sh_…`，见 §3.4、§4）；运行侧一路在用的 shot id 是另一套（`sh1`/`sh2`…：`storyboard.shots[].id` 与 `assembly.clips[].shotId`）。投影层当初只造了稳定 id、**没留下任何指回运行侧的东西**，于是按 `shotId` 配对必然失败。集 id 同理：剧本侧 `ep1`、项目侧 `ep_0001`（见 §3.2、§10.4）。
+
+**冻结字段（§3.4 Shot 追加字段，读取必须容忍缺失）**：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `runShotId` | `string \| null` | 否 | 该 Project 镜**指回运行侧**的 shot id（= `storyboard.shots[].id` / `assembly.clips[].shotId`，如 `sh1`）。由关键帧投影写入（`derivedShotId` 之外的桥字段），存量项目可幂等回填，**不改** `id`、不改 `Project.version`。 |
+
+- 命名冻结为 `runShotId`；读取时兼容别名 `sourceShotId`（外部导入），但写入一律用 `runShotId`。
+- 稳定主键 `id` 的诉求（增删镜头后旧引用不失效）**不推翻**；`runShotId` 只补桥，不替代。
+
+**双向解析（纯函数，`canvas-server/src/production-contracts.js`，零 IO）**：
+
+| 函数 | 语义 |
+| --- | --- |
+| `buildShotIdMap(shots)` | 由带 `{id, runShotId}` 的 shots 建立 `{byRunShotId, byProjectShotId, warnings}`；缺 `runShotId` 不进映射，重复指向产 `duplicate` warning（保留先到者，不静默覆盖）。 |
+| `resolveProjectShotId(mapOrShots, runShotId)` | runShotId → Project 侧稳定 `sh_…`；查不到 `null`。 |
+| `resolveRunShotId(mapOrShots, projectShotId)` | Project 侧 `sh_…` → runShotId；查不到 `null`。 |
+| `matchProjectShotsToRunShots({projectShots, runShots})` | 配对（依据优先级 `stored`（已落地 runShotId）→ `index`（全局镜序相同且唯一）→ `order`（同集内按顺序对位））；配不上的**两侧都显式列出**（`unmatchedProject` / `unmatchedRun`），绝不静默丢弃。 |
+| `backfillProjectShotRunIds({episodes\|projectShots, runShots})` | 把 `runShotId` 幂等回填进 Project 侧 shots；已带正确值则 `changed=false`、逐字不改。 |
+
+**接线**：`pipeline.js` 关键帧投影写 `runShotId`（`buildKeyframeShots`）；`recomputeStage` 收口顺带回填 Run 侧 `shots[].episodeId` 与 `clips[].episodeId`（幂等，只改 run 记录归属键、**绝不改产物文件**；历史 run 由服务重启 `bindJobs()` 重放终态 Job 命中）。`edit-export.js` 导出不再假定两侧 shotId 相同：按映射归属分集（`--episode ep_0001` 命中项目集）、按运行侧 id 配对 clips，分集成片命名仍按运行侧镜序（`ep01_sh01.mp4`），manifest 同时记 `runShotId` 与 `projectShotId` 便于追溯。
