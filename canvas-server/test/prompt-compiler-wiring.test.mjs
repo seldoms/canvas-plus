@@ -8,9 +8,12 @@ import { test } from "node:test";
 import { createPipeline } from "../src/pipeline.js";
 
 /**
- * 提示词编译器「接线」回归：证明 generativePlan 真的在「发起生成请求」那一刻调用编译器 ——
- *   · 关键帧（image）用 Qwen-Image 2.1 编译器产出中文 + <imageN> 引用；
- *   · 片段（video）用 H3 编译器产出官方三段式，素材说明按实际注入的槽位生成。
+ * 提示词编译器「接线」回归：证明 generativePlan 真的在「发起生成请求」那一刻调用策略层编译器 ——
+ *   · 关键帧（image）用 Qwen-Image 2.1 编译器：<imageN> 按**本次实际注入的槽位**编号，
+ *     官方英文口径依赖改写器 → sync 出口显式 [untranslated]（不得假装已英文化）；
+ *   · 片段（video）用 H3 **本地字段口径**编译器：首行关键帧对齐指令行（时间两位小数）、
+ *     三字段固定顺序、<Picture 1>、non_diegetic_music: N/A、台词 (S1)+<d>[English]；
+ *   · 参数档按规则表回填（不硬编码 steps/cfg/sampler）。
  * 用真实 workflows 目录（默认 imageTemplate=img_qwen21_t2i → 需锁角色时自动换 img_qwen21_edit；
  * videoTemplate=video_h3_i2v）；假 LLM / 假任务源，绝不真跑模型。
  */
@@ -195,34 +198,57 @@ async function runToAssembly(t) {
     return { run, jobs, startJob, pipeline };
 }
 
-test("接线：关键帧（image）PROMPT 由 Qwen-Image 2.1 编译器产出（中文 + <imageN> 引用）", async (t) => {
+test("接线：关键帧（image）PROMPT 由 Qwen-Image 2.1 编译器产出（<imageN> 按实际注入槽位 + 显式未英文化标记）", async (t) => {
     const { startJob } = await runToAssembly(t);
     assert.equal(startJob.template, "img_qwen21_edit", "需锁角色 → 换参考图模板");
     const prompt = startJob.params.PROMPT;
     assert.equal(typeof prompt, "string", "PROMPT 仍是字符串");
-    assert.match(prompt, /参考图对应关系：/, "按实际注入槽位生成 <imageN> 引用");
-    assert.match(prompt, /<image1> 为参考底图（林晚）/, "INPUT_IMAGE → <image1>，带角色名");
+    assert.match(prompt, /<image1> 为角色参考（林晚）/, "INPUT_IMAGE → <image1>，带角色名");
     assert.match(prompt, /<image2> 为场景参考/, "REF_IMAGE_1 → <image2>（场景）");
-    assert.match(prompt, /景别：全景/);
-    assert.ok(!prompt.includes("【核心创意】"), "图片阶段不是 H3 三段式");
+    assert.ok(!/图1|图片1/.test(prompt), "禁止「图1」式自然语言指代");
+    assert.match(prompt, /景别：wide shot/, "景别编译成英文官方词");
+    assert.match(prompt, /\[untranslated/, "官方英文口径缺改写器 → 显式标记，不假装已英文化");
+    assert.ok(!prompt.includes("For the target video"), "图片阶段不是 H3 字段口径");
 });
 
-test("接线：片段（video）PROMPT 由 H3 编译器产出官方三段式，素材说明按实际注入槽位生成", async (t) => {
+test("接线：片段（video）PROMPT 由 H3 编译器产出**本地字段口径**，素材用 <Picture 1>", async (t) => {
     const { jobs, pipeline, run } = await runToAssembly(t);
     const clip = pipeline.get(run.id).stages.assembly.output.clips.find((entry) => entry.id === "sh1-clip");
     assert.ok(clip && clip.jobId, "关键帧就绪 → 片段入队");
-    const prompt = jobs.get(clip.jobId).params.PROMPT;
+    const job = jobs.get(clip.jobId);
+    const prompt = job.params.PROMPT;
     assert.equal(typeof prompt, "string", "PROMPT 仍是字符串");
 
-    assert.match(prompt, /【参考素材说明】/);
-    assert.match(prompt, /@图片1 是首帧参考图：/, "片段实际只注入起始帧 → 素材说明只写 @图片1");
-    assert.ok(!prompt.includes("@图片2"), "未注入尾帧/参考 → 不凭空编造 @图片2");
-    assert.match(prompt, /【核心创意】/);
-    assert.match(prompt, /【画面过程说明】/);
-    assert.match(prompt, /运镜：pan right（缓速）/, "结构化运镜编译成具体词");
-    assert.match(prompt, /台词（务必在本镜 5 秒内说完/, "台词/时长对齐提示");
-    assert.ok(prompt.includes("姑娘，这么晚，去哪儿？"), "台词逐字保留");
-    assert.match(prompt, /屏幕文字「末班车」/, "画面文字写原文");
-    assert.match(prompt, /不想要（避免出现）：/);
-    assert.ok(prompt.includes("lowres"), "负向词并入不想要");
+    // ① 首行是关键帧对齐指令行（I2VA），时间两位小数、后空一行。
+    assert.ok(prompt.startsWith("For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\n\n"), prompt.slice(0, 150));
+    assert.ok(prompt.includes("<Picture 1>"));
+    assert.ok(!/@图片/.test(prompt), "本地口径用 <Picture 1>，不是 @图片1");
+    assert.ok(!prompt.includes("【核心创意】") && !prompt.includes("【画面过程说明】"), "旧的三段式标题不得出现");
+
+    // ② 三字段固定顺序 + 字段名。
+    const iDesc = prompt.indexOf("integrated_multimodal_description:");
+    const iSound = prompt.indexOf("overall_soundscape:");
+    const iMusic = prompt.indexOf("non_diegetic_music:");
+    assert.ok(iDesc >= 0 && iSound > iDesc && iMusic > iSound, "三字段必须按固定顺序");
+    assert.match(prompt, /non_diegetic_music: N\/A/, "不要 BGM → 官方字段名 + N/A");
+
+    // ③ 官方运镜词表自然句式 + 台词 (S1) + <d>[English] 逐字 + 画面文字写原文。
+    assert.match(prompt, /The camera pans right at slow speed\./);
+    assert.match(prompt, /\(S1\)/);
+    assert.ok(prompt.includes("<d>[English] 姑娘，这么晚，去哪儿？</d>"), "台词逐字保留");
+    assert.match(prompt, /reading "末班车"/, "画面文字写原文（英文双引号）");
+
+    // ④ 旧映射已拆：不出现英文负向词。
+    assert.ok(!/extra fingers|lowres|deformed face|watermark/i.test(prompt), "英文负向词不得进 H3 输出");
+});
+
+test("接线：参数档按规则表回填（含采样 token 的模板才回填，不硬编码）", async (t) => {
+    const { jobs, pipeline, run } = await runToAssembly(t);
+    // video_h3_i2v 不声明 STEPS/CFG/SAMPLER → 不回填采样参数（避免臆造）。
+    const clip = pipeline.get(run.id).stages.assembly.output.clips.find((entry) => entry.id === "sh1-clip");
+    const job = jobs.get(clip.jobId);
+    assert.equal(job.params.STEPS, undefined);
+    // 而 LENGTH 按帧网格推导（既有行为不变）。
+    assert.equal(typeof job.params.LENGTH, "number");
+    assert.equal(job.params.INPUT_IMAGE, "/api/artifacts/start.png", "i2v 走 INPUT_IMAGE 底图");
 });

@@ -11,7 +11,7 @@ import { artifactUrl, ensureDir, safeJoin } from "./files.js";
 import { listTemplates } from "./providers/comfy.js";
 import { buildShotBinding, missingRefsReport, resolveSelectedArtifacts, stableSeed } from "./reference-lock.js";
 // 提示词编译器：按所选模型把「模型无关的内容事实」编译成该模型要的提示词（图片/视频一视同仁）。
-import { compilePromptForTemplate } from "./prompt-compiler.js";
+import { compilePromptForTemplate, presetForTemplate } from "./prompt-compiler.js";
 import { normalizeShotEpisodeIds, RUN_SHOT_ID_FIELD } from "./production-contracts.js";
 import { loadRegistry, readSkill } from "./skills.js";
 import { listReferenceCapableTemplates, resolveToolForShot, scanTemplateDir } from "./tool-adapter.js";
@@ -107,6 +107,21 @@ function withPromptHead(style, text) {
     else head = body ? `${context}。${body}` : context;
     const layer = String(style?.filmLayer ?? "").trim();
     return layer ? `${head} ${layer}`.trim() : head;
+}
+
+/**
+ * 采样参数交给「规则表参数档」(prompt-compiler.presetForTemplate → model-rules.presetFor)，
+ * **不硬编码** steps/cfg/sampler：仅当模板真的声明了对应 token 且调用方未显式给值时才回填。
+ */
+const PRESET_TOKEN_KEYS = Object.freeze({ STEPS: "steps", CFG: "cfg", SAMPLER: "sampler", SCHEDULER: "scheduler", SHIFT: "shift" });
+
+function applyPresetParams(params, template, tokens) {
+    const preset = presetForTemplate(template, "speed");
+    if (!preset || !Array.isArray(tokens)) return params;
+    for (const [token, key] of Object.entries(PRESET_TOKEN_KEYS)) {
+        if (tokens.includes(token) && params[token] === undefined && preset[key] !== undefined) params[token] = preset[key];
+    }
+    return params;
 }
 
 function nowIso() {
@@ -2206,6 +2221,8 @@ ${JSON.stringify(partials, null, 2)}
                 params[`REF_IMAGE_${index + 1}`] = url;
                 slotImages.push({ url, kind: "reference", role: refInfos[index]?.role, name: refInfos[index]?.name });
             });
+            // 采样参数按规则表参数档回填（仅模板声明的 token；不硬编码）。
+            applyPresetParams(params, decision.template, templateCatalog[decision.template]?.tokens);
             // 「发起生成请求」那一刻按所选模型编译提示词：内容层给模型无关事实，编译器按模型标准产出 PROMPT。
             const keyframeShot = shots.find((entry) => String(entry?.id) === String(item?.shotId)) || {};
             params.PROMPT = compilePromptForTemplate({
@@ -2243,12 +2260,32 @@ ${JSON.stringify(partials, null, 2)}
         const videoDims = dimensionsForRatio(style.ratio, Math.min(Number(pipelineConfig.videoWidth) || 768, Number(pipelineConfig.videoHeight) || 1344));
         // 片段侧同样在「发起生成请求」那一刻按所选模型编译提示词：把分镜的模型无关事实（动作/机位/台词/文字）
         // 交给编译器，而不是把「英文静态生图描述 + 中文动作流水句」硬拼后甩给模型。
-        // 实际注入的槽位以 params 为准（当前片段侧只有起始帧 INPUT_IMAGE）；素材编号由编译器按注入顺序生成。
+        // 实际注入的槽位以模板声明的 token 为准：FL 模板走 FIRST_FRAME/LAST_FRAME，i2v 走 INPUT_IMAGE；
+        // 素材编号由编译器按注入顺序生成（不写死在内容层）。
         const videoShotBinding = shotReferenceContext(run, item, shots).shotBinding;
-        const slotImages = start?.artifactUrl ? [{ url: start.artifactUrl, kind: "first_frame" }] : [];
+        const videoTemplate = pipelineConfig.videoTemplate;
+        const videoTokens = Array.isArray(templateCatalog[videoTemplate]?.tokens) ? templateCatalog[videoTemplate].tokens : [];
+        const endFrame = frames.find((frame) => frame.shotId === item.shotId && frame.role === "end");
+        const slotImages = [];
+        const videoParams = {
+            WIDTH: videoDims ? videoDims.WIDTH : Number(pipelineConfig.videoWidth) || 768,
+            HEIGHT: videoDims ? videoDims.HEIGHT : Number(pipelineConfig.videoHeight) || 1344,
+            LENGTH: frameCountFor(item.durationSec, Number(pipelineConfig.videoFps) || 24),
+        };
+        if (start?.artifactUrl) {
+            if (videoTokens.includes("FIRST_FRAME")) videoParams.FIRST_FRAME = start.artifactUrl;
+            else videoParams.INPUT_IMAGE = start.artifactUrl;
+            slotImages.push({ url: start.artifactUrl, kind: "first_frame" });
+        }
+        if (endFrame?.artifactUrl && videoTokens.includes("LAST_FRAME")) {
+            videoParams.LAST_FRAME = endFrame.artifactUrl;
+            slotImages.push({ url: endFrame.artifactUrl, kind: "last_frame" });
+        }
+        // 采样参数按规则表参数档回填（仅模板声明的 token；不硬编码）。
+        applyPresetParams(videoParams, videoTemplate, videoTokens);
         const legacyBody = [shot?.prompt, shot?.action].filter(Boolean).join(", ");
-        const prompt = compilePromptForTemplate({
-            template: pipelineConfig.videoTemplate,
+        videoParams.PROMPT = compilePromptForTemplate({
+            template: videoTemplate,
             family: "video",
             shot: shot || {},
             scene: sceneForShot(run, shot),
@@ -2262,17 +2299,10 @@ ${JSON.stringify(partials, null, 2)}
         });
         return {
             kind: "video",
-            template: pipelineConfig.videoTemplate,
+            template: videoTemplate,
             // 图生视频必须有起始帧；没拿到就保持 queued + jobId:null，等关键帧产物就绪后由回写代理入队（契约见 05 SKILL.md）。
             ready: Boolean(start?.artifactUrl),
-            params: {
-                WIDTH: videoDims ? videoDims.WIDTH : Number(pipelineConfig.videoWidth) || 768,
-                HEIGHT: videoDims ? videoDims.HEIGHT : Number(pipelineConfig.videoHeight) || 1344,
-                PROMPT: prompt,
-                LENGTH: frameCountFor(item.durationSec, Number(pipelineConfig.videoFps) || 24),
-                ...(start?.artifactUrl ? { INPUT_IMAGE: start.artifactUrl } : {}),
-                ...extraParams,
-            },
+            params: { ...videoParams, ...extraParams },
         };
     }
 
