@@ -8,6 +8,7 @@ import { ModelPicker } from "@/components/model-picker";
 import { ChannelEditorDrawer } from "@/components/layout/channel-editor-drawer";
 import { ConfigGateway } from "@/components/layout/config-gateway";
 import { ConfigLocalProxy } from "@/components/layout/config-local-proxy";
+import { ConfigModelRegistry } from "@/components/layout/config-model-registry";
 import { ConfigPromptSources } from "@/components/layout/config-prompt-sources";
 import { ConfigLocalStorage } from "@/components/layout/config-local-storage";
 import type { AppLocale } from "@/i18n";
@@ -223,6 +224,11 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
                                 </div>
                             </div>
                         ),
+                    },
+                    {
+                        key: "model-registry",
+                        label: t("config.tabs.modelRegistry"),
+                        children: <ConfigModelRegistry />,
                     },
                     {
                         key: "gateway",

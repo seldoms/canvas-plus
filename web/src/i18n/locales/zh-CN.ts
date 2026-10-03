@@ -826,11 +826,27 @@ export default {
         modalDescription: "渠道聚合、默认模型、同步与本地存储",
         tabs: {
             channels: "渠道",
+            modelRegistry: "模型管理",
             gateway: "本地网关",
             localProxy: "本地代理",
             preferences: "偏好设置",
             promptSources: "提示词来源",
             localStorage: "本地存储",
+        },
+        modelRegistry: {
+            summary: "服务端发现 {{available}} 个可用模型，当前登记 {{registered}} 个",
+            sync: "同步补齐",
+            synced: "已补齐 {{count}} 个模型",
+            syncFailed: "同步失败",
+            loadFailed: "读取模型注册表失败",
+            saveFailed: "保存失败",
+            stale: "已消失",
+            categories: {
+                text: "文字",
+                image: "生图",
+                video: "生视频",
+                audio: "音频",
+            },
         },
         proxy: {
             title: "本地代理",

@@ -111,6 +111,34 @@ RunningHub 是**保留的可选云端后端**：未配置 `runninghub.apiKey` �
 - **计数**：`byRole` 只列数据里真实出现过的 role（筛选项据此生成，不在前端硬编码名单）；`byProject` 只含有资产的项目。
 - **容错**：某个 `project.json` 缺失/损坏、`assetRefs` 非数组、单条引用损坏时**跳过并在 `warnings[]` 记录**，接口不 500。
 
+### 模型注册表（服务端唯一模型清单）
+
+模型清单由**服务端唯一持有**，前端只读；浏览器渠道退化为「连接与凭据」。存储 `data/model-registry.json`
+（**服务端唯一写者**，临时文件 + rename 原子写；文件缺失/损坏 → 视为空表并记 warning，**不 500**）。
+契约全文：`docs/content/docs/progress/model-registry-contract.md`（v1 冻结）。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/model-registry` | `{ models: ModelEntry[], counts: { text, image, video, audio, total, enabled } }`。支持 `?category=image`、`?enabled=true` 过滤；`counts` 恒为**全部登记**的汇总（不随过滤变化） |
+| POST | `/api/model-registry` | 新增登记。body `{ name, category, alias?, enabled?, provider?, source?, template?, channelId? }`；`name`+`category` 必填，**name 唯一，重复 409** → `201 { model }` |
+| PATCH | `/api/model-registry/:id` | 局部更新，只接受 `alias` / `enabled` / `category`（**`name` 不可改**，改它返回 400）→ `{ model }` |
+| DELETE | `/api/model-registry/:id` | 删除**登记**（不动模板/渠道本身）→ `{ removed }`；不存在 404 |
+| POST | `/api/model-registry/sync` | 从「服务端实际可用的模板 + LLM 渠道」同步 → `{ added, staled, kept }` |
+| GET | `/api/model-registry/available` | 服务端发现的可用清单（未登记项也含）→ `{ available, registered, missing }`，供配置页显示「可补」差异 |
+
+`ModelEntry` = `{ id: "mdl_<ULID>", name, alias, category: "text"｜"image"｜"video"｜"audio", enabled, runtime: "local"｜"cloud", provider, source: "template"｜"channel"｜"manual", template, channelId, channelName, script, meta, stale, createdAt, updatedAt }`
+
+- **分类映射（唯一事实源在服务端）**：LLM 渠道 → `text`；模板 `family=video` → `video`；
+  `image｜edit｜upscale` → `image`；`family=audio` **或模板名以 `audio_` 开头** → `audio`
+  （`providers/comfy.js` 的 `familyOf()` 会把 `audio_qwen3_tts` 判成 `edit`，故按名字前缀兜底，避免音频混进生图下拉）。
+- **runtime 判定**：本地 ComfyUI 模板 / 本地 LLM（ollama、回环、私有网段、`.local`/`.internal`）→ `local`；
+  LLM 云端渠道 / 云端 ComfyUI（RunningHub）→ `cloud`。UI 对 `cloud` 加 ☁️ 图标（别名文字里不得再写「云端」）。
+- **sync 行为**：缺失的补登记（`enabled` 默认 `true`、`alias` 命中 §2.2 默认别名表则填中文名，未命中留空由 UI 回落
+  `meta.title → name`）；已消失的置 `stale: true`（**不删**）；回归的清除 `stale`。**绝不覆盖用户改过的 `alias`/`enabled`**
+  （`source=manual` 的手工登记项不参与 stale 判定）。重复调用幂等。
+- **`script`**：模板类条目的请求脚本由服务端生成（等价前端 `buildGatewayTemplateScript`，前端不再自己拼脚本）；
+  渠道类条目为空串。
+
 ### 流水线（五段式）
 
 | 方法 | 路径 | 说明 |
@@ -184,6 +212,7 @@ RunningHub 是**保留的可选云端后端**：未配置 `runninghub.apiKey` �
 | `src/providers/comfy.js` | `createComfyClient(config)`, `probeComfy(config)`, `listComfyCapabilities(config)`, `listTemplates(workflowsDir)` | 见下 |
 | `src/skills.js` | `loadSkills(skillsDir)`, `loadRegistry(skillsDir)`, `readSkill(skillsDir, id)` | 见下 |
 | `src/pipeline.js` | `createPipeline({ config, skillsDir, jobs, comfy, llm, runJob })` | 见下 |
+| `src/model-registry.js` | `createModelRegistry({ dataDir })`, `computeAvailable()`, `categoryForTemplate()`, `runtimeForProvider()`, `buildTemplateScript()`, `DEFAULT_ALIASES` | 模型注册表存储内核：CRUD + `sync` + `available`；分类/runtime 映射与默认别名表（契约 v1） |
 
 ### `src/chunk-novel.js`
 

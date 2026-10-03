@@ -5,7 +5,12 @@ import { useTranslation } from "react-i18next";
 import i18n from "@/i18n";
 import { Select, SelectContent, SelectItem, SelectTrigger } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
+import { useRegistryModelOptions } from "@/hooks/use-model-registry";
+import { modelRegistryDisplayName } from "@/services/api/model-registry";
 import { modelOptionFullLabel, modelOptionLabel, modelOptionName, selectableModelsByCapability, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
+
+/** 统一的选项形状：value 是**请求侧发出去的值**（注册表用 name、渠道模式用 channelId::name）。 */
+type PickerOption = { value: string; label: string; fullLabel: string };
 
 type ModelPickerProps = {
     config: AiConfig;
@@ -16,14 +21,37 @@ type ModelPickerProps = {
     fullWidth?: boolean;
     placeholder?: string;
     onMissingConfig?: () => void;
+    /**
+     * 打开后从服务端模型注册表读清单（`GET /api/model-registry?enabled=true&category=<capability>`，只读）。
+     * 展示名回落 alias → meta.title → name；runtime=cloud 前置 ☁️。onChange 仍回传真实 name，请求侧不受别名影响。
+     * 接口未就绪（网关回落 SPA / 后端未上线）时自动回退浏览器渠道，保持既有行为。
+     */
+    registry?: boolean;
 };
 
-export function ModelPicker({ config, value, onChange, capability, className, fullWidth = false, placeholder, onMissingConfig }: ModelPickerProps) {
+export function ModelPicker({ config, value, onChange, capability, className, fullWidth = false, placeholder, onMissingConfig, registry = false }: ModelPickerProps) {
     const { t } = useTranslation();
     const pickerId = useId();
     const [open, setOpen] = useState(false);
-    const options = useMemo(() => Array.from(new Set([...(config.channelMode === "local" && !capability ? [value] : []), ...selectableModelsByCapability(config, capability)].filter((model): model is string => Boolean(model)))), [capability, config, value]);
+    const registryState = useRegistryModelOptions(registry ? capability : undefined);
+    // 仅当注册表「已就绪」才以它为准；loading/error 时回退浏览器渠道，避免接口未就绪时下拉清空。
+    const usingRegistry = Boolean(registry && capability && registryState.status === "ready");
+    const options = useMemo<PickerOption[]>(() => {
+        if (usingRegistry) {
+            return registryState.models.map((entry) => ({
+                value: entry.name,
+                label: entry.runtime === "cloud" ? `☁️ ${modelRegistryDisplayName(entry)}` : modelRegistryDisplayName(entry),
+                fullLabel: entry.name,
+            }));
+        }
+        const values = Array.from(new Set([...(config.channelMode === "local" && !capability ? [value] : []), ...selectableModelsByCapability(config, capability)].filter((model): model is string => Boolean(model))));
+        return values.map((model) => ({ value: model, label: modelOptionLabel(config, model), fullLabel: modelOptionFullLabel(config, model) }));
+    }, [usingRegistry, registryState.models, capability, config, value]);
     const current = value || "";
+    const currentOption = options.find((option) => option.value === current) || null;
+    // 命中选项就用选项展示名；否则回退旧逻辑的展示名 —— 兼容历史 channelId::name 值，避免露出原始编码。
+    const currentLabel = currentOption?.label ?? (current ? modelOptionLabel(config, current) : "");
+    const currentFullLabel = currentOption?.fullLabel ?? (current ? modelOptionFullLabel(config, current) : "");
     const pickerPlaceholder = placeholder || t("settingsPanels.model.select");
 
     useEffect(() => {
@@ -54,10 +82,10 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
                 )}
                 onMouseDown={(event) => event.stopPropagation()}
                 onPointerDown={(event) => event.stopPropagation()}
-                title={current ? modelOptionFullLabel(config, current) : pickerPlaceholder}
+                title={current ? currentFullLabel : pickerPlaceholder}
             >
                 <ModelIcon model={current} />
-                <span className="canvas-model-picker-text min-w-0 flex-1 truncate text-left">{current ? modelOptionLabel(config, current) : pickerPlaceholder}</span>
+                <span className="canvas-model-picker-text min-w-0 flex-1 truncate text-left">{current ? currentLabel : pickerPlaceholder}</span>
             </SelectTrigger>
             <SelectContent
                 data-canvas-no-zoom
@@ -70,9 +98,9 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
                 onMouseDown={(event) => event.stopPropagation()}
             >
                 {options.length ? (
-                    options.map((model) => (
-                        <SelectItem key={model} value={model} textValue={modelOptionLabel(config, model)}>
-                            <ModelLabel config={config} model={model} />
+                    options.map((option) => (
+                        <SelectItem key={option.value} value={option.value} textValue={option.label}>
+                            <ModelLabel model={option.value} label={option.label} fullLabel={option.fullLabel} />
                         </SelectItem>
                     ))
                 ) : (
@@ -91,11 +119,11 @@ function emptyModelLabel(config: AiConfig, capability?: ModelCapability) {
     return config.models.length ? i18n.t("settingsPanels.model.noMatch", { capability: label }) : i18n.t("settingsPanels.model.addFirst");
 }
 
-function ModelLabel({ config, model }: { config: AiConfig; model: string }) {
+function ModelLabel({ model, label, fullLabel }: { model: string; label: string; fullLabel: string }) {
     return (
-        <span className="flex min-w-0 items-center gap-2" title={modelOptionFullLabel(config, model)}>
+        <span className="flex min-w-0 items-center gap-2" title={fullLabel}>
             <ModelIcon model={model} />
-            <span className="truncate">{modelOptionLabel(config, model)}</span>
+            <span className="truncate">{label}</span>
         </span>
     );
 }

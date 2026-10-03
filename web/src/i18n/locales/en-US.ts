@@ -837,11 +837,27 @@ export default {
         modalDescription: "Providers, default models, sync, and local storage",
         tabs: {
             channels: "Providers",
+            modelRegistry: "Models",
             gateway: "Local gateway",
             localProxy: "Local proxy",
             preferences: "Preferences",
             promptSources: "Prompt sources",
             localStorage: "Local storage",
+        },
+        modelRegistry: {
+            summary: "{{available}} models available on the server, {{registered}} registered",
+            sync: "Sync missing",
+            synced: "Added {{count}} model(s)",
+            syncFailed: "Sync failed",
+            loadFailed: "Failed to load the model registry",
+            saveFailed: "Save failed",
+            stale: "Gone",
+            categories: {
+                text: "Text",
+                image: "Image",
+                video: "Video",
+                audio: "Audio",
+            },
         },
         proxy: {
             title: "Local proxy",

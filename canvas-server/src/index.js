@@ -22,6 +22,8 @@ import { probeLlm, listLlmModels, forwardToLlm, chat as llmChat, externalProvide
 import { createLocalRunner } from "./generate.js";
 import { probeRunningHub, listRunningHubModels, runRunningHubJob } from "./providers/runninghub.js";
 import { plan as impactPlan } from "./impact.js";
+import { createModelRegistry } from "./model-registry.js";
+import { scanTemplateDir } from "./tool-adapter.js";
 
 const config = loadConfig();
 
@@ -164,6 +166,18 @@ const pipeline = createPipeline({
 // 让服务重启后能从任务队列重建流水线状态（幂等）。
 pipeline.bindJobs();
 
+// 模型注册表（契约 v1）：服务端唯一持有的模型清单，落 data/model-registry.json。
+const modelRegistry = createModelRegistry({ dataDir: config.dataDir });
+
+/** 汇总「服务端实际可用」的模型源：本地 ComfyUI 模板 + 外部 LLM 渠道。sync / available 共用。 */
+function modelRegistrySources() {
+    return {
+        templates: listTemplates(config.workflowsDir),
+        catalog: scanTemplateDir(config.workflowsDir),
+        llmProviders: externalProviders(config).map(({ name, baseUrl }) => ({ name, baseUrl })),
+    };
+}
+
 /** 入队入口：默认本地 ComfyUI，显式传 backend:"runninghub" 时才走云端。提交前按资源类别做 canRun 校验。 */
 function submitGeneration(kind, body) {
     const backend = String(body.backend || config.generation.defaultBackend || "local").trim();
@@ -209,7 +223,7 @@ const serviceInfo = {
     name: "canvas-server",
     description: "无限画布本地网关：内网 LLM 与 ComfyUI 生图/生视频统一出口",
     version: "0.1.0",
-    endpoints: ["/api/health", "/api/backends", "/api/providers", "/api/jobs", "/api/runninghub/models", "/api/pipeline/runs", "/api/projects", "/v1/models", "/v1/chat/completions"],
+    endpoints: ["/api/health", "/api/backends", "/api/providers", "/api/jobs", "/api/runninghub/models", "/api/pipeline/runs", "/api/projects", "/api/model-registry", "/v1/models", "/v1/chat/completions"],
 };
 
 router.get("/api", (req, res) => sendJson(res, 200, serviceInfo));
@@ -246,6 +260,57 @@ router.get("/api/providers", async (req, res) => {
         listComfyCapabilities(config).catch((error) => ({ templates: listTemplates(config.workflowsDir), models: {}, error: error.message })),
     ]);
     sendJson(res, 200, { llm: { baseUrl: config.llm.baseUrl, models }, comfy: capabilities, backends: backends() });
+});
+
+// ——— 模型注册表（契约 v1：docs/content/docs/progress/model-registry-contract.md） ———
+// 注意：/sync、/available 必须注册在 /:id 之前，否则会被 `:id` 当成 id 吃掉。
+router.get("/api/model-registry", (req, res, { url }) => {
+    sendJson(
+        res,
+        200,
+        modelRegistry.list({ category: url?.searchParams?.get("category") || "", enabled: url?.searchParams?.get("enabled") }),
+    );
+});
+
+router.post("/api/model-registry", async (req, res) => {
+    try {
+        sendJson(res, 201, { model: modelRegistry.create(await readJson(req)) });
+    } catch (error) {
+        sendError(res, error.status || 400, error.message);
+    }
+});
+
+router.post("/api/model-registry/sync", (req, res) => {
+    try {
+        sendJson(res, 200, modelRegistry.sync(modelRegistrySources()));
+    } catch (error) {
+        sendError(res, error.status || 400, error.message);
+    }
+});
+
+router.get("/api/model-registry/available", (req, res) => {
+    try {
+        sendJson(res, 200, modelRegistry.available(modelRegistrySources()));
+    } catch (error) {
+        sendError(res, error.status || 400, error.message);
+    }
+});
+
+// createRouter 只支持 get/post/any —— PATCH / DELETE 用 any 承接，其它方法 405。
+router.any("/api/model-registry/:id", async (req, res, { params }) => {
+    try {
+        if (req.method === "PATCH") {
+            sendJson(res, 200, { model: modelRegistry.update(params.id, await readJson(req)) });
+            return;
+        }
+        if (req.method === "DELETE") {
+            sendJson(res, 200, modelRegistry.remove(params.id));
+            return;
+        }
+        sendError(res, 405, `不支持的方法：${req.method}`);
+    } catch (error) {
+        sendError(res, error.status || 400, error.message);
+    }
 });
 
 /**
