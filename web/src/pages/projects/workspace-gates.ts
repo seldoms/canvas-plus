@@ -18,7 +18,10 @@ import { WORKSPACES } from "./workspaces";
 export type StageStatusMap = Record<string, GatewayStageStatus>;
 
 /** 状态优先级：done 最高，用于把多个 run 的同一阶段收敛成一个状态。 */
-const STATUS_PRIORITY: GatewayStageStatus[] = ["done", "running", "partial", "error", "canceled", "pending"];
+// blocked 表示「被阻断、没跑」（参考图能力不足 / 素材缺失，不入队），不是「跑错了」：
+// error 是执行失败需排障，blocked 是前置条件缺失需补料，故排在 error 之后；
+// 又比 canceled（用户主动取消）更该被看见，故排在 canceled 之前、pending 之前。
+const STATUS_PRIORITY: GatewayStageStatus[] = ["done", "running", "partial", "error", "blocked", "canceled", "pending"];
 
 /** 把项目关联的多个 run 的阶段摘要合并成「阶段 → 状态」；同一阶段取优先级最高的状态。 */
 export function mergeStageStatus(runs: GatewayPipelineRunSummary[], runIds: string[]): StageStatusMap {

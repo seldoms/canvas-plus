@@ -12,6 +12,7 @@ const STATUS_DOT: Record<GatewayStageStatus, string> = {
     partial: "text-orange-600 dark:text-orange-400",
     done: "text-emerald-600 dark:text-emerald-400",
     error: "text-red-600 dark:text-red-400",
+    blocked: "text-violet-600 dark:text-violet-400",
     canceled: "text-stone-400 dark:text-stone-500",
 };
 

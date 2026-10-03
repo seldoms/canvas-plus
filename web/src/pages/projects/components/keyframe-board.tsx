@@ -2,16 +2,17 @@ import { Alert, Button, Card, Empty, Image, Spin, Tag, Typography } from "antd";
 import { useTranslation } from "react-i18next";
 
 import { cn } from "@/lib/utils";
-import { resolveGatewayUrl, type GatewayJobStatus } from "@/services/api/gateway";
+import { resolveGatewayUrl, type GatewayGenerationStatus } from "@/services/api/gateway";
 
 import type { KeyframeShot } from "../keyframes-model";
 
-/** 候选状态 → AntD Tag 颜色；文案统一走 pipeline.candidates.status.*。 */
-const STATUS_COLORS: Record<GatewayJobStatus, string> = {
+/** 镜头状态 → AntD Tag 颜色；文案统一走 pipeline.candidates.status.*。 */
+const STATUS_COLORS: Record<GatewayGenerationStatus, string> = {
     queued: "default",
     running: "processing",
     done: "success",
     error: "error",
+    blocked: "purple",
     canceled: "default",
 };
 
@@ -100,6 +101,22 @@ function ShotGroup({ shot }: { shot: KeyframeShot }) {
                 ) : null}
                 <Tag color={STATUS_COLORS[shot.status]}>{t(`pipeline.candidates.status.${shot.status}`)}</Tag>
             </div>
+
+            {shot.blockedMissing.length || shot.blockedReason ? (
+                <div className="mt-1 space-y-0.5 text-xs text-violet-600 dark:text-violet-400">
+                    {shot.blockedMissing.length
+                        ? shot.blockedMissing.map((entry) => (
+                              <div key={`${entry.role}:${entry.bindingId}:${entry.reason}`} className="break-words">
+                                  {t("projects.keyframes.blockedMissing", {
+                                      role: t(`projects.keyframes.roles.${entry.role}`, { defaultValue: entry.role }),
+                                      bindingId: entry.bindingId,
+                                      reason: t(`projects.keyframes.blockedReasons.${entry.reason}`, { defaultValue: t("projects.keyframes.blockedReasons.other") }),
+                                  })}
+                              </div>
+                          ))
+                        : <div className="break-words">{shot.blockedReason}</div>}
+                </div>
+            ) : null}
 
             <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-stone-500 dark:text-stone-400">
                 <span>

@@ -1,4 +1,4 @@
-import type { GatewayCandidate, GatewayGenerationItem, GatewayJobStatus, GatewayPipelineRun } from "@/services/api/gateway";
+import type { GatewayBlockedMissing, GatewayCandidate, GatewayGenerationItem, GatewayGenerationStatus, GatewayJobStatus, GatewayPipelineRun } from "@/services/api/gateway";
 
 /**
  * 「关键帧」工作区纯逻辑：把 run 的 `stages.keyframe.output.frames`（生成型条目，含 candidates[]）
@@ -29,11 +29,16 @@ export type KeyframeCandidate = {
 export type KeyframeFrame = {
     id: string;
     role: string;
-    status: GatewayJobStatus;
+    /** 帧状态：候选是 job 级，blocked 是条目级（参考图能力不足/缺失，未入队）。 */
+    status: GatewayGenerationStatus;
     template: string;
     seed: string;
     references: string[];
     candidates: KeyframeCandidate[];
+    /** 被阻断的原因（可读句子）；非阻断为空串。 */
+    blockedReason: string;
+    /** 缺哪些角色/场景参考图；非阻断为空数组。 */
+    blockedMissing: GatewayBlockedMissing[];
 };
 
 export type KeyframeFailure = { jobId: string; status: GatewayJobStatus; reason: string };
@@ -53,7 +58,11 @@ export type KeyframeShot = {
     seed: string;
     /** 该镜用到的参考图数量（去重后的输入图）。 */
     referenceCount: number;
-    status: GatewayJobStatus;
+    status: GatewayGenerationStatus;
+    /** 该镜被阻断的原因（取任一帧）；无阻断为空串。 */
+    blockedReason: string;
+    /** 该镜缺哪些角色/场景参考图（跨帧去重）；无阻断为空数组。 */
+    blockedMissing: GatewayBlockedMissing[];
     failures: KeyframeFailure[];
 };
 
@@ -89,10 +98,11 @@ function referencesOf(params: Record<string, unknown>): string[] {
  * 镜头状态聚合（候选是 job 级状态，没有 partial）：有排队/运行就是运行中；
  * 有失败就是失败；有取消就是已取消；全成功才是完成。
  */
-function aggregateStatus(statuses: GatewayJobStatus[]): GatewayJobStatus {
+function aggregateStatus(statuses: GatewayGenerationStatus[]): GatewayGenerationStatus {
     if (!statuses.length) return "queued";
     if (statuses.some((status) => status === "queued" || status === "running")) return "running";
     if (statuses.some((status) => status === "error")) return "error";
+    if (statuses.some((status) => status === "blocked")) return "blocked";
     if (statuses.some((status) => status === "canceled")) return "canceled";
     return "done";
 }
@@ -192,6 +202,8 @@ function buildFrame(item: GatewayGenerationItem, jobErrors: Record<string, strin
         seed: candidates.map((candidate) => candidate.seed).find(Boolean) ?? "",
         references: unique(candidates.flatMap((candidate) => candidate.references)),
         candidates,
+        blockedReason: text(item.blockedReason),
+        blockedMissing: Array.isArray(item.blockedMissing) ? item.blockedMissing : [],
     };
 }
 
@@ -228,6 +240,16 @@ export function buildKeyframeShots(run: GatewayPipelineRun | null, jobErrors: Re
                 }
             }
         }
+        const blockedMissing: GatewayBlockedMissing[] = [];
+        const seenMissing = new Set<string>();
+        for (const frame of frames) {
+            for (const entry of frame.blockedMissing) {
+                const marker = `${entry.role}:${entry.bindingId}:${entry.reason}`;
+                if (seenMissing.has(marker)) continue;
+                seenMissing.add(marker);
+                blockedMissing.push(entry);
+            }
+        }
         shots.push({
             id: shotId,
             index: orderById.get(shotId) ?? shots.length + 1,
@@ -239,6 +261,8 @@ export function buildKeyframeShots(run: GatewayPipelineRun | null, jobErrors: Re
             seed: unique(frames.map((frame) => frame.seed)).join(" / "),
             referenceCount: unique(frames.flatMap((frame) => frame.references)).length,
             status: aggregateStatus(frames.map((frame) => frame.status)),
+            blockedReason: frames.map((frame) => frame.blockedReason).find(Boolean) ?? "",
+            blockedMissing,
             failures,
         });
     }

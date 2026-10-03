@@ -10,6 +10,7 @@ const COLORS: Record<GatewayStageStatus, string> = {
     partial: "warning",
     done: "success",
     error: "error",
+    blocked: "purple",
     canceled: "default",
 };
 

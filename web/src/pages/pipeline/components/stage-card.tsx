@@ -16,6 +16,7 @@ const STATUS_CLASS: Record<GatewayStageStatus, string> = {
     partial: "text-orange-600 dark:text-orange-400",
     done: "text-emerald-600 dark:text-emerald-400",
     error: "text-red-600 dark:text-red-400",
+    blocked: "text-violet-600 dark:text-violet-400",
     canceled: "text-stone-500 dark:text-stone-400",
 };
 
@@ -117,7 +118,17 @@ export function StageCard({ index, view, busy, progress, resumeChunks, disabledR
             {running && ownProgress ? <StageProgress progress={ownProgress} /> : null}
             {stepView.length ? <StageSteps steps={stepView} outputs={view.stage?.steps} /> : null}
             {disabledReason ? <div className="mt-1 text-xs text-stone-500 dark:text-stone-400">{disabledReason}</div> : null}
-            {view.stage?.error ? <div className="mt-1 text-xs text-red-600 dark:text-red-400">{view.stage.error}</div> : null}
+            {view.stage?.blocked?.length ? (
+                <div className="mt-1 space-y-0.5 text-xs text-violet-600 dark:text-violet-400">
+                    {view.stage.blocked.map((entry) => (
+                        <div key={entry.itemId} className="break-words">
+                            {t("pipeline.blockedItem", { itemId: entry.itemId, reason: entry.reason })}
+                        </div>
+                    ))}
+                </div>
+            ) : null}
+            {/* 纯 blocked 阶段后端会把同样的原因同时写进 stage.error，这里去重，只留上面的阻断行。 */}
+            {view.stage?.error && view.status !== "blocked" ? <div className="mt-1 text-xs text-red-600 dark:text-red-400">{view.stage.error}</div> : null}
             {expanded ? <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-words text-xs leading-relaxed text-stone-600 dark:text-stone-300">{output === undefined ? t("pipeline.noOutput") : JSON.stringify(output, null, 2)}</pre> : null}
             {itemsWithCandidates.length ? (
                 <div className="mt-2 space-y-1">

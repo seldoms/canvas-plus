@@ -24,6 +24,7 @@ const DOT_CLASS: Record<GatewayStageStatus, string> = {
     partial: "bg-orange-500",
     done: "bg-emerald-500",
     error: "bg-red-500",
+    blocked: "bg-violet-500",
     canceled: "bg-stone-400 dark:bg-stone-500",
 };
 
@@ -33,6 +34,7 @@ const TEXT_CLASS: Record<GatewayStageStatus, string> = {
     partial: "text-orange-600 dark:text-orange-400",
     done: "text-emerald-600 dark:text-emerald-400",
     error: "text-red-600 dark:text-red-400",
+    blocked: "text-violet-600 dark:text-violet-400",
     canceled: "text-stone-500 dark:text-stone-400",
 };
 
@@ -184,6 +186,16 @@ function StageRow({
             ) : null}
 
             {stepView.length ? <StageSteps steps={stepView} outputs={stage.stage.steps} /> : null}
+
+            {stage.stage.blocked?.length ? (
+                <div className="mt-1 space-y-0.5 text-xs text-violet-600 dark:text-violet-400">
+                    {stage.stage.blocked.map((entry) => (
+                        <div key={entry.itemId} className="break-words">
+                            {t("pipeline.blockedItem", { itemId: entry.itemId, reason: entry.reason })}
+                        </div>
+                    ))}
+                </div>
+            ) : null}
 
             {summary.length ? (
                 <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-stone-600 dark:text-stone-300">

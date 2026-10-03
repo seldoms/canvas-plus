@@ -35,6 +35,7 @@ export function WorkspaceGatePanel({
     const navigate = useNavigate();
     const running = stagesWithStatus(stageStatus, ["running", "partial"]);
     const failed = stagesWithStatus(stageStatus, ["error", "canceled"]);
+    const stageBlocked = stagesWithStatus(stageStatus, ["blocked"]);
     const stageName = (stage: string) => t(`pipeline.stages.${stage}`);
 
     const openPipeline = () => {
@@ -70,6 +71,7 @@ export function WorkspaceGatePanel({
                     {runsError ? <Alert type="warning" showIcon message={t("projects.workspace.gate.runsError")} description={runsError} /> : null}
                     {running.length ? <Typography.Text type="secondary">{t("projects.workspace.gate.running", { stages: running.map(stageName).join("、") })}</Typography.Text> : null}
                     {failed.length ? <Typography.Text type="warning">{t("projects.workspace.gate.failed", { stages: failed.map(stageName).join("、") })}</Typography.Text> : null}
+                    {stageBlocked.length ? <Typography.Text type="warning">{t("projects.workspace.gate.blockedStages", { stages: stageBlocked.map(stageName).join("、") })}</Typography.Text> : null}
                     <Space wrap align="center">
                         <Button type="primary" onClick={openPipeline} loading={runsLoading}>
                             {t("projects.workspace.actions.openPipeline")}

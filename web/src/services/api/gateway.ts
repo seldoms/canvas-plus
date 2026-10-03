@@ -44,6 +44,12 @@ export type GatewayCandidate = {
     createdAt: string;
 };
 
+/** 参考图缺失项（reference-lock 报告）：哪个绑定缺图（role + bindingId）、为什么缺（reason）。 */
+export type GatewayBlockedMissing = { role: string; bindingId: string; assetRefId?: string | null; reason: string };
+
+/** 生成型条目状态：候选是 job 级（GatewayJobStatus），blocked 是条目级（参考图能力不足/缺失，未入队）。 */
+export type GatewayGenerationStatus = GatewayJobStatus | "blocked";
+
 /** 生成型阶段（keyframe / assembly）里一个可生成条目；jobId / artifactUrl / status 是 selected 的派生别名。 */
 export type GatewayGenerationItem = {
     id: string;
@@ -54,9 +60,13 @@ export type GatewayGenerationItem = {
     template?: string;
     jobId?: string | null;
     artifactUrl?: string | null;
-    status?: GatewayJobStatus;
+    status?: GatewayGenerationStatus;
     selected?: string | null;
     candidates?: GatewayCandidate[];
+    /** 条目被 blocked 的原因（可读句子）；仅参考图能力不足/缺失的条目带。 */
+    blockedReason?: string;
+    /** 缺哪些角色/场景参考图；与 blockedReason 同时给出，前端据此逐项渲染。 */
+    blockedMissing?: GatewayBlockedMissing[];
 };
 
 export type GatewayHealth = {
@@ -77,7 +87,7 @@ export type GatewayProviders = {
 export type GatewaySkillInfo = { id: string; name?: string; title?: string; description?: string; path?: string; skill?: string; requires?: string[]; produces?: string[] };
 export type GatewayStageInfo = { id: string; title: string; skill: string; requires: string[]; produces: string[] };
 
-export type GatewayStageStatus = "pending" | "running" | "partial" | "done" | "error" | "canceled";
+export type GatewayStageStatus = "pending" | "running" | "partial" | "done" | "error" | "canceled" | "blocked";
 
 /** 01 剧本阶段子步骤的运行状态（progress.steps 视图与 stage.steps 共用）。旧 run 无此字段。 */
 export type GatewayStageStepStatus = "pending" | "running" | "done" | "error";
@@ -111,6 +121,8 @@ export type GatewayRunStage = {
     artifacts: GatewayArtifact[];
     /** 01 剧本阶段的三步子步骤产物与状态；其余阶段与旧 run 无此字段。 */
     steps?: Record<string, GatewayRunStep>;
+    /** 被阻断条目的汇总（阶段层）：仅参考图能力不足/缺失时出现；明细在 output.frames/clips 的条目上。 */
+    blocked?: Array<{ itemId: string; reason: string }>;
     error?: string;
     startedAt?: string;
     finishedAt?: string;
