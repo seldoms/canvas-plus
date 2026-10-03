@@ -140,7 +140,7 @@ function fakeLlm(reply = SCRIPT) {
 function build(env, options = {}) {
     const jobs = options.jobs || fakeJobs();
     const llm = options.llm || fakeLlm();
-    const pipeline = createPipeline({ config: env.config, skillsDir: env.skillsDir, jobs, comfy: {}, llm, runJob: options.runJob, getProject: options.getProject, applyPlanSuggestion: options.applyPlanSuggestion });
+    const pipeline = createPipeline({ config: env.config, skillsDir: env.skillsDir, jobs, comfy: {}, llm, runJob: options.runJob, assemble: options.assemble, getProject: options.getProject, applyPlanSuggestion: options.applyPlanSuggestion, registerAssetRef: options.registerAssetRef });
     return { pipeline, jobs, llm };
 }
 
@@ -246,17 +246,16 @@ test("runStage 依赖不满足或阶段未知时抛可读错误", async (t) => {
 test("script 阶段成功路径：填充模板、解析 JSON、落盘产物", async (t) => {
     const env = makeEnv();
     t.after(() => rmSync(env.root, { recursive: true, force: true }));
-    const llm = fakeLlm((content) => {
-        assert.match(content, /很久以前有一个村子/);
-        return SCRIPT;
-    });
+    const llm = fakeLlm(SCRIPT);
     const { pipeline } = build(env, { llm });
     const run = pipeline.create({ novel: "很久以前有一个村子" });
 
     const done = await pipeline.runStage(run.id, "script");
     assert.equal(done.stages.script.status, "done");
     assert.equal(done.stages.script.output.logline, "一句话");
-    assert.equal(llm.calls.length, 1);
+    // 多步编排：analyze（读原文，把小说填进模板）+ outline（分集规划）；单集时不再额外调模型
+    assert.equal(llm.calls.length, 2);
+    assert.match(llm.calls[0].messages.at(-1).content, /很久以前有一个村子/, "analyze 调用把小说填进模板");
     assert.equal(llm.calls[0].messages[0].role, "system");
     assert.deepEqual(llm.calls[0].response_format, { type: "json_object" });
 
@@ -321,17 +320,17 @@ test("script 阶段超长小说自动分块：N 次 map + 1 次 reduce，产物�
 
     const done = await pipeline.runStage(run.id, "script", { model: "test-model" });
     assert.equal(done.stages.script.status, "done");
-    // 2 块 → 2 次 map + 1 次 reduce，且每次都带阶段绑定的模型
-    assert.equal(llm.calls.length, 3);
-    assert.deepEqual(llm.calls.map((call) => call.model), ["test-model", "test-model", "test-model"]);
+    // 2 块 → 2 次 map + 1 次 reduce（analyze）+ 1 次分集规划（outline）；单集不再额外调模型
+    assert.equal(llm.calls.length, 4);
+    assert.deepEqual(llm.calls.map((call) => call.model), ["test-model", "test-model", "test-model", "test-model"]);
     assert.match(llm.calls[0].messages.at(-1).content, /第 1\/2 块（来源：甲\.txt）/);
     assert.match(llm.calls[1].messages.at(-1).content, /第 2\/2 块（来源：乙\.txt）/);
     const reducePrompt = llm.calls[2].messages.at(-1).content;
     assert.match(reducePrompt, /合并成一份完整剧本/);
     assert.match(reducePrompt, /"name": "甲"/);
     assert.match(reducePrompt, /"name": "乙"/);
-    // output 契约与单次调用完全一致，下游零感知
-    assert.deepEqual(Object.keys(done.stages.script.output).sort(), ["characters", "logline", "scenes", "synopsis"]);
+    // output 契约与单次调用完全一致，下游零感知（episodes 恒存在，多步编排保证非空）
+    assert.deepEqual(Object.keys(done.stages.script.output).sort(), ["characters", "episodes", "logline", "scenes", "synopsis"]);
     assert.equal(done.stages.script.output.logline, "一句话");
     // 分块信息记在 stage.chunked，便于前端/排查；reused 是本次从缓存复用的块数（首跑为 0）
     assert.deepEqual(done.stages.script.chunked, { chunks: 2, labels: ["甲.txt", "乙.txt"], mergeModel: "test-model", reused: 0 });
@@ -378,7 +377,7 @@ test("断点续跑：resume 复用已落盘的块，只补跑缺的那些", asyn
     assert.deepEqual(second.llm.calls.map((call) => (call.messages.at(-1).content.match(/第 (\d)\/2 块/) || [])[1]).filter(Boolean), ["2"], "只应重跑第 2 块");
     assert.equal(resumed.stages.script.chunked.reused, 1);
     assert.equal(resumed.stages.script.chunked.chunks, 2);
-    assert.deepEqual(Object.keys(resumed.stages.script.output).sort(), ["characters", "logline", "scenes", "synopsis"]);
+    assert.deepEqual(Object.keys(resumed.stages.script.output).sort(), ["characters", "episodes", "logline", "scenes", "synopsis"]);
 });
 
 test("不带 resume 重跑会清空上次的分块缓存，避免小说改过之后复用陈旧块", async (t) => {
@@ -391,9 +390,9 @@ test("不带 resume 重跑会清空上次的分块缓存，避免小说改过之
     const { pipeline } = build(env, { llm });
     const run = pipeline.create({ novel, title: "长篇" });
     await pipeline.runStage(run.id, "script", { model: "test-model" });
-    assert.equal(llm.calls.length, 3);
+    assert.equal(llm.calls.length, 4);
     await pipeline.runStage(run.id, "script", { model: "test-model" });
-    assert.equal(llm.calls.length, 6, "不带 resume 应完整重跑 3 次");
+    assert.equal(llm.calls.length, 8, "不带 resume 应完整重跑（2 map + 1 reduce + 1 outline）×2");
     assert.equal(pipeline.get(run.id).stages.script.chunked.reused, 0);
 });
 
@@ -452,12 +451,12 @@ test("生成型阶段：回填 template/jobId/status 并入队，不采信模型
     const run = pipeline.create({ novel: "很久以前" });
     await pipeline.runStage(run.id, "script");
     await pipeline.runStage(run.id, "storyboard");
-    assert.match(llm.calls[1].messages.at(-1).content, /"logline"/);
+    assert.match(llm.calls[2].messages.at(-1).content, /"logline"/);
 
     const keyed = await pipeline.runStage(run.id, "keyframe");
     // 不再「入队即 done」：start 帧已入队，阶段停在 running 等任务终态。
     assert.equal(keyed.stages.keyframe.status, "running");
-    assert.match(llm.calls[2].messages.at(-1).content, /"shots"/);
+    assert.match(llm.calls[3].messages.at(-1).content, /"shots"/);
     const frames = keyed.stages.keyframe.output.frames;
     assert.deepEqual(frames.map((frame) => [frame.id, frame.role, frame.status]), [["sh1-start", "start", "queued"], ["sh1-end", "end", "queued"]]);
     assert.equal(frames[0].template, "img-test");
@@ -755,7 +754,7 @@ test("分块路径：map 与 reduce 提示词都带上阶段技能的内容创�
 
     const done = await pipeline.runStage(run.id, "script", { model: "test-model" });
     assert.equal(done.stages.script.status, "done");
-    assert.equal(llm.calls.length, 3);
+    assert.equal(llm.calls.length, 4);
     const [mapA, mapB, reduce] = llm.calls.map((call) => call.messages.at(-1).content);
     // 逐块 map 与合并 reduce 都必须带上阶段技能的「内容创作红线（硬约束）」
     for (const [label, prompt] of [["map-1", mapA], ["map-2", mapB], ["reduce", reduce]]) {
@@ -1238,3 +1237,210 @@ test("planSuggestion：未注入 applyPlanSuggestion 时不回填（保持旧行
 });
 
 
+
+
+// ——— 半自动四：生成型阶段产物自动登记为项目 AssetRef ———
+
+/** 假项目：getProject 返回同一对象，假 registerAssetRef 把引用写回 project.assetRefs，供幂等去重命中。 */
+function fakeProject(overrides = {}) {
+    return { id: "prj_assets", styleAnchor: "", plan: {}, assetRefs: [], ...overrides };
+}
+
+/** 假资产登记：形状对齐 assets.create 的产物，记录调用并把引用写回项目（不跑真存储）。 */
+function fakeAssetRefStore(project) {
+    const calls = [];
+    return {
+        calls,
+        register(projectId, input) {
+            calls.push({ projectId, input });
+            const ref = {
+                id: `as_fake_${calls.length}`,
+                projectId,
+                role: input.role,
+                bindingId: input.bindingId,
+                artifactIds: input.artifactIds ?? [],
+                selectedArtifactId: input.selectedArtifactId ?? null,
+                metadata: input.metadata ?? {},
+            };
+            project.assetRefs = [...(project.assetRefs || []), ref];
+            return ref;
+        },
+    };
+}
+
+/** 项目化跑到 keyframe，注入假项目 + 假登记。返回可控任务源与登记记录。 */
+async function toKeyframeWithAssets(env, { registerAssetRef } = {}) {
+    const project = fakeProject();
+    const store = fakeAssetRefStore(project);
+    const jobs = fakeJobQueue();
+    const { pipeline } = build(env, {
+        llm: fakeLlm(stageReply),
+        jobs,
+        runJob: async () => ({ outputs: [] }),
+        getProject: (id) => (id === project.id ? project : null),
+        registerAssetRef: registerAssetRef ?? store.register,
+    });
+    pipeline.bindJobs();
+    const run = pipeline.create({ novel: "很久以前", title: "短篇", options: { projectId: project.id } });
+    await pipeline.runStage(run.id, "script");
+    await pipeline.runStage(run.id, "storyboard");
+    await pipeline.runStage(run.id, "keyframe");
+    return { pipeline, jobs, run, project, store, startJob: jobs.get(`${run.id}-sh1-start`) };
+}
+
+test("产物自动登记：生成型阶段产物回写后自动产生项目 AssetRef（role=keyframe）", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    const { pipeline, jobs, run, project, store, startJob } = await toKeyframeWithAssets(env);
+
+    // 只规划还没产物 → 不登记
+    assert.equal(store.calls.length, 0);
+    assert.deepEqual(project.assetRefs, []);
+
+    jobs.finish(startJob.id, "done", { outputs: [{ url: "/api/artifacts/job/s1.png", type: "image" }] });
+    assert.equal(project.assetRefs.length, 1, "start 帧产物入账即自动登记一条引用");
+    const ref = project.assetRefs[0];
+    assert.equal(ref.role, "keyframe");
+    assert.equal(ref.bindingId, "sh1-start");
+    assert.deepEqual(ref.artifactIds, ["/api/artifacts/job/s1.png"]);
+    assert.equal(ref.selectedArtifactId, "/api/artifacts/job/s1.png");
+    assert.equal(ref.metadata.source, "pipeline");
+    assert.equal(ref.metadata.runId, run.id);
+    assert.equal(ref.metadata.stageId, "keyframe");
+    assert.equal(ref.metadata.jobId, startJob.id);
+    assert.equal(ref.metadata.artifactUrl, "/api/artifacts/job/s1.png");
+
+    // end 帧完成 → 追加第二条（同镜不同条目，bindingId 取条目 id）
+    jobs.finish(jobs.get(`${run.id}-sh1-end`).id, "done", { outputs: [{ url: "/api/artifacts/job/e1.png", type: "image" }] });
+    assert.deepEqual(project.assetRefs.map((item) => [item.role, item.bindingId]), [["keyframe", "sh1-start"], ["keyframe", "sh1-end"]]);
+});
+
+test("产物自动登记幂等：同一产物重复回写 / 重启重放只登记一次", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    const { pipeline, jobs, run, project, store, startJob } = await toKeyframeWithAssets(env);
+
+    jobs.finish(startJob.id, "done", { outputs: [{ url: "/api/artifacts/job/s1.png", type: "image" }] });
+    assert.equal(store.calls.length, 1);
+
+    // 同一终态任务重复投递两次：命中去重，不再登记
+    pipeline.projectJob(jobs.get(startJob.id));
+    pipeline.projectJob(jobs.get(startJob.id));
+    assert.equal(store.calls.length, 1);
+    assert.equal(project.assetRefs.length, 1);
+
+    // 模拟进程重启：新实例 bindJobs 重放 jobs.list() 全部终态任务，读到的旧引用同样命中去重
+    const rebuilt = build(env, {
+        llm: fakeLlm(stageReply),
+        jobs,
+        runJob: async () => ({ outputs: [] }),
+        getProject: (id) => (id === project.id ? project : null),
+        registerAssetRef: store.register,
+    }).pipeline;
+    rebuilt.bindJobs();
+    assert.equal(store.calls.length, 1, "重启重放不重复登记");
+    assert.equal(project.assetRefs.length, 1);
+});
+
+test("未注入 registerAssetRef：不登记、stage.artifacts 形状逐字不变（旧行为）", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    const project = fakeProject();
+    const jobs = fakeJobQueue();
+    const { pipeline } = build(env, {
+        llm: fakeLlm(stageReply),
+        jobs,
+        runJob: async () => ({ outputs: [] }),
+        getProject: (id) => (id === project.id ? project : null),
+        // 故意不注入 registerAssetRef
+    });
+    pipeline.bindJobs();
+    const run = pipeline.create({ novel: "很久以前", title: "短篇", options: { projectId: project.id } });
+    await pipeline.runStage(run.id, "script");
+    await pipeline.runStage(run.id, "storyboard");
+    await pipeline.runStage(run.id, "keyframe");
+    const startJob = jobs.get(`${run.id}-sh1-start`);
+    jobs.finish(startJob.id, "done", { outputs: [{ url: "/api/artifacts/job/s1.png", type: "image" }] });
+
+    assert.deepEqual(pipeline.get(run.id).stages.keyframe.artifacts, [{ jobId: startJob.id, url: "/api/artifacts/job/s1.png" }]);
+    assert.deepEqual(project.assetRefs, [], "未接线时不写项目");
+});
+
+test("未绑定项目：生成产物不登记资产、不报错（产物照常回写）", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    const project = fakeProject();
+    const store = fakeAssetRefStore(project);
+    const jobs = fakeJobQueue();
+    const { pipeline } = build(env, {
+        llm: fakeLlm(stageReply),
+        jobs,
+        runJob: async () => ({ outputs: [] }),
+        getProject: (id) => (id === project.id ? project : null),
+        registerAssetRef: store.register,
+    });
+    pipeline.bindJobs();
+    const run = pipeline.create({ novel: "很久以前", title: "短篇" }); // 无 options.projectId
+    await pipeline.runStage(run.id, "script");
+    await pipeline.runStage(run.id, "storyboard");
+    await pipeline.runStage(run.id, "keyframe");
+    const startJob = jobs.get(`${run.id}-sh1-start`);
+    jobs.finish(startJob.id, "done", { outputs: [{ url: "/api/artifacts/job/s1.png", type: "image" }] });
+
+    assert.equal(store.calls.length, 0, "无项目不登记");
+    assert.deepEqual(project.assetRefs, []);
+    assert.equal(pipeline.get(run.id).stages.keyframe.artifacts.length, 1, "产物照常回写");
+});
+
+test("产物自动登记：assembly 片段与成片本体登记为 clip，manifest/log/cover 附属文件不登记", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    const project = fakeProject();
+    const store = fakeAssetRefStore(project);
+    const assemble = async (args) => ({
+        id: args.options.id,
+        url: `/api/artifacts/${args.options.id}/final.mp4`,
+        manifestUrl: `/api/artifacts/${args.options.id}/assembly-manifest.json`,
+        logPath: "/tmp/fake-ffmpeg.log",
+        coverUrl: `/api/artifacts/${args.options.id}/cover.jpg`,
+        bytes: 10,
+        info: { durationSec: 2 },
+    });
+    const { pipeline } = build(env, {
+        llm: fakeLlm(stageReply),
+        jobs: fakeJobQueue(),
+        runJob: async () => ({ outputs: [] }),
+        assemble,
+        getProject: (id) => (id === project.id ? project : null),
+        registerAssetRef: store.register,
+    });
+    const run = pipeline.create({ novel: "很久以前", title: "短篇", options: { projectId: project.id } });
+    pipeline.setStageInput(run.id, "assembly", {
+        output: { clips: [{ id: "sh1-clip", shotId: "sh1", artifactUrl: "/api/artifacts/job-clip/sh1-clip.mp4", durationSec: 2, status: "done" }], assembly: { order: ["sh1-clip"], transition: "cut", status: "queued" } },
+    });
+
+    const done = await pipeline.assembleStage(run.id);
+    assert.equal(done.stages.assembly.artifacts.filter((item) => item.kind === "film").length, 4, "artifacts 仍登记 4 条成片附属（不改旧行为）");
+    assert.deepEqual(project.assetRefs.map((item) => [item.role, item.bindingId]), [["clip", "sh1-clip"], ["clip", `assembly-${run.id}`]]);
+});
+
+test("登记失败只告警、不拖垮生成阶段", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    const warns = [];
+    const boom = () => {
+        throw new Error("资产存储炸了");
+    };
+    const { pipeline, jobs, run, startJob } = await toKeyframeWithAssets(env, { registerAssetRef: boom });
+
+    const warn = console.warn;
+    console.warn = (...args) => warns.push(args.join(" "));
+    try {
+        jobs.finish(startJob.id, "done", { outputs: [{ url: "/api/artifacts/job/s1.png", type: "image" }] });
+    } finally {
+        console.warn = warn;
+    }
+
+    assert.equal(pipeline.get(run.id).stages.keyframe.output.frames[0].artifactUrl, "/api/artifacts/job/s1.png", "产物照常回写");
+    assert.ok(warns.some((message) => message.includes("产物自动登记资产失败")), "登记失败要告警");
+});

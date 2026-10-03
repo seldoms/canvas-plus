@@ -2,6 +2,7 @@ import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from "no
 import { join } from "node:path";
 
 import { splitNovelIntoChunks } from "./chunk-novel.js";
+import { ASSET_ROLE } from "./contracts.js";
 import { assembleEpisode } from "./delivery.js";
 import { artifactUrl, ensureDir, safeJoin } from "./files.js";
 import { listTemplates } from "./providers/comfy.js";
@@ -13,8 +14,21 @@ const GENERATIVE_STAGES = new Set(["keyframe", "assembly"]);
 /** 生成型阶段 → 可用模板 family：关键帧出图、片段出视频。 */
 const STAGE_TEMPLATE_FAMILY = Object.freeze({ keyframe: "image", assembly: "video" });
 
+/** 生成型阶段 → 自动登记的 AssetRef.role（取值见 contracts.js 的 ASSET_ROLE，不自造枚举）：关键帧出图给 keyframe，片段/成片给 clip。 */
+const GENERATIVE_STAGE_ASSET_ROLE = Object.freeze({ keyframe: ASSET_ROLE.KEYFRAME, assembly: ASSET_ROLE.CLIP });
+
 /** Job 终态：只有落到这里才回写流水线。 */
 const TERMINAL_JOB = new Set(["done", "error", "canceled"]);
+
+/** 01 剧本阶段的三个显式子步骤：读原文 → 分集规划 → 逐集剧本。进度与产物都按这三个 id 组织。 */
+const SCRIPT_STEPS = Object.freeze([
+    { id: "analyze", title: "读原文" },
+    { id: "outline", title: "分集规划" },
+    { id: "script", title: "逐集剧本" },
+]);
+
+/** 阶段技能里分步提示词所在的小节名；缺失时用编排器内置兜底提示词。 */
+const SCRIPT_STEP_SECTIONS = Object.freeze({ outline: "分集规划提示词", script: "逐集剧本提示词" });
 
 /** 带 HTTP 状态码的业务错误：路由层据此回 400/409，不再一律 400（门禁拒绝路径需要区分）。 */
 function gateError(message, status = 400) {
@@ -112,7 +126,7 @@ function fillTemplate(text, context) {
  * assemble 是「片段 → 成片」的后期执行体，默认用 delivery.js 的 assembleEpisode；
  * 编排器只负责判定何时拼接、把清单与参数交给它，ffmpeg 命令构造与执行都留在 delivery.js。
  */
-export function createPipeline({ config, skillsDir, jobs, comfy, llm, runJob, assemble = assembleEpisode, getProject, applyPlanSuggestion } = {}) {
+export function createPipeline({ config, skillsDir, jobs, comfy, llm, runJob, assemble = assembleEpisode, getProject, applyPlanSuggestion, registerAssetRef } = {}) {
     const pipelineConfig = config?.pipeline || {};
     // 半自动总开关：注入 getProject（项目化模式）时才启用「单镜失败自动重试」。
     // 未注入时一律保持旧的「失败即止」行为；plan 驱动参数靠 projectOf 返回 null 自然回落，不需要额外开关。
@@ -393,6 +407,116 @@ export function createPipeline({ config, skillsDir, jobs, comfy, llm, runJob, as
         }
     }
 
+    /** 抽出阶段技能里的分步提示词正文（如「## 分集规划提示词」）；缺失返回空串，调用方用内置兜底。 */
+    function readStepTemplate(def, section) {
+        try {
+            return extractSection(readSkill(skillsDir, def.skill), section).trim();
+        } catch {
+            return "";
+        }
+    }
+
+    /** 分集硬约束来源：绑定项目的 plan 优先，其次 run.options（未绑项目时的过渡位）。 */
+    function planConstraints(run) {
+        const project = projectOf(run);
+        const plan = project?.plan && typeof project.plan === "object" ? project.plan : {};
+        const options = run?.options || {};
+        const count = Number(plan.episodeCount) || Number(options.episodeCount) || 0;
+        const durationSec = Number(plan.episodeDurationSec) || Number(options.episodeDurationSec) || 0;
+        return { episodeCount: count > 0 ? Math.floor(count) : 0, episodeDurationSec: durationSec > 0 ? durationSec : 0 };
+    }
+
+    /**
+     * 初始化 stage.steps：reset=true 时全部重置为 pending；否则沿用已有状态与产物（resume 重跑不丢前步）。
+     * 结构固定为 { <stepId>: { id, title, status, output, detail, startedAt, finishedAt } }。
+     */
+    function initializeScriptSteps(stage, reset = false) {
+        const previous = !reset && stage.steps && typeof stage.steps === "object" ? stage.steps : {};
+        const steps = {};
+        for (const item of SCRIPT_STEPS) {
+            steps[item.id] = previous[item.id] ? { ...previous[item.id], id: item.id, title: item.title } : { id: item.id, title: item.title, status: "pending", output: null };
+        }
+        stage.steps = steps;
+        return steps;
+    }
+
+    /** 标记某个子步骤的状态；running 记开始时间，done/error 记结束时间。 */
+    function markScriptStep(stage, id, status, extra = {}) {
+        const step = stage.steps?.[id];
+        if (!step) return;
+        Object.assign(step, { status }, extra);
+        if (status === "running") step.startedAt = step.startedAt || nowIso();
+        if (status === "done" || status === "error") step.finishedAt = nowIso();
+    }
+
+    /** 进度里的步骤视图：只带状态与细节，不带产物，保证 progress.json 仍是几十字节量级。 */
+    function scriptStepsView(stage) {
+        return SCRIPT_STEPS.map((item) => {
+            const step = stage.steps?.[item.id] || { status: "pending" };
+            return { id: item.id, title: item.title, status: step.status || "pending", ...(step.detail ? { detail: step.detail } : {}) };
+        });
+    }
+
+    /** 写一条带 steps 的进度：保留全部旧字段（向后兼容），额外附上多步状态。 */
+    function writeScriptProgress(run, def, stage, extra = {}) {
+        writeProgress(run.id, { runId: run.id, stage: def.id, ...extra, steps: scriptStepsView(stage) });
+    }
+
+    /** 按 plan 把场次均分成目标集数：分集缺失或不符时的确定性兜底，保证 episodes 非空且集数一致。 */
+    function synthesizeEpisodes(scenes, plan) {
+        const ids = (Array.isArray(scenes) ? scenes : []).map((scene) => scene?.id).filter(Boolean);
+        const count = plan.episodeCount > 0 ? plan.episodeCount : 1;
+        const episodes = [];
+        for (let index = 0; index < count; index += 1) {
+            episodes.push({
+                id: `ep${index + 1}`,
+                index: index + 1,
+                title: `第${index + 1}集`,
+                durationSec: plan.episodeDurationSec > 0 ? plan.episodeDurationSec : null,
+                synopsis: "",
+                sceneIds: ids.slice(Math.floor((index * ids.length) / count), Math.floor(((index + 1) * ids.length) / count)),
+            });
+        }
+        return episodes;
+    }
+
+    /**
+     * 规整模型分集：清洗 sceneIds、把集数强制对齐 plan.episodeCount、校验时长合计并给出差距。
+     * 不一致一律记进 warnings（不静默放过）；集数不符时按目标重排，保证 episodes 非空且集数一致。
+     */
+    function normalizeEpisodes(rawEpisodes, scenes, plan) {
+        const sceneIds = new Set((Array.isArray(scenes) ? scenes : []).map((scene) => scene?.id).filter(Boolean));
+        const warnings = [];
+        let episodes = (Array.isArray(rawEpisodes) ? rawEpisodes : [])
+            .filter((item) => item && typeof item === "object")
+            .map((item, index) => ({
+                id: String(item.id || `ep${index + 1}`),
+                title: String(item.title || `第${index + 1}集`),
+                durationSec: Number(item.durationSec) > 0 ? Number(item.durationSec) : null,
+                synopsis: String(item.synopsis ?? ""),
+                sceneIds: (Array.isArray(item.sceneIds) ? item.sceneIds : []).map((id) => String(id)).filter((id) => sceneIds.has(id)),
+            }));
+        const targetCount = plan.episodeCount > 0 ? plan.episodeCount : episodes.length || 1;
+        if (episodes.length !== targetCount) {
+            warnings.push(`分集数不符：模型给出 ${episodes.length} 集，目标 ${targetCount} 集，已按目标重排`);
+            episodes = synthesizeEpisodes(scenes, { ...plan, episodeCount: targetCount });
+        }
+        // 未被任何集引用的场次按顺序补进各集，避免分集后场次丢失（只补 sceneIds，不动集数）。
+        const used = new Set(episodes.flatMap((episode) => episode.sceneIds));
+        const orphans = [...sceneIds].filter((id) => !used.has(id));
+        if (orphans.length) {
+            warnings.push(`有 ${orphans.length} 个场次未被分集引用，已按顺序补入`);
+            orphans.forEach((id, index) => episodes[index % episodes.length].sceneIds.push(id));
+        }
+        if (plan.episodeDurationSec > 0) {
+            const targetTotal = targetCount * plan.episodeDurationSec;
+            const total = episodes.reduce((sum, episode) => sum + (Number(episode.durationSec) || 0), 0);
+            const diff = Math.abs(total - targetTotal);
+            if (diff > plan.episodeDurationSec) warnings.push(`时长合计 ${total}s 与目标 ${targetTotal}s（${targetCount}×${plan.episodeDurationSec}s）相差 ${diff}s`);
+        }
+        return { episodes: episodes.map((episode, index) => ({ ...episode, index: index + 1 })), warnings };
+    }
+
     /**
      * 01 剧本分块改编（map-reduce）：整本长篇超过阈值时切成 N 块，逐块提取局部人物/场次，
      * 再把全部局部结果与项目标题喂给模型合并成符合 01 SKILL.md 契约的完整剧本。
@@ -448,6 +572,7 @@ ${chunk.text}
                 avgMsPerChunk: avgMs,
                 etaMs: avgMs * (chunks.length - done),
                 startedAt: new Date(startedAt).toISOString(),
+                steps: scriptStepsView(stage),
             });
         }
         const reducePrompt = `你是影视剧本改编。长篇小说《${run.title}》已分 ${chunks.length} 块逐块提取出局部人物与场次（JSON 如下，label 是该块在原文里的来源标记）。把它们合并成一份完整剧本。
@@ -474,21 +599,231 @@ ${JSON.stringify(partials, null, 2)}
             label: `合并 ${chunks.length} 块局部结果`,
             reused,
             startedAt: new Date(startedAt).toISOString(),
+            steps: scriptStepsView(stage),
         });
-        stage.output = await askJson([system, { role: "user", content: reducePrompt }], run, def.id, provider, 0.3, signal);
+        const merged = await askJson([system, { role: "user", content: reducePrompt }], run, def.id, provider, 0.3, signal);
         stage.chunked = { chunks: chunks.length, labels: chunks.map((chunk) => chunk.label), mergeModel: resolveModel(run, def.id), reused };
+        return merged;
+    }
+
+    /**
+     * 01 剧本的 analyze 子步骤：短篇单次调用（沿用既有「## 提示词模板」），长篇走分块 map-reduce。
+     * 只负责产出原文分析结果（logline/synopsis/characters/scenes，可能带 planSuggestion），不落 stage.output。
+     */
+    async function composeScriptAnalyze(run, def, stage, provider, ctx = {}) {
+        const prompt = fillTemplate(readPromptTemplate(def), buildContext(run, def));
+        const maxChunkChars = Number(pipelineConfig.maxNovelChunkChars) || 16000;
+        if (prompt.length > maxChunkChars) {
+            return composeScriptChunked(run, def, stage, provider, maxChunkChars, ctx);
+        }
+        // 单次调用也写一条同形状的进度，前端不必为「有没有分块」写两套渲染
+        writeProgress(run.id, { runId: run.id, stage: def.id, phase: "single", done: 0, total: 1, label: `模型生成中（提示词 ${prompt.length} 字）`, steps: scriptStepsView(stage) });
+        const messages = [
+            { role: "system", content: `你是「${def.title}」阶段的执行者。严格只返回一个 JSON 对象，不要输出解释、Markdown 代码块或任何多余文字。` },
+            { role: "user", content: prompt },
+        ];
+        stage.chunked = undefined;
+        return askJson(messages, run, def.id, provider, 0.6, ctx.signal);
+    }
+
+    /** 分集规划的内置兜底提示词：阶段技能缺「## 分集规划提示词」时使用，plan 集数/时长是硬输入。 */
+    const OUTLINE_FALLBACK_PROMPT = [
+        "你是本项目的分集规划师。依据下面的原文分析结果，把整部故事规划成 {{episodeCount}} 集，每集时长约 {{episodeDurationSec}} 秒。",
+        "项目标题：{{title}}",
+        "一句话故事线：{{logline}}",
+        "故事梗概：{{synopsis}}",
+        "人物：{{characters}}",
+        "场次：{{scenes}}",
+        '要求：只输出 JSON：{"episodes":[{"id":"ep1","index":1,"title":"","durationSec":0,"synopsis":"","sceneIds":["sc1"]}]}；集数必须等于 {{episodeCount}}，sceneIds 只能引用给定场次 id，各集时长合计应接近 {{episodeCount}}×{{episodeDurationSec}} 秒；不要 Markdown 代码块、不要解释文字。',
+    ].join("\n\n");
+
+    /** 逐集剧本的内置兜底提示词：阶段技能缺「## 逐集剧本提示词」时使用。 */
+    const SCRIPT_EPISODE_FALLBACK_PROMPT = [
+        "你是本项目的剧本编剧。这是第 {{episode.index}} 集，请依据下列场次写出可直接拍摄的镜头级动作节拍（beats）。",
+        "项目标题：{{title}}",
+        "本集信息：{{episode}}",
+        "人物：{{characters}}",
+        "本集场次：{{episodeScenes}}",
+        '要求：只输出 JSON：{"scenes":[{"id":"sc1","title":"","location":"","time":"","intent":"","beats":[""]}]}；场次 id 必须沿用给定值，beats 写 3~8 条可拍摄动作/台词；不要 Markdown 代码块、不要解释文字。',
+    ].join("\n\n");
+
+    /** 分集规划子步骤：以 plan.episodeCount/episodeDurationSec 为硬输入，产出 episodes[]。 */
+    async function composeScriptOutline(run, def, stage, provider, ctx, { scenes, characters, analyze, plan }) {
+        const template = readStepTemplate(def, SCRIPT_STEP_SECTIONS.outline) || OUTLINE_FALLBACK_PROMPT;
+        const redlines = scriptRedlines(def);
+        const context = {
+            ...buildContext(run, def),
+            title: run.title,
+            episodeCount: plan.episodeCount > 0 ? plan.episodeCount : 1,
+            episodeDurationSec: plan.episodeDurationSec > 0 ? plan.episodeDurationSec : "",
+            logline: analyze?.logline ?? "",
+            synopsis: analyze?.synopsis ?? "",
+            characters,
+            scenes,
+        };
+        let prompt = fillTemplate(template, context);
+        if (redlines) prompt += `\n\n分集必须遵守阶段技能的内容创作红线（硬约束）：\n${redlines}\n`;
+        const messages = [
+            { role: "system", content: `你是「${def.title}」阶段的分集规划者。严格只返回一个 JSON 对象，不要输出解释、Markdown 代码块或任何多余文字。` },
+            { role: "user", content: prompt },
+        ];
+        return askJson(messages, run, def.id, provider, 0.3, ctx.signal);
+    }
+
+    /** 逐集剧本子步骤：逐集生成镜头级场次内容；单集（未请求分集）时不额外调模型，整篇即这一集。 */
+    async function composeScriptPerEpisode(run, def, stage, provider, ctx, { episodes, scenes, characters, plan }) {
+        const sceneById = new Map((Array.isArray(scenes) ? scenes : []).map((scene) => [scene?.id, scene]));
+        const results = [];
+        const total = episodes.length;
+        for (let index = 0; index < episodes.length; index += 1) {
+            const episode = episodes[index];
+            const slice = episode.sceneIds.map((id) => sceneById.get(id)).filter(Boolean);
+            if (total > 1) {
+                if (ctx.signal?.aborted) throw new Error("已取消");
+                const template = readStepTemplate(def, SCRIPT_STEP_SECTIONS.script) || SCRIPT_EPISODE_FALLBACK_PROMPT;
+                const redlines = scriptRedlines(def);
+                let prompt = fillTemplate(template, {
+                    ...buildContext(run, def),
+                    title: run.title,
+                    episode,
+                    episodeIndex: episode.index,
+                    episodeCount: total,
+                    episodeDurationSec: plan.episodeDurationSec > 0 ? plan.episodeDurationSec : "",
+                    episodeScenes: slice,
+                    characters,
+                    scenes,
+                });
+                if (redlines) prompt += `\n\n剧本必须遵守阶段技能的内容创作红线（硬约束）：\n${redlines}\n`;
+                const messages = [
+                    { role: "system", content: `你是「${def.title}」阶段第 ${episode.index} 集的编剧。严格只返回一个 JSON 对象，不要输出解释、Markdown 代码块或任何多余文字。` },
+                    { role: "user", content: prompt },
+                ];
+                const parsed = await askJson(messages, run, def.id, provider, 0.5, ctx.signal);
+                results.push({ episodeId: episode.id, index: episode.index, scenes: Array.isArray(parsed?.scenes) && parsed.scenes.length ? parsed.scenes : slice });
+                stage.steps.script.detail = `第 ${index + 1}/${total} 集`;
+                writeScriptProgress(run, def, stage, { phase: "running", done: index + 1, total, label: `逐集剧本：第 ${index + 1}/${total} 集` });
+            } else {
+                results.push({ episodeId: episode.id, index: episode.index, scenes: slice });
+            }
+        }
+        return results;
+    }
+
+    /** 场次可被逐集剧本覆盖的内容字段（不动 id，供下游 02 稳定引用）。 */
+    const SCRIPT_SCENE_FIELDS = Object.freeze(["title", "location", "time", "intent", "beats"]);
+
+    /** 合并最终剧本产物：以 analyze 为骨架，用逐集剧本结果按 id 细化场次，episodes 原样带上。 */
+    function mergeScriptOutput(analyze, episodes, stepResults, scenes) {
+        const byId = new Map();
+        for (const scene of Array.isArray(scenes) ? scenes : []) {
+            if (scene?.id) byId.set(scene.id, { ...scene });
+        }
+        for (const result of stepResults) {
+            for (const scene of result.scenes || []) {
+                if (!scene?.id) continue;
+                const merged = { ...(byId.get(scene.id) || { id: scene.id }) };
+                for (const field of SCRIPT_SCENE_FIELDS) if (scene[field] !== undefined) merged[field] = scene[field];
+                byId.set(scene.id, merged);
+            }
+        }
+        let finalScenes = [...byId.values()];
+        if (!finalScenes.length) finalScenes = stepResults.flatMap((result) => result.scenes || []);
+        const output = {
+            logline: String(analyze?.logline ?? ""),
+            synopsis: String(analyze?.synopsis ?? ""),
+            characters: Array.isArray(analyze?.characters) ? analyze.characters : [],
+            scenes: finalScenes,
+            episodes: Array.isArray(episodes) ? episodes.map((episode) => ({ ...episode })) : [],
+        };
+        if (analyze?.planSuggestion && typeof analyze.planSuggestion === "object") output.planSuggestion = analyze.planSuggestion;
+        return output;
+    }
+
+    /**
+     * 01 剧本多步编排：analyze（读原文）→ outline（分集规划）→ script（逐集剧本）。
+     * 每步都有独立状态与产物；产物落进 stage.steps.<id>.output（随 run 落盘、可重载、支持 resume 复用前步），
+     * 最终合并成下游 02/03 依赖的 stage.output（logline/synopsis/characters/scenes/episodes）。
+     */
+    async function composeScriptSteps(run, def, stage, provider, ctx = {}) {
+        const reuseDone = Boolean(ctx.resume);
+        initializeScriptSteps(stage, !reuseDone);
+        const plan = planConstraints(run);
+        const stepDone = (id) => reuseDone && stage.steps[id]?.status === "done" && stage.steps[id]?.output != null;
+        try {
+            // —— 1. analyze：读原文，产出主线/人物/场次 ——
+            let analyze;
+            if (stepDone("analyze")) {
+                analyze = stage.steps.analyze.output;
+            } else {
+                markScriptStep(stage, "analyze", "running");
+                writeScriptProgress(run, def, stage, { phase: "single", done: 0, total: 1, label: "读原文：提取主线、人物与场次" });
+                analyze = await composeScriptAnalyze(run, def, stage, provider, ctx);
+                if (!analyze || typeof analyze !== "object") throw new Error("原文分析未产出有效结果");
+                stage.steps.analyze.output = analyze;
+                stage.steps.analyze.detail = `${Array.isArray(analyze.characters) ? analyze.characters.length : 0} 个角色 / ${Array.isArray(analyze.scenes) ? analyze.scenes.length : 0} 个场次`;
+                markScriptStep(stage, "analyze", "done");
+                saveRun(run);
+            }
+            const scenes = Array.isArray(analyze.scenes) ? analyze.scenes : [];
+            const characters = Array.isArray(analyze.characters) ? analyze.characters : [];
+
+            // —— 2. outline：分集规划（plan 为硬输入，产出后校验集数与时长）——
+            let episodes;
+            if (stepDone("outline")) {
+                episodes = stage.steps.outline.output.episodes;
+            } else {
+                markScriptStep(stage, "outline", "running");
+                writeScriptProgress(run, def, stage, { phase: "running", done: 0, total: 1, label: `分集规划：目标 ${plan.episodeCount > 0 ? plan.episodeCount : 1} 集` });
+                const raw = await composeScriptOutline(run, def, stage, provider, ctx, { scenes, characters, analyze, plan });
+                const normalized = normalizeEpisodes(raw?.episodes, scenes, plan);
+                episodes = normalized.episodes;
+                stage.steps.outline.output = { episodes, warnings: normalized.warnings, target: plan };
+                stage.steps.outline.detail = `${episodes.length} 集${normalized.warnings.length ? `（${normalized.warnings.length} 条提醒）` : ""}`;
+                markScriptStep(stage, "outline", "done");
+                stage.warnings = normalized.warnings.length ? normalized.warnings : undefined;
+                saveRun(run);
+            }
+
+            // —— 3. script：逐集剧本 ——
+            let stepResults;
+            if (stepDone("script")) {
+                stepResults = stage.steps.script.output.episodes;
+            } else {
+                markScriptStep(stage, "script", "running");
+                writeScriptProgress(run, def, stage, { phase: "running", done: 0, total: episodes.length, label: `逐集剧本：共 ${episodes.length} 集` });
+                stepResults = await composeScriptPerEpisode(run, def, stage, provider, ctx, { episodes, scenes, characters, plan });
+                stage.steps.script.output = { episodes: stepResults };
+                stage.steps.script.detail = `${episodes.length} 集完成`;
+                markScriptStep(stage, "script", "done");
+                saveRun(run);
+            }
+            // 收尾写一条带最终 steps 的进度：否则 executeStage 合并的是「script 仍在 running」的旧快照，前端会看到阶段 done 但末步未完成。
+            writeScriptProgress(run, def, stage, { phase: "running", done: episodes.length, total: episodes.length, label: `逐集剧本：${episodes.length} 集完成` });
+            return mergeScriptOutput(analyze, episodes, stepResults, scenes);
+        } catch (error) {
+            // 已完成的前步产物保留在 stage.steps 里（不丢），失败的那一步落 error，后端可据 resume 复用前步重试。
+            const current = SCRIPT_STEPS.find((item) => stage.steps[item.id]?.status === "running");
+            if (current) markScriptStep(stage, current.id, "error", { error: error.message });
+            writeScriptProgress(run, def, stage, { phase: "running", label: error.message });
+            saveRun(run);
+            throw error;
+        }
     }
 
     /** 文本型阶段：填模板 → 要求严格 JSON → 失败重试一次 → 再失败置 error。provider 为浏览器透传的外部渠道（仅本次调用）。 */
     async function composeWithLlm(run, def, stage, provider, ctx = {}) {
-        const prompt = fillTemplate(readPromptTemplate(def), buildContext(run, def));
-        const maxChunkChars = Number(pipelineConfig.maxNovelChunkChars) || 16000;
-        try {
-            // 只有 01 剧本阶段会做分块；填入小说后的完整 prompt 超阈值时走 map-reduce，其余一律单次调用。
-            if (def.id === "script" && prompt.length > maxChunkChars) {
-                await composeScriptChunked(run, def, stage, provider, maxChunkChars, ctx);
-                return;
+        // 01 剧本走 analyze→outline→script 多步编排（进度可见、中间结果落盘、plan 作硬约束）；其余阶段仍是单次调用。
+        if (def.id === "script") {
+            try {
+                stage.output = await composeScriptSteps(run, def, stage, provider, ctx);
+            } catch (error) {
+                stage.output = null;
+                throw error;
             }
+            return;
+        }
+        const prompt = fillTemplate(readPromptTemplate(def), buildContext(run, def));
+        try {
             // 单次调用也写一条同形状的进度，前端不必为「有没有分块」写两套渲染
             writeProgress(run.id, { runId: run.id, stage: def.id, phase: "single", done: 0, total: 1, label: `模型生成中（提示词 ${prompt.length} 字）` });
             const messages = [
@@ -548,10 +883,11 @@ ${JSON.stringify(partials, null, 2)}
      * 全部进行中 running、部分成功 partial、全失败 error、有取消 canceled。重算 artifacts。
      * artifacts 会重建为「片段条目 + 成片条目」，成片信息由 filmArtifacts 从 assembly 派生，天然幂等。
      */
-    function recomputeStage(stage) {
+    function recomputeStage(stage, run) {
         const items = stage.output?.frames || stage.output?.clips || [];
         const latest = items.map((item) => (item.candidates || []).at(-1)).filter(Boolean);
         stage.artifacts = [...items.filter((item) => item.artifactUrl).map((item) => ({ jobId: item.jobId, url: item.artifactUrl })), ...filmArtifacts(stage)];
+        registerArtifacts(run, stage);
         if (!latest.length) return;
         const statuses = latest.map((candidate) => candidate.status);
         // 只要有任务还在排队/运行就是 running —— 部分已完成既不代表阶段可审阅、也不代表可续跑；
@@ -593,6 +929,50 @@ ${JSON.stringify(partials, null, 2)}
             applyPlanSuggestion(projectId, suggestion);
         } catch (error) {
             console.warn(`[pipeline] planSuggestion 回填失败（不影响剧本阶段）：${error.message}`);
+        }
+    }
+
+    /**
+     * 生成型阶段产物自动登记为项目 AssetRef（补上「跑完图/视频还得手动逐个登记引用」的半自动缺口）。
+     * 只做「何时登记」：只在应注入 registerAssetRef、run 绑了项目、且阶段是生成型阶段时登记；
+     * 一条产物一条引用（role 见 GENERATIVE_STAGE_ASSET_ROLE），幂等依据 (projectId, runId, artifactUrl)——
+     * 先读项目现有 assetRefs 命中即跳过，重启重放读到旧引用同样不重复；登记失败只告警，绝不拖垮生成阶段。
+     * 不直接 import assets.js：真正写盘走注入的 registerAssetRef（index.js 接 projects.assets.create），保持解耦。
+     */
+    function registerArtifacts(run, stage) {
+        if (typeof registerAssetRef !== "function") return;
+        const projectId = run?.options?.projectId;
+        if (!projectId) return;
+        const role = GENERATIVE_STAGE_ASSET_ROLE[stage?.id];
+        if (!role) return;
+        const project = projectOf(run);
+        if (!project) return;
+        const refs = Array.isArray(project.assetRefs) ? project.assetRefs : [];
+        // 已登记过的 (runId, artifactUrl) 集合：重建 run / 重启重放时同样命中，不重复登记。
+        const seen = new Set(refs.filter((ref) => ref?.metadata?.runId === run.id).map((ref) => ref.metadata.artifactUrl));
+        const items = stage.output?.frames || stage.output?.clips || [];
+        const itemByJob = new Map(items.filter((item) => item.jobId).map((item) => [item.jobId, item]));
+        const itemByUrl = new Map(items.filter((item) => item.artifactUrl).map((item) => [item.artifactUrl, item]));
+        for (const artifact of Array.isArray(stage.artifacts) ? stage.artifacts : []) {
+            const url = artifact?.url;
+            if (!url || seen.has(url)) continue;
+            // manifest/log/cover 等成片附属文件不是媒体资产，只登记片段本体与成片本体（role 为 output）。
+            if (artifact.role && artifact.role !== "output") continue;
+            const item = itemByUrl.get(url) || (artifact.jobId ? itemByJob.get(artifact.jobId) : null);
+            const bindingId = String(item?.id || item?.shotId || artifact.id || artifact.jobId || "").trim();
+            if (!bindingId) continue;
+            try {
+                registerAssetRef(projectId, {
+                    role,
+                    bindingId,
+                    artifactIds: [url],
+                    selectedArtifactId: url,
+                    metadata: { source: "pipeline", runId: run.id, stageId: stage.id, jobId: artifact.jobId ?? null, artifactUrl: url },
+                });
+                seen.add(url);
+            } catch (error) {
+                console.warn(`[pipeline] 产物自动登记资产失败（不影响生成）：${error.message}`);
+            }
         }
     }
 
@@ -753,7 +1133,7 @@ ${JSON.stringify(partials, null, 2)}
         const jobId = enqueueAttempt(run, def, item, plan);
         if (!jobId) throw gateError("生成任务入队失败");
         item.template = plan.template;
-        recomputeStage(stage);
+        recomputeStage(stage, run);
         // 写一条 running 进度：阶段此前多半是 done，不刷新的话轻量进度轮询会一直读到旧的 phase:"done"。
         writeProgress(run.id, { ...(readProgress(run.id) || {}), runId: run.id, stage: def.id, phase: "running", label: `重跑条目 ${item.id}（${plan.template}）` });
         saveRun(run);
@@ -794,7 +1174,7 @@ ${JSON.stringify(partials, null, 2)}
                           status: "queued",
                       },
                   };
-        recomputeStage(stage);
+        recomputeStage(stage, run);
     }
 
     /** Job 终态投影：按 meta 反查 run/stage/item，幂等回写候选与派生字段，并让前置刚就绪的下游条目入队。 */
@@ -815,7 +1195,7 @@ ${JSON.stringify(partials, null, 2)}
         else if (def.id === "assembly") enqueueReady(run, def, stage, items, run.stages?.keyframe?.output?.frames || [], shots);
         // 回写后若该条目最新候选落为 error，按预算自动重试（canceled 不在此列；未注入 getProject 时为空操作）。
         retryFailedItem(run, def, item);
-        recomputeStage(stage);
+        recomputeStage(stage, run);
         return saveRun(run);
     }
 
@@ -1031,7 +1411,7 @@ ${JSON.stringify(partials, null, 2)}
             assembly.manifestUrl = dir && existsSync(safeJoin(dir, "assembly-manifest.json")) ? artifactUrl(config, id, "assembly-manifest.json") : null;
             assembly.logUrl = dir && existsSync(safeJoin(dir, "ffmpeg.log")) ? artifactUrl(config, id, "ffmpeg.log") : null;
         }
-        recomputeStage(stage);
+        recomputeStage(stage, run);
         if (stage.output !== undefined && stage.output !== null) saveOutput(run.id, def.id, stage.output);
         writeProgress(run.id, { runId: run.id, stage: def.id, phase: assembly.status === "done" ? "done" : "failed", label: assembly.status === "done" ? "成片已生成" : assembly.error, finishedAt: assembly.finishedAt });
         return saveRun(run);

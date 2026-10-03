@@ -141,6 +141,8 @@ const pipeline = createPipeline({
     getProject: (projectId) => projects.get(projectId),
     // 剧本阶段完成后把 01 的 planSuggestion 回填到项目 plan（只填未填写字段、幂等）。
     applyPlanSuggestion: (projectId, suggestion) => projects.applyPlanSuggestion(projectId, suggestion),
+    // 生成型阶段（关键帧/片段合成）产物自动登记为项目 AssetRef：幂等、解耦、失败不拖垮阶段。
+    registerAssetRef: (projectId, input) => projects.assets.create(projectId, input),
 });
 // 订阅一次任务队列的 change 事件：Job 落终态时把产物回写流水线条目；并重放 jobs.json 里的终态任务，
 // 让服务重启后能从任务队列重建流水线状态（幂等）。
@@ -269,6 +271,16 @@ router.post("/api/llm/providers", async (req, res) => {
     } catch (error) {
         sendError(res, 400, error.message);
     }
+});
+
+/**
+ * OpenAI 兼容的模型清单。与 /api/providers 的 llm.models 同源（都走 listLlmModels），
+ * 因此本地 Ollama 模型与外部渠道模型（「渠道名::模型名」）都会列出；外部模型带前缀即 id。
+ * 探测失败（本机不可达、渠道无 Key 或连不上）时宁可少列，也不让列表接口报错或挂住——故兜底为空数组。
+ */
+router.get("/v1/models", async (req, res) => {
+    const models = await listLlmModels(config).catch(() => []);
+    sendJson(res, 200, { object: "list", data: models.map((id) => ({ id, object: "model", owned_by: "canvas-gateway" })) });
 });
 
 // 前端把渠道 baseUrl 指向本服务即可复用既有 OpenAI 兼容调用链。

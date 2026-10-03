@@ -41,6 +41,9 @@ const llmUrl = `http://127.0.0.1:${llmServer.address().port}`;
 process.env.CANVAS_SERVER_DATA_DIR = join(root, "data");
 process.env.CANVAS_SERVER_SKILLS_DIR = skillsDir;
 process.env.CANVAS_SERVER_LLM_URL = llmUrl;
+// 显式绑一个本地模型名：否则会继承 config.json 的 llm.defaultModel（可能是「渠道::模型」的外部路由），
+// 在本隔离环境里未注册该渠道，脚本阶段会因「未注册的外部 LLM 渠道」直接失败。
+process.env.CANVAS_SERVER_LLM_MODEL = "test-model";
 process.env.CANVAS_SERVER_COMFY_URL = "http://127.0.0.1:9"; // 不可达：任何生成任务都会立刻失败，绝不真跑
 const mod = await import("../src/index.js");
 await new Promise((resolve) => mod.server.listen(0, "127.0.0.1", resolve));
@@ -52,7 +55,7 @@ after(async () => {
         llmServer.closeAllConnections?.();
         llmServer.close(resolve);
     });
-    for (const key of ["CANVAS_SERVER_DATA_DIR", "CANVAS_SERVER_SKILLS_DIR", "CANVAS_SERVER_LLM_URL", "CANVAS_SERVER_COMFY_URL"]) delete process.env[key];
+    for (const key of ["CANVAS_SERVER_DATA_DIR", "CANVAS_SERVER_SKILLS_DIR", "CANVAS_SERVER_LLM_URL", "CANVAS_SERVER_LLM_MODEL", "CANVAS_SERVER_COMFY_URL"]) delete process.env[key];
     rmSync(root, { recursive: true, force: true });
 });
 

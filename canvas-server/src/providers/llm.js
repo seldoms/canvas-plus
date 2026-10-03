@@ -59,6 +59,30 @@ export function externalProviders(config) {
         .filter((item) => item.name && item.baseUrl);
 }
 
+/**
+ * 把请求里的模型名解析成「实际生效的渠道配置 + 交给上游的模型名」。
+ * chat() 与 /v1 转发共用这一处，保证 HTTP 调用与流水线调用的路由规则同源。
+ * - 「渠道名::模型名」→ 路由到 config.llm.providers 里的对应渠道（未注册则明确报错）；
+ * - 空模型名 → 回退 config.llm.defaultModel（defaultModel 本身可带渠道前缀）；
+ * - 裸模型名与 defaultModel 的外部模型同名 → 按该渠道路由，避免落到本地拿一个含糊 404；
+ * - 其余裸模型名原样保留，交给本地 LLM（本地 Ollama 模型走这条）。
+ */
+export function resolveModelTarget(config, model) {
+    const raw = String(model || "").trim();
+    if (raw.includes("::")) {
+        const sep = raw.indexOf("::");
+        const name = raw.slice(0, sep);
+        const found = externalProviders(config).find((item) => item.name === name);
+        if (!found) throw new Error(`未注册的外部 LLM 渠道：${name}（请先在 /api/llm/providers 注册）`);
+        return { effective: { ...config, llm: { baseUrl: found.baseUrl, apiKey: found.apiKey, timeoutMs: config?.llm?.timeoutMs } }, target: raw.slice(sep + 2) };
+    }
+    const fallback = String(config?.llm?.defaultModel || "").trim();
+    if (!raw && fallback) return resolveModelTarget(config, fallback);
+    const sep = fallback.indexOf("::");
+    if (raw && sep >= 0 && fallback.slice(sep + 2) === raw) return resolveModelTarget(config, fallback);
+    return { effective: config, target: raw };
+}
+
 /** 主地址优先，其后按配置顺序是 fallbacks。 */
 function candidates(config) {
     const list = [config?.llm?.baseUrl, ...(config?.llm?.fallbacks || [])];
@@ -159,25 +183,54 @@ function normalizePath(pathWithQuery) {
     return withQuery.replace(/^\/v1(?=\/|\?|$)/i, "") || "/";
 }
 
+/** 请求体 JSON 解析；非 JSON（或空体）返回 null，由调用方决定是否原样转发。 */
+function parseJsonBody(body) {
+    try {
+        return JSON.parse(body.toString("utf8"));
+    } catch {
+        return null;
+    }
+}
+
 /**
  * 原样转发到上游并逐块透传响应体（SSE 不缓冲），保持前端可边收边渲染。
  * 只有「连接都没建立」时才换下一个 fallback；已开始回包后不再重试。
+ * /chat/completions 额外按模型名分流：带渠道前缀（或与 defaultModel 同名）时改投外部渠道，
+ * 其余路径与本地模型名一律原样转发，调用方无需感知。
  */
 export async function forwardToLlm(incomingReq, outgoingRes, config, pathWithQuery) {
     const method = String(incomingReq.method || "GET").toUpperCase();
-    const body = method === "GET" || method === "HEAD" ? undefined : await readBody(incomingReq);
+    let body = method === "GET" || method === "HEAD" ? undefined : await readBody(incomingReq);
+    const path = normalizePath(pathWithQuery);
     const contentType = incomingReq.headers?.["content-type"] || "application/json";
+    let effective = config;
+    if (body && /^\/chat\/completions/.test(path)) {
+        const payload = parseJsonBody(body);
+        if (payload) {
+            let resolved;
+            try {
+                resolved = resolveModelTarget(config, payload.model);
+            } catch (error) {
+                sendError(outgoingRes, 400, error.message);
+                return;
+            }
+            if (resolved.effective !== config || resolved.target !== String(payload.model || "")) {
+                body = Buffer.from(JSON.stringify({ ...payload, model: resolved.target }));
+            }
+            effective = resolved.effective;
+        }
+    }
     let started = false;
     let lastError;
 
-    for (const baseUrl of candidates(config)) {
-        const url = `${apiBase(baseUrl)}${normalizePath(pathWithQuery)}`;
+    for (const baseUrl of candidates(effective)) {
+        const url = `${apiBase(baseUrl)}${path}`;
         const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), timeoutMs(config));
+        const timer = setTimeout(() => controller.abort(), timeoutMs(effective));
         try {
             const upstream = await fetch(url, {
                 method,
-                headers: { ...headers(config, contentType), ...(body ? { "content-length": String(body.length) } : {}) },
+                headers: { ...headers(effective, contentType), ...(body ? { "content-length": String(body.length) } : {}) },
                 body,
                 signal: controller.signal,
             });
@@ -202,7 +255,7 @@ export async function forwardToLlm(incomingReq, outgoingRes, config, pathWithQue
             clearTimeout(timer);
         }
     }
-    sendError(outgoingRes, 502, `LLM 服务不可达，已尝试：${candidates(config).join("、")}（${lastError?.message || "未知错误"}）`);
+    sendError(outgoingRes, 502, `LLM 服务不可达，已尝试：${candidates(effective).join("、")}（${lastError?.message || "未知错误"}）`);
 }
 
 /**
@@ -253,13 +306,9 @@ export async function chat(config, { messages, model, stream, temperature, provi
     let target = model || "";
     if (provider?.baseUrl) {
         effective = { ...config, llm: { baseUrl: provider.baseUrl, apiKey: String(provider.apiKey || ""), timeoutMs: config?.llm?.timeoutMs } };
-    } else if (target.includes("::")) {
-        const sep = target.indexOf("::");
-        const name = target.slice(0, sep);
-        const found = externalProviders(config).find((item) => item.name === name);
-        if (!found) throw new Error(`未注册的外部 LLM 渠道：${name}（请先在 /api/llm/providers 注册）`);
-        effective = { ...config, llm: { baseUrl: found.baseUrl, apiKey: found.apiKey, timeoutMs: config?.llm?.timeoutMs } };
-        target = target.slice(sep + 2);
+    } else {
+        // 与 /v1 转发共用同一处命名解析：渠道前缀路由、空模型回退 defaultModel、裸名回退规则保持一致。
+        ({ effective, target } = resolveModelTarget(config, target));
     }
     if (!target) target = effective?.llm?.defaultModel || "";
     if (!target) throw new Error("LLM 调用缺少 model：请在参数或 config.llm.defaultModel 中指定模型");

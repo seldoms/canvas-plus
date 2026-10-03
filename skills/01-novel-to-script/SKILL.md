@@ -23,9 +23,12 @@ description: |
 | --- | --- | --- |
 | `novel` | 是 | 小说原文全文，可能很长，是唯一事实来源 |
 | `title` | 否 | 项目标题，缺省时由原文自拟 |
-| `options.episodeCount` | 否 | 期望分集数；缺省时按原文体量决定 |
+| `plan.episodeCount` | 否 | **分集硬约束**：目标集数。绑定项目时取项目 `plan`，否则回落 `options.episodeCount`；缺省按 1 集处理 |
+| `plan.episodeDurationSec` | 否 | **分集硬约束**：单集时长（秒）。同上来源；缺省时不强制时长合计 |
 
-编排器会把提示词模板里的 `{{novel}}`、`{{title}}` 替换成真实内容后再发给模型。
+本阶段是一段**多步编排**：`analyze`（读原文）→ `outline`（分集规划，以 plan 的集数/时长为硬输入）→ `script`（逐集剧本）。每一步都有独立进度与产物；`stage.output` 由三步合并而成。分集规划真的把 `plan.episodeCount`/`plan.episodeDurationSec` 填进提示词，产出后还会校验集数与时长合计，不一致会记进 `stage.warnings`（不静默放过）。
+
+编排器会把提示词模板里的 `{{novel}}`、`{{title}}` 替换成真实内容后再发给模型；分集规划与逐集剧本另有各自的提示词小节。
 
 ## 输出契约
 
@@ -42,7 +45,7 @@ description: |
     { "id": "sc1", "title": "场景标题", "location": "内景/外景 + 地点", "time": "日/夜/黄昏", "intent": "这场戏的戏剧目标", "beats": ["节拍一", "节拍二"] }
   ],
   "episodes": [
-    { "id": "ep1", "title": "第一集", "sceneIds": ["sc1", "sc2"] }
+    { "id": "ep1", "index": 1, "title": "第一集", "durationSec": 30, "synopsis": "本集梗概", "sceneIds": ["sc1", "sc2"] }
   ],
   "planSuggestion": {
     "genre": "题材",
@@ -57,7 +60,7 @@ description: |
 ```
 
 - `characters[].id`、`scenes[].id` 必须唯一且稳定，后续阶段靠它们建立引用。
-- `episodes` 可选：短篇可以整段省略。
+- `episodes` **必填且非空**：集数必须等于分集硬约束 `plan.episodeCount`（缺省 1 集）；每集 `sceneIds` 必须都能在 `scenes` 里找到，`durationSec` 合计应接近 `plan.episodeCount × plan.episodeDurationSec`。编排器会在 `outline` 步骤后校验并规整（集数不符按目标重排、时长差距写进 `stage.warnings`）。
 - `planSuggestion` 可选：本阶段从原文分析出的**创作设定建议**，供后端回填项目 `plan`（字段语义见 `docs/content/docs/progress/domain-contract.md` §3.1 的 `Plan`）。`genre` / `tone` / `visualStyle` / `dramaMode` / `audience` 是字符串，值优先取前端预置项（单一来源 `web/src/constant/drama-presets.ts`），确无合适项才自拟中文短语；`episodeCount` / `episodeDurationSec` 是可选数字，仅在原文体量足以判断时才给。它**不参与下游 02~05 的消费**，缺失或留空都不影响流水线。
 
 ## 提示词模板
@@ -121,10 +124,69 @@ description: |
 
 1. 先提炼 `logline`（一句话故事线）与 `synopsis`（不超过 300 字的故事梗概），再拆人物与场次。
 2. `characters[].id`、`scenes[].id` 唯一且稳定，只允许 `[A-Za-z0-9_-]`。
-3. `episodes` 可选：短篇可整段省略；若给出，`sceneIds` 必须都能在 `scenes` 里找到。
+3. 本步**只做原文分析**：不要输出 `episodes`（分集由下一步「分集规划」完成）；`scenes` 要把整篇故事的场次按时间顺序铺全，供分集规划引用。
 4. 只输出下面结构的 JSON 本体，字段名不得改动，不要 Markdown 代码块、不要解释文字：
 
-{"logline":"","synopsis":"","characters":[{"id":"c1","name":"","profile":"","appearance":"","voice":""}],"scenes":[{"id":"sc1","title":"","location":"","time":"","intent":"","beats":[""]}],"episodes":[],"planSuggestion":{"genre":"","tone":"","visualStyle":"","dramaMode":"","audience":""}}
+{"logline":"","synopsis":"","characters":[{"id":"c1","name":"","profile":"","appearance":"","voice":""}],"scenes":[{"id":"sc1","title":"","location":"","time":"","intent":"","beats":[""]}],"planSuggestion":{"genre":"","tone":"","visualStyle":"","dramaMode":"","audience":""}}
+
+## 分集规划提示词
+
+你是本项目的分集规划师。下面是原著的原文分析结果，请把它规划成 {{episodeCount}} 集，每集约 {{episodeDurationSec}} 秒（集数与单集时长是硬约束，不得擅自增删）。
+
+项目标题：{{title}}
+
+一句话故事线：{{logline}}
+
+故事梗概：{{synopsis}}
+
+人物：
+
+{{characters}}
+
+场次：
+
+{{scenes}}
+
+### 一、规划底线
+
+1. 忠于原著与上面的场次清单：只做「把已有场次分给哪几集」的编排，不新增 / 删除 / 改写场次与剧情。
+2. 每集要有独立的戏剧推进与钩子（开场抓人、结尾留扣），不允许把整段剧情堆进一集、其余集空转。
+3. `sceneIds` 只能引用上面给出的场次 id，不得出现清单外的 id，也不得漏掉场次。
+4. 各集 `durationSec` 之和应接近 {{episodeCount}}×{{episodeDurationSec}} 秒；单集默认取 {{episodeDurationSec}}，需要浮动时写实际值。
+
+### 二、输出
+
+1. 只输出下面结构的 JSON 本体，集数必须等于 {{episodeCount}}，不要 Markdown 代码块、不要解释文字：
+
+{"episodes":[{"id":"ep1","index":1,"title":"","durationSec":0,"synopsis":"","sceneIds":["sc1"]}]}
+
+## 逐集剧本提示词
+
+你是本项目的剧本编剧。现在写第 {{episode.index}} 集（全片共 {{episodeCount}} 集），把本集场次写成效可直接拍摄的镜头级节拍。
+
+项目标题：{{title}}
+
+本集信息：{{episode}}
+
+人物：
+
+{{characters}}
+
+本集场次：
+
+{{episodeScenes}}
+
+### 一、写作底线
+
+1. 忠于原著与本集场次：不新增 / 删除场次、不改人物动机、情节走向与结局；本集只管本集场次。
+2. `beats` 写成镜头里能看到、能演出的动作 / 台词节拍，每条都要可拍摄，不写文学抒情与心理描写。
+3. 保留每个场次的 `id` 与基本信息（`title` / `location` / `time`），只补足 / 细化 `intent` 与 `beats`。
+
+### 二、输出
+
+1. 只输出下面结构的 JSON 本体，场次 `id` 必须沿用给定值，`beats` 写 3~8 条，不要 Markdown 代码块、不要解释文字：
+
+{"scenes":[{"id":"sc1","title":"","location":"","time":"","intent":"","beats":[""]}]}
 
 ## 校验规则
 
@@ -134,9 +196,10 @@ description: |
 - `characters[].id` 与 `scenes[].id` 全局唯一，只允许 `[A-Za-z0-9_-]`。
 - `scenes` 至少 1 条；每条 `beats` 至少 1 条非空字符串；`intent` 不能为空。
 - `characters[].appearance`、`characters[].voice` 不能为空：前者供关键帧阶段写提示词，后者供 TTS 使用。
-- 允许省略 `episodes`；若给出，`sceneIds` 必须都能在 `scenes` 里找到。
+- 允许省略 `episodes`（`analyze` 步本就不产出它）；但**合并后的 `stage.output.episodes` 必须非空**，集数等于分集硬约束 `plan.episodeCount`，`sceneIds` 必须都能在 `scenes` 里找到。
+- 分步校验：`analyze` 校验 `logline`/`synopsis`/`characters`/`scenes`；`outline` 校验集数、`sceneIds` 引用与时长合计（不一致记 `stage.warnings` 并按目标重排，不静默放过）；`script` 校验场次 `id` 沿用给定值。
 - `planSuggestion` 可选、不参与上述硬校验：不产出或留空都不算失败。
-- 只输出 JSON 本体。编排器解析失败会自动重试一次（只返回 JSON），再失败则整步标记 `error` 并保留模型原文。
+- 只输出 JSON 本体。任一步解析失败会自动重试一次（只返回 JSON），再失败该步标记 `error` 并保留模型原文；**已完成的前步产物保留不丢**，可用 `resume` 复用前步重试。
 
 ## 工具
 
@@ -153,7 +216,9 @@ description: |
 
 ## 已知边界（编排器行为，勿踩）
 
-- 编排器（`canvas-server/src/pipeline.js` 的 `readPromptTemplate` → `extractSection`）只把本文的 **`## 提示词模板`** 一节发给模型；其余章节是给人 / Agent 看的，不会进模型上下文。所以**新方法论必须写进「提示词模板」**，写在外面的章节约等于没写。
-- 长篇小说（填充后的提示词超过 `pipeline.maxNovelChunkChars`，默认 16000 字）会走 `pipeline.js` 内**硬编码的 map-reduce 提示词**，绕开本模板。因此本方法论目前只对单次调用（短篇 / 中小体量）生效；这是编排器源码限制，不在本阶段可改范围（改 `pipeline.js` 属越界）。
-- `planSuggestion` 目前**只由本阶段产出**，且只在**单次调用路径**（长篇走 map-reduce 绕道时不产出，见上一条），供后端回填项目 `plan`、前端展示与微调；本阶段只负责产出，**后端消费与前端展示由后续批次实现**。它不在 02~05 的消费链里，**即使没有任何下游消费也不影响流水线**。
+- 编排器（`canvas-server/src/pipeline.js` 的 `readPromptTemplate` → `extractSection`）从本文抽取三段提示词：**`## 提示词模板`**（原文分析 `analyze`）、**`## 分集规划提示词`**（`outline`）、**`## 逐集剧本提示词`**（`script`）。三节都用 `###` 子标题，不会被 `^##\s` 截断；改方法论就写进对应小节，写在外面的章节约等于没写。**这两个新小节名与 `## 提示词模板` 一样是编排器的抽取契约，不得改名**。
+- 本阶段的进度是多步结构：`progress.steps = [{ id, title, status, detail }]`，id 固定为 `analyze` / `outline` / `script`，状态用 `pending|running|done|error`；旧的 `stage`/`phase`/`done`/`total`/`label` 字段保留（向后兼容）。
+- 每步产物落在 `stage.steps.<stepId>.output`（随 run 落盘、重载可重建）；整个阶段的合并产物仍在 `stage.output`（`logline`/`synopsis`/`characters`/`scenes`/`episodes`），下游 02/03 照旧消费。
+- 长篇小说（填充后的提示词超过 `pipeline.maxNovelChunkChars`，默认 16000 字）的 `analyze` 步走 `pipeline.js` 内**硬编码的 map-reduce 提示词**，仍绕开「## 提示词模板」；`outline` / `script` 不受影响。分集规划与逐集剧本另会注入「## 内容创作红线（硬约束）」正文，与分块路径同源。
+- `planSuggestion` 由 `analyze` 步产出（长篇 map-reduce 绕道时不产出），供后端回填项目 `plan`、前端展示与微调；它不在 02~05 的消费链里，**即使没有任何下游消费也不影响流水线**。
 - 本阶段的方法论只影响内容与结构；`appearance` / `voice` 已按本地生图与 TTS 的可用形态要求书写，不引入 Midjourney 尾参、Seedance 参数或任何云端平台专属格式。

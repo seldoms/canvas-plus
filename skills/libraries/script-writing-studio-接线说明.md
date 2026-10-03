@@ -332,3 +332,37 @@ planSuggestion: {
 3. **模型可能自拟值**：提示词要求优先取预置项，但 LLM 仍可能给出预置外的自定义短语；前端下拉需容错（后续批次）。
 4. **不介入剧情**：设定建议只做设定层分析，明令不得反改原著；但仍需在真跑时抽查建议是否与原文一致（如把都市情感误推古风）。
 5. **未更新 CHANGELOG / docs**（任务边界）：只改了 `skills/01-novel-to-script/SKILL.md` 并追加本文件。
+
+---
+
+## 8. 第二次接线（01 多步可见改造：analyze → outline → script）
+
+> 追加式记录。本次把 01 剧本阶段从「单次黑盒调用」改造成**多步可见**，并一并治掉「episodes 恒为空」「plan 集数/时长没进提示词」两个实测问题。
+> 承接 `docs/content/docs/progress/pilot-issues.md` 第一轮 #1 / #2 / #3 / #11。
+
+### 8.1 改了什么
+
+| 层 | 文件 | 改动 |
+| --- | --- | --- |
+| 编排器 | `canvas-server/src/pipeline.js` | 01 剧本改为 `analyze`（读原文）→ `outline`（分集规划，plan 硬输入）→ `script`（逐集剧本）三步编排；进度加 `steps[]`；子步骤产物落 `stage.steps.<id>.output`；合并产物仍写 `stage.output` |
+| 阶段技能 | `skills/01-novel-to-script/SKILL.md` | 在保留 `## 提示词模板`（= analyze）与 `## 内容创作红线（硬约束）` 原文题的前提下，新增 `## 分集规划提示词`、`## 逐集剧本提示词` 两节；`episodes` 由「可选」改为「必填且非空、集数对齐 `plan.episodeCount`」 |
+| 契约 | `docs/content/docs/progress/domain-contract.md` | 追加 §9 StageProgress：`progress.steps[] = { id, title, status, detail? }`（只增不改） |
+
+### 8.2 方法论落点
+
+- **analyze**：沿用原「## 提示词模板」（原著分析：logline / synopsis / characters / scenes / planSuggestion）；长篇仍走分块 map-reduce，与红线共源。
+- **outline**：方法论承接 `01b-modes-format.md` 的「分集」概念与 `01b-rhythm-matrix.md` 的节奏分配，但**把「是否分集」从「模型自己记得」变成显式步骤**：`plan.episodeCount` / `plan.episodeDurationSec` 直接填进提示词，产出后由编排器校验集数与时长合计，不符记 `stage.warnings` 并按目标重排。
+- **script**：逐集把场次写成镜头级 `beats`，供下游 02 分镜消费；保留场次 id 稳定，不新增 / 删除场次。
+
+### 8.3 与旧描述的差异（旧节作废点）
+
+- §0 表里「编排器 **不改动**（越界）」已作废：本次按任务边界**修改了 `canvas-server/src/pipeline.js`**。
+- 旧「长篇绕道 → 不产出 planSuggestion」仍成立（analyze 步绕道），但 `outline` / `script` 不再绕道。
+
+### 8.4 待验证 / 风险（08）
+
+1. **真机回归未做**（任务边界：不重启 canvas-server、不跑真实生成任务）；单测以假 LLM 注入覆盖三步推进、失败不丢前步、episodes 对齐 plan、进度兼容。
+2. **`stage.steps` 会让 `run.json` 变大**：每步产物与合并产物并存（有冗余）。当前脚本 JSON 量级可接受；若后续产物更大，考虑把子步骤产物挪到独立文件（沿用 `progress.json` / `chunks/` 的「不塞进 run.json」思路）。
+3. **单集（未请求分集）时 script 步不额外调模型**：整篇即一集，避免短篇多付一次调用；这是有意设计，非漏跑。
+4. **前端展示另派**：`progress.steps` 已可供前端渲染，但 `web/**` 未改（任务边界）。
+5. **未更新 CHANGELOG / todo / pending-test**（任务边界未列入可改清单）。
