@@ -10,14 +10,13 @@ import { fetchPipelineProgress, getPipelineRun, type GatewayPipelineRun, type Ga
  * - 完整 run 内嵌整本小说（长篇可达数 MB），只在阶段运行中拉，且 RUN_POLL_MS 一次；
  *   进入 / 退出运行态各补拉一次，空闲即停 —— 后台每多一张产物，下一次拉取就带回时间线。
  *
- * runId 取项目关联 run 的第一个（与 useProjectRun 一致）；无关联 run 时不请求。
+ * runId 取项目关联 run 的「当前选中项」（多 run 时由工作区选择器切换，默认第一个）；无关联 run 时不请求。
  */
 const PROGRESS_POLL_MS = 3000;
 const IDLE_POLL_MS = 10000;
 const RUN_POLL_MS = 8000;
 
-export function useProjectTimeline({ runIds }: { runIds: string[] }) {
-    const runId = runIds[0] || "";
+export function useProjectTimeline({ runId }: { runId: string }) {
     const [run, setRun] = useState<GatewayPipelineRun | null>(null);
     const [progress, setProgress] = useState<GatewayStageProgress | null>(null);
     const [inflight, setInflight] = useState(false);

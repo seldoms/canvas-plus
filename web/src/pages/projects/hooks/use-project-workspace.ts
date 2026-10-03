@@ -19,6 +19,14 @@ export function useProjectWorkspace(projectId: string) {
     const [runsError, setRunsError] = useState("");
     const [gates, setGates] = useState<ProjectGate[]>([]);
     const [gatesLoading, setGatesLoading] = useState(false);
+    /** 会话内选中的 run（多 run 时工作区选择器切换）；不落盘，刷新后回落第一个。 */
+    const [selectedRunId, setSelectedRunId] = useState("");
+
+    /** 项目关联 run；选择器与门禁/时间线都以它为准。 */
+    const runIds = context?.runIds ?? [];
+    /** 当前选中的 run：选择有效则用它，否则回落第一个（保持既有默认行为）。 */
+    const activeRunId = selectedRunId && runIds.includes(selectedRunId) ? selectedRunId : runIds[0] ?? "";
+    const selectRun = useCallback((id: string) => setSelectedRunId(id), []);
 
     /** 关联 run 的阶段状态来自全局 run 列表（后端暂无 project 级摘要接口，见回报的风险点）。 */
     const loadRuns = useCallback(async () => {
@@ -54,7 +62,7 @@ export function useProjectWorkspace(projectId: string) {
         void loadGates();
     }, [loadGates]);
 
-    const stageStatus = useMemo(() => mergeStageStatus(runs, context?.runIds ?? []), [runs, context]);
+    const stageStatus = useMemo(() => mergeStageStatus(runs, activeRunId ? [activeRunId] : []), [runs, activeRunId]);
     const hasRunInfo = Object.keys(stageStatus).length > 0;
     const blockingNotes = useMemo(() => (context?.project.reviewNotes ?? []).filter((note) => note.level === "block" && !note.resolvedAt), [context]);
 
@@ -62,5 +70,5 @@ export function useProjectWorkspace(projectId: string) {
         await Promise.all([refreshContext(), loadRuns(), loadGates()]);
     }, [refreshContext, loadRuns, loadGates]);
 
-    return { context, loading, error, refresh, stageStatus, hasRunInfo, blockingNotes, runsLoading, runsError, gates, gatesLoading };
+    return { context, loading, error, refresh, stageStatus, hasRunInfo, blockingNotes, runsLoading, runsError, gates, gatesLoading, runIds, activeRunId, selectRun };
 }

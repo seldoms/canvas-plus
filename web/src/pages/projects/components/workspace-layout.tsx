@@ -1,5 +1,5 @@
 import { ArrowLeft, RefreshCw } from "lucide-react";
-import { Alert, Button, Empty, Spin, Typography } from "antd";
+import { Alert, Button, Empty, Select, Spin, Typography } from "antd";
 import { Link, useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import type { ReactNode } from "react";
@@ -15,6 +15,14 @@ import { WorkspaceInputPanel } from "./workspace-input-panel";
 import { WorkspaceResources } from "./workspace-resources";
 import { WorkspaceRunPanel } from "./workspace-run-panel";
 import { ProcessTimeline } from "./process-timeline";
+
+/**
+ * run id 截断成短标签用于选择器（完整 id 走 option 的 title 悬浮提示）。
+ */
+function shortRunId(id: string) {
+    const bare = id.replace(/^run-/, "");
+    return bare.length > 12 ? `${bare.slice(0, 12)}…` : bare;
+}
 
 /**
  * 工作区外壳：项目内工作区导航 + 加载/错误态 + 「当前输入 / 待确认 / 关联资源」三块标准面板。
@@ -35,6 +43,9 @@ export function WorkspaceLayout({
     runsError,
     gates,
     gatesLoading,
+    runIds,
+    activeRunId,
+    selectRun,
     children,
 }: {
     projectId: string;
@@ -50,6 +61,12 @@ export function WorkspaceLayout({
     runsError: string;
     gates: ProjectGate[];
     gatesLoading: boolean;
+    /** 项目关联 run 清单（多 run 时供选择器列出）。 */
+    runIds: string[];
+    /** 当前选中的 run（默认第一个）；门禁、过程时间线、资源面板都跟随它。 */
+    activeRunId: string;
+    /** 会话内切换当前 run；刷新后回落第一个。 */
+    selectRun: (id: string) => void;
     children?: ReactNode;
 }) {
     const { t } = useTranslation();
@@ -113,9 +130,31 @@ export function WorkspaceLayout({
                                     <Typography.Text type="secondary">{project.title}</Typography.Text>
                                     <h1 className="text-2xl font-semibold tracking-tight text-stone-950 dark:text-stone-100">{t(`projects.workspace.${workspace.key}`)}</h1>
                                 </div>
-                                <Button type="text" icon={<RefreshCw className="size-4" />} loading={loading || runsLoading || gatesLoading} onClick={refresh}>
-                                    {t("projects.refresh")}
-                                </Button>
+                                <div className="flex items-center gap-3">
+                                    {runIds.length > 1 ? (
+                                        <div className="flex items-center gap-2 whitespace-nowrap">
+                                            <Typography.Text type="secondary" className="!text-xs">
+                                                {t("projects.workspace.runSelector.label")}
+                                            </Typography.Text>
+                                            <Select
+                                                size="small"
+                                                value={activeRunId}
+                                                onChange={selectRun}
+                                                popupMatchSelectWidth={false}
+                                                className="min-w-36"
+                                                aria-label={t("projects.workspace.runSelector.label")}
+                                                options={runIds.map((id, index) => ({
+                                                    value: id,
+                                                    title: id,
+                                                    label: t("projects.workspace.runSelector.option", { index: index + 1, id: shortRunId(id) }),
+                                                }))}
+                                            />
+                                        </div>
+                                    ) : null}
+                                    <Button type="text" icon={<RefreshCw className="size-4" />} loading={loading || runsLoading || gatesLoading} onClick={refresh}>
+                                        {t("projects.refresh")}
+                                    </Button>
+                                </div>
                             </div>
                             <WorkspaceInputPanel context={context} workspace={workspace} stageStatus={stageStatus} />
                             <WorkspaceGatePanel
@@ -125,7 +164,7 @@ export function WorkspaceLayout({
                                 blockingNotes={blockingNotes}
                                 runsLoading={runsLoading}
                                 runsError={runsError}
-                                runIds={context.runIds}
+                                activeRunId={activeRunId}
                             />
                             <WorkspaceRunPanel
                                 workspace={workspace}
@@ -141,13 +180,13 @@ export function WorkspaceLayout({
                             />
                             <ProcessTimeline
                                 projectId={projectId}
-                                runIds={context.runIds}
+                                runId={activeRunId}
                                 assetRefs={context.project.assetRefs ?? []}
                                 gates={gates}
                                 gatesLoading={gatesLoading}
                                 stageStatus={stageStatus}
                             />
-                            <WorkspaceResources context={context} />
+                            <WorkspaceResources context={context} activeRunId={activeRunId} />
                             {children}
                         </div>
                     ) : null}

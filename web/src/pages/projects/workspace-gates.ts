@@ -9,7 +9,8 @@ import { WORKSPACES } from "./workspaces";
  *
  * 优先级：服务端 `GET /api/projects/:id/gates` 里本工作区阶段的判定（`resolveWorkspaceGate`）；
  * 服务端不可用（未就绪 / 404 / 网关不可达）时回退到**前端根据关联 run 的阶段状态**推导：
- * 拿 `listPipelineRuns()` 的摘要，按 `context.runIds` 过滤后合并成「阶段 → 状态」。
+ * 拿 `listPipelineRuns()` 的摘要，按**当前选中的 run**（多 run 时由工作区选择器切换，默认第一个）
+ * 过滤后合并成「阶段 → 状态」—— 不再固定取 `runIds[0]`。
  *
  * 不造假：读不到阶段状态时返回 `unknown`（不拦截），绝不臆造完成度。
  */

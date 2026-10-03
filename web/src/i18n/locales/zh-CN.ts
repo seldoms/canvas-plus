@@ -472,6 +472,11 @@ export default {
             inputTitle: "当前输入",
             gateTitle: "待确认",
             resourcesTitle: "关联资源",
+            runSelector: {
+                label: "当前 run",
+                option: "#{{index}} · {{id}}",
+                current: "当前",
+            },
             input: {
                 plan: "原文/剧本导入与规划参数（项目级默认，逐集可覆盖）。",
                 storyboard: "已确认的剧本 revision，拆解为场景与镜头。",

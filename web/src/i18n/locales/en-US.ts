@@ -483,6 +483,11 @@ export default {
             inputTitle: "Current input",
             gateTitle: "To confirm",
             resourcesTitle: "Linked resources",
+            runSelector: {
+                label: "Current run",
+                option: "#{{index}} · {{id}}",
+                current: "Current",
+            },
             input: {
                 plan: "Imported source/script and planning params (project defaults, per-episode overrides).",
                 storyboard: "The confirmed script revision, broken into scenes and shots.",

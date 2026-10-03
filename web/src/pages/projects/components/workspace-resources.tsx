@@ -9,7 +9,7 @@ import { usePipelineStore } from "@/stores/use-pipeline-store";
  * 「关联资源」面板：把 context 里的集列表、关联 run、画布入口原样列出。
  * run / 画布只跳转到既有 `/pipeline`、`/canvas/:id`，不在这里重做编辑能力。
  */
-export function WorkspaceResources({ context }: { context: ProjectContext }) {
+export function WorkspaceResources({ context, activeRunId }: { context: ProjectContext; activeRunId: string }) {
     const { t } = useTranslation();
     const navigate = useNavigate();
 
@@ -53,7 +53,14 @@ export function WorkspaceResources({ context }: { context: ProjectContext }) {
                                         </Button>,
                                     ]}
                                 >
-                                    <span className="break-all">{runId}</span>
+                                    <div className="flex min-w-0 items-center gap-2">
+                                        <span className={`break-all ${runId === activeRunId ? "font-medium text-stone-950 dark:text-stone-100" : ""}`}>{runId}</span>
+                                        {runId === activeRunId ? (
+                                            <Tag color="blue" className="!mr-0 shrink-0">
+                                                {t("projects.workspace.runSelector.current")}
+                                            </Tag>
+                                        ) : null}
+                                    </div>
                                 </List.Item>
                             )}
                         />

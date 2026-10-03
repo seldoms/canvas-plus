@@ -20,7 +20,7 @@ export function WorkspaceGatePanel({
     blockingNotes,
     runsLoading,
     runsError,
-    runIds,
+    activeRunId,
 }: {
     workspace: WorkspaceDef;
     gate: WorkspaceGate;
@@ -28,7 +28,8 @@ export function WorkspaceGatePanel({
     blockingNotes: ReviewNote[];
     runsLoading: boolean;
     runsError: string;
-    runIds: string[];
+    /** 当前选中的 run（多 run 时由工作区选择器切换，默认第一个）；打开流水线时定位到它。 */
+    activeRunId: string;
 }) {
     const { t } = useTranslation();
     const navigate = useNavigate();
@@ -37,7 +38,7 @@ export function WorkspaceGatePanel({
     const stageName = (stage: string) => t(`pipeline.stages.${stage}`);
 
     const openPipeline = () => {
-        if (runIds.length) usePipelineStore.getState().setActiveRun(runIds[0]);
+        if (activeRunId) usePipelineStore.getState().setActiveRun(activeRunId);
         navigate("/pipeline");
     };
 

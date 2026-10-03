@@ -55,14 +55,15 @@ function lastSegment(url: string) {
  */
 export function ProcessTimeline({
     projectId,
-    runIds,
+    runId,
     assetRefs,
     gates,
     gatesLoading,
     stageStatus,
 }: {
     projectId: string;
-    runIds: string[];
+    /** 当前选中的 run（多 run 时由工作区选择器切换，默认第一个）；时间线只铺这一个 run 的产物。 */
+    runId: string;
     /** 项目侧已登记资产（重启后才生效，可能为空）；仅用于给产物打「已登记」标记，不作为时间线数据源。 */
     assetRefs: AssetRef[];
     gates: ProjectGate[];
@@ -71,7 +72,7 @@ export function ProcessTimeline({
 }) {
     const { t } = useTranslation();
     const navigate = useNavigate();
-    const { run, progress, active, error } = useProjectTimeline({ runIds });
+    const { run, progress, active, error } = useProjectTimeline({ runId });
     const stages = useMemo(() => buildStages(run), [run]);
     const registered = useMemo(() => {
         const urls = new Set<string>();
