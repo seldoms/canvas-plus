@@ -143,3 +143,55 @@ export const LEGACY_ALIASES = Object.freeze([
         note: "Shot.id 稳定不可重排；reindex 只改 index。",
     }),
 ]);
+
+/* ------------------------------------------------------------------ *
+ * 生产对象冻结枚举（2026-10-03 追加，见契约 §10）。
+ * 只增不改：以上既有常量语义逐字不变；以下为声音 / 资产 / 机位 / 溯源 / 可逆链新增。
+ * ------------------------------------------------------------------ */
+
+/** 稳定 ID 前缀（追加）：VoiceProfile / AudioCue / 生产引用（CharacterRef / SceneRef）。 */
+export const PRODUCTION_ID_PREFIX = Object.freeze({
+    voiceProfile: "vp_",
+    audioCue: "cue_",
+    productionRef: "aref_",
+});
+
+/** ProjectBrief.visualMode（§13.1 / §13.4 生产 Profile 表：local_short | external_drama | hybrid）。 */
+export const VISUAL_MODE = Object.freeze({
+    LOCAL_SHORT: "local_short",
+    EXTERNAL_DRAMA: "external_drama",
+    HYBRID: "hybrid",
+});
+
+/** ProjectBrief.audioMode（§13.1；§11.5.1 的 separate_track 为同义别名，规整时归一到 separate_dialogue_track）。 */
+export const AUDIO_MODE = Object.freeze({
+    SEPARATE_DIALOGUE_TRACK: "separate_dialogue_track",
+    EMBEDDED: "embedded",
+});
+
+/** AudioCue.type（§13.5）。 */
+export const AUDIO_CUE_TYPE = Object.freeze({
+    DIALOGUE: "dialogue",
+    NARRATION: "narration",
+    SFX: "sfx",
+    AMBIENCE: "ambience",
+    MUSIC: "music",
+});
+
+/** AudioCue.status（§13.5，最小已证集：draft 为安全默认，approved 为人工确认后）。 */
+export const AUDIO_CUE_STATUS = Object.freeze({
+    DRAFT: "draft",
+    APPROVED: "approved",
+});
+
+/** 生产引用角色（§11.5.2：CharacterRef / SceneRef）。 */
+export const PRODUCTION_REF_ROLE = Object.freeze({
+    CHARACTER: "character",
+    SCENE: "scene",
+});
+
+/** StaleStatus（§11.5.3）：当前结果的派生状态，fresh = 可复用，stale = 输入已变需重跑；不等于删除或失败。 */
+export const STALE_STATUS = Object.freeze({
+    FRESH: "fresh",
+    STALE: "stale",
+});

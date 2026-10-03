@@ -297,3 +297,165 @@ export type Canvas = {
     showImageInfo: boolean;
     viewport: CanvasViewport;
 };
+
+/* ------------------------------------------------------------------ *
+ * 生产对象契约（2026-10-03 追加冻结，见契约 §10）
+ * 声音 / 资产 / 机位 / 溯源 / 可逆链新增实体；纯类型。
+ * 字段名与 `canvas-server/src/contracts.js`、`canvas-server/src/production-contracts.js` 逐字一致。
+ * ------------------------------------------------------------------ */
+
+/** 新实体稳定 ID 前缀（见契约 §10.4）。 */
+export type VoiceProfileId = `vp_${string}`;
+export type AudioCueId = `cue_${string}`;
+export type ProductionRefId = `aref_${string}`;
+/** 输入指纹：稳定序列化后的 sha256 hex（§11.5.3）。 */
+export type InputFingerprint = string;
+
+/** ProjectBrief.visualMode（§13.1 / §13.4 Profile 表）。 */
+export type VisualMode = "local_short" | "external_drama" | "hybrid";
+/** ProjectBrief.audioMode（§13.1；separate_track 为 §11.5.1 同义别名，规整后归一）。 */
+export type AudioMode = "separate_dialogue_track" | "embedded";
+/** AudioCue.type（§13.5）。 */
+export type AudioCueType = "dialogue" | "narration" | "sfx" | "ambience" | "music";
+/** AudioCue.status（§13.5，最小已证集）。 */
+export type AudioCueStatus = "draft" | "approved";
+/** 生产引用角色（§11.5.2）。 */
+export type ProductionRefRole = "character" | "scene";
+/** StaleStatus（§11.5.3）：派生状态，不等于删除或失败。 */
+export type StaleStatus = "fresh" | "stale";
+
+export type DeliverySpec = {
+    /** 交付容器 / 编码，如 h264-aac-mp4。 */
+    video: string;
+    subtitles: string[];
+    cover: boolean;
+};
+
+export type BudgetSpec = {
+    maxJobs: number;
+    maxExternalCredits: number;
+};
+
+export type RightsEntry = {
+    scope: string;
+    status: string;
+};
+
+/** 全项目制作规格（§13.1）：Project 创建时保存，后续 WorkflowRun 只引用并快照。 */
+export type ProjectBrief = {
+    market: string;
+    languages: string[];
+    platformProfiles: string[];
+    episodeCount: number;
+    episodeDurationSec: number;
+    visualMode: VisualMode;
+    audioMode: AudioMode;
+    delivery: DeliverySpec;
+    budget: BudgetSpec;
+    rights: RightsEntry[];
+    version: number;
+};
+
+/** 角色音色锚点（§11.5.1）。 */
+export type VoiceProfile = {
+    id: VoiceProfileId;
+    characterId: string;
+    language: string;
+    speaker: string;
+    design: string;
+    referenceArtifactId: ArtifactId | null;
+    version: number;
+};
+
+/** 声音 Cue（§13.5）。 */
+export type AudioCue = {
+    id: AudioCueId;
+    /** 镜头归属；非镜头级 Cue（如 BGM）为空串。 */
+    shotId: ShotId | "";
+    type: AudioCueType;
+    startSec: number;
+    endSec: number;
+    text: string;
+    characterId: string | null;
+    voiceProfileId: VoiceProfileId | null;
+    artifactId: ArtifactId | null;
+    status: AudioCueStatus;
+};
+
+/** 生产引用元数据（§11.5.2）：views = 三视图 / 视角，confirmed = 人工确认门禁；其余字段开放。 */
+export type ProductionRefMetadata = {
+    views: string[];
+    confirmed: boolean;
+    [key: string]: unknown;
+};
+
+/** 角色生产引用（§11.5.2）。 */
+export type CharacterRef = {
+    id: ProductionRefId;
+    role: "character";
+    bindingId: string;
+    artifactIds: ArtifactId[];
+    selectedArtifactId: ArtifactId | null;
+    metadata: ProductionRefMetadata;
+};
+
+/** 场景生产引用（§11.5.2）。 */
+export type SceneRef = {
+    id: ProductionRefId;
+    role: "scene";
+    bindingId: string;
+    artifactIds: ArtifactId[];
+    selectedArtifactId: ArtifactId | null;
+    metadata: ProductionRefMetadata;
+};
+
+/** 焦点（§11.5.2）。 */
+export type ShotCameraFocus = {
+    from: string;
+    to: string;
+    atSec: number | null;
+};
+
+/** 运镜（§11.5.2）。 */
+export type ShotCameraMovement = {
+    type: string;
+    direction: string;
+    speed: string;
+    stabilization: string;
+};
+
+/** 结构化机位（§11.5.2）；旧 `storyboard.camera` 长字符串可解析为该结构。 */
+export type ShotCamera = {
+    position: string;
+    height: string;
+    angle: string;
+    lens: string;
+    aperture: string;
+    focus: ShotCameraFocus | null;
+    movement: ShotCameraMovement | null;
+};
+
+/** 全链路运行记录（§13.9）。 */
+export type Provenance = {
+    projectId: ProjectId | "";
+    workflowRunId: string;
+    inputRevisions: Record<string, string>;
+    toolSnapshot: {
+        toolId: string;
+        providerId: string;
+        model: string;
+    };
+    deviceId: string | null;
+    costEstimate: {
+        localGpuSec: number;
+        externalCredits: number;
+    };
+    startedAt: string | null;
+};
+
+/** 输入 revision 引用（§11.5.3）。 */
+export type RevisionRef = {
+    type: string;
+    id: string;
+    revision: number;
+};

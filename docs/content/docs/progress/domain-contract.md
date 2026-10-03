@@ -448,3 +448,135 @@
 **子步骤产物**：每步完成后落到 `run.stages.<stageId>.steps.<stepId>.output`（随 `run.json` 落盘、重载可重建、resume 时复用已 done 的前步）。整个阶段的合并产物仍在 `stage.output`。
 
 **向后兼容**：只读旧字段的前端不受影响；`steps` 为纯追加字段，缺失即表示该阶段不是多步阶段。
+
+---
+
+## 10. 生产对象契约（2026-10-03 追加冻结，只增不改）
+
+> 本节为**追加**冻结：§1–§9 的实体字段与语义一字不动。新增的是 `development-plan.md` §11.5.1–§11.5.3、§13.1、§13.5、§13.9 审计出的生产对象。
+> 落点：类型 `web/src/types/domain.ts`（文件末段）；枚举 `canvas-server/src/contracts.js`（文件末段）；规整/校验纯函数 `canvas-server/src/production-contracts.js`；单测 `canvas-server/test/contracts-production.test.mjs`。
+> **本波只落地契约、不接线流水线**：`production-contracts.js` 不被 `index.js` / `pipeline.js` 引用，现有实体行为逐字不变。
+
+### 10.1 ProjectBrief（§13.1 立项与制作规格）
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `market` | `string` | 是 | 目标市场 |
+| `languages` | `string[]` | 是 | 语言列表（如 `zh-CN` / `en-US`） |
+| `platformProfiles` | `string[]` | 是 | 发行平台规格（如 `vertical-short-drama-9x16`） |
+| `episodeCount` | `number` | 是 | 目标集数（正数） |
+| `episodeDurationSec` | `number` | 是 | 单集时长（秒，正数） |
+| `visualMode` | `local_short / external_drama / hybrid` | 是 | 生产 Profile（§13.4 表） |
+| `audioMode` | `separate_dialogue_track / embedded` | 是 | 音频策略 |
+| `delivery` | `{ video, subtitles[], cover }` | 是 | 交付容器/编码、字幕格式、是否出封面 |
+| `budget` | `{ maxJobs, maxExternalCredits }` | 是 | 任务数/外部额度上限（非负数） |
+| `rights` | `{ scope, status }[]` | 是 | 素材授权记录；`status` 至少含 `to_review` |
+| `version` | `number` | 是 | 规格版本 |
+
+**规整**：`normalizeProjectBrief(input) → { value, warnings }`；缺字段回落安全默认并记 `defaulted`，非法枚举降级并记 `degraded`。
+
+### 10.2 VoiceProfile（§11.5.1）/ AudioCue（§13.5）
+
+**VoiceProfile**（角色音色锚点）
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `id` | `vp_…` | 是 | 稳定主键 |
+| `characterId` | `string` | 是 | 绑定角色 |
+| `language` | `string` | 是 | 默认 `zh-CN` |
+| `speaker` | `string` | 是 | TTS speaker / 音色名 |
+| `design` | `string` | 是 | 音色设计描述 |
+| `referenceArtifactId` | `string \| null` | 是 | 参考音频 Artifact 引用 |
+| `version` | `number` | 是 | 版本（≥1） |
+
+**AudioCue**（声音 Cue）
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `id` | `cue_…` | 是 | 稳定主键 |
+| `shotId` | `sh_… \| ""` | 是 | 镜头归属；非镜头级 Cue（如 BGM）为空串 |
+| `type` | `dialogue / narration / sfx / ambience / music` | 是 | **缺失或非法即拒** |
+| `startSec` | `number` | 是 | 起始秒（≥0） |
+| `endSec` | `number` | 是 | 结束秒；缺省对齐 `startSec`；`< startSec` 即拒 |
+| `text` | `string` | 是 | 台词/旁白文本（非对白可为空） |
+| `characterId` | `string \| null` | 是 | 说话角色 |
+| `voiceProfileId` | `vp_… \| null` | 是 | 采用的音色 |
+| `artifactId` | `string \| null` | 是 | 音频产物引用（引用而非复制，D2） |
+| `status` | `draft / approved` | 是 | 默认 `draft` |
+
+### 10.3 CharacterRef / SceneRef / ShotCamera（§11.5.2）
+
+**CharacterRef / SceneRef**（角色/场景生产引用）
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `id` | `aref_…` | 是 | 稳定主键 |
+| `role` | `character \| scene` | 是 | CharacterRef 固定 `character`，SceneRef 固定 `scene`；不符即拒 |
+| `bindingId` | `string` | 是 | 绑定的角色/场景 id（一致性锚点） |
+| `artifactIds` | `string[]` | 是 | 三视图/母版/特写等候选产物 |
+| `selectedArtifactId` | `string \| null` | 是 | 当前采用；**必须落在 `artifactIds` 内**，否则拒 |
+| `metadata` | `{ views: string[], confirmed: boolean, ...开放 }` | 是 | `views` = 三视图/视角；`confirmed` = 人工确认门禁 |
+
+**ShotCamera**（结构化机位）
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `position` | `string` | 是 | 机位（如 `subject-front-right`）；空 = 未声明 |
+| `height` | `string` | 是 | 高度/景别（如 `chest`） |
+| `angle` | `string` | 是 | 角度（如 `15deg-up`） |
+| `lens` | `string` | 是 | 焦段（如 `50mm`） |
+| `aperture` | `string` | 是 | 光圈（如 `f2.8`） |
+| `focus` | `{ from, to, atSec: number \| null } \| null` | 是 | 焦点转移 |
+| `movement` | `{ type, direction, speed, stabilization } \| null` | 是 | 运镜 |
+
+**旧 `camera` 兼容解析**：`parseLegacyCamera(raw) → { camera: ShotCamera \| null, reason: string \| null }`。识别焦段（`50mm`）、光圈（`f2.8`）、机位/角度/景别关键词、运镜关键词；**识别不出任何一项时返回 `camera: null` + `reason`，绝不抛异常**（§11.5.2：旧字段可继续读取，新写入才生成本结构）。
+
+### 10.4 稳定 ID 前缀（追加）
+
+| 实体 | 前缀 | 常量落点 |
+| --- | --- | --- |
+| VoiceProfile | `vp_` | `contracts.js` `PRODUCTION_ID_PREFIX.voiceProfile` |
+| AudioCue | `cue_` | `PRODUCTION_ID_PREFIX.audioCue` |
+| CharacterRef / SceneRef | `aref_` | `PRODUCTION_ID_PREFIX.productionRef` |
+
+### 10.5 Provenance / RevisionRef / InputFingerprint / StaleStatus（§13.9、§11.5.3）
+
+**Provenance**（全链路运行记录）
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `projectId` | `prj_… \| ""` | 是 | 归属项目 |
+| `workflowRunId` | `string` | 是 | 项目级工作流运行 |
+| `inputRevisions` | `Record<string, string>` | 是 | 如 `{ script: "rev_12", design: "rev_8", audio: "rev_3" }` |
+| `toolSnapshot` | `{ toolId, providerId, model }` | 是 | 执行的工具快照 |
+| `deviceId` | `string \| null` | 是 | 执行设备 |
+| `costEstimate` | `{ localGpuSec, externalCredits }` | 是 | 成本估算（非负数） |
+| `startedAt` | `string \| null` | 是 | ISO 8601 起始时间 |
+
+**RevisionRef**（输入 revision 引用）
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `type` | `string` | 是 | 引用类别（如 `assetRef` / `script` / `design` / `audio`） |
+| `id` | `string` | 是 | 被引用实体 id |
+| `revision` | `number` | 是 | 版本（≥1） |
+
+**InputFingerprint**：`string`（稳定序列化后的 sha256 hex）。纯函数 `computeInputFingerprint(input)`（对象 key 排序、数组保序，书写顺序无关）；`isReusable(output, input)` = `output.inputFingerprint === computeInputFingerprint(input) && output.status === "done" && output.selectedArtifactId` 三者同时成立（§11.5.3）。
+
+**StaleStatus**：`fresh | stale`。`stale` 是**派生状态，不等于删除，也不等于失败**；未知值降级为 `fresh` 并告警。
+
+### 10.6 规整 / 校验统一语义
+
+- `normalizeX(input)` 统一返回 `{ value, warnings }`；`warnings` 条目为 `{ field, code: "defaulted" | "degraded", got?, message? }`。
+- **结构性非法**（缺稳定身份 `id`、枚举无安全默认的 `AudioCue.type`、时间区间倒挂、`selectedArtifactId` 不在候选内、`role` 不符）→ **抛错**：`status = 400`、`code = "CONTRACT_INVALID"`、`field` 指明字段；路由层可直接回 400。**「缺字段」不抛，一律回落安全默认**。
+
+### 10.7 文档分歧登记（按本节冻结晶执行）
+
+1. **`ProjectBrief.visualMode`**：§13.1 样例写 `external_video_api`，但同节注释与 §13.4 Profile 表给出的取值域是 `local_short | external_drama | hybrid`。**以三值域为准**，`external_video_api` 视为非法值降级到 `local_short`。
+2. **`ProjectBrief.audioMode`**：§13.1 用 `separate_dialogue_track`，而 §11.5.1 的 `productionAudio.dialogue.mode` 用 `separate_track`。**同一概念两种拼写**，本节以 `separate_dialogue_track` 为权威，`separate_track` 作为同义别名在规整时归一。
+3. **`AudioCue.status`**：文档只出现 `approved`。本节只冻结 `draft | approved`（`draft` 为安全默认）；其余状态待后续工作包回填。
+4. **`ProjectBrief` 未并入 `Project` 字段**：§13.1 要求「Project 创建时保存」，但落地属后续工作包。本节只冻结 `ProjectBrief` 自身形状，**本波不给 `Project` 增字段**（不改现有实体语义）。
+
+### 10.8 边界
+
+不接线、不落盘、不建路由。`TimelineRevision`（§13.6）与影响分析 / `markStale`（§11.5.3 的 `impact.plan`）由并行工作包处理；本节只冻结 `RevisionRef` / `InputFingerprint` / `StaleStatus` 这三个数据形状。
