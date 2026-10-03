@@ -195,11 +195,12 @@ export default function ProjectOverviewPage() {
 }
 
 /** 把规划参数摊成 Descriptions items；空值显示「未设置」。 */
-function planItems(plan: { genre: string; tone: string; ratio: string; episodeDurationSec: number; dramaMode: string; audience: string; episodeCount: number }, t: (key: string) => string) {
+function planItems(plan: { genre: string; tone: string; visualStyle: string; ratio: string; episodeDurationSec: number; dramaMode: string; audience: string; episodeCount: number }, t: (key: string) => string) {
     const value = (input: string | number) => (input === "" || input === undefined || input === null ? t("projects.detail.styleAnchorEmpty") : String(input));
     return [
         { key: "genre", label: t("projects.form.genre"), children: value(plan.genre) },
         { key: "tone", label: t("projects.form.tone"), children: value(plan.tone) },
+        { key: "visualStyle", label: t("projects.form.visualStyle"), children: value(plan.visualStyle) },
         { key: "ratio", label: t("projects.form.ratio"), children: value(plan.ratio) },
         { key: "dramaMode", label: t("projects.form.dramaMode"), children: value(plan.dramaMode) },
         { key: "episodeDurationSec", label: t("projects.form.episodeDurationSec"), children: value(plan.episodeDurationSec) },

@@ -21,7 +21,7 @@ const ULID_PATTERN = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 const EPISODE_ID = new RegExp(`^${ID_PREFIX.episode}\\d{4}$`);
 
 /** Plan 必填字段默认值（D8：项目级默认）。 */
-const PLAN_DEFAULTS = Object.freeze({ genre: "", tone: "", ratio: "9:16", episodeDurationSec: 60, dramaMode: "短剧向", audience: "", episodeCount: 1 });
+const PLAN_DEFAULTS = Object.freeze({ genre: "", tone: "", visualStyle: "", ratio: "9:16", episodeDurationSec: 60, dramaMode: "短剧向", audience: "", episodeCount: 1 });
 
 function nowIso() {
     return new Date().toISOString();

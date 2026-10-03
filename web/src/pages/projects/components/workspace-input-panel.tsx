@@ -15,7 +15,7 @@ export function WorkspaceInputPanel({ context, workspace, stageStatus }: { conte
     const { t } = useTranslation();
     const { project, episodes } = context;
     const { plan } = project;
-    const planText = [plan.genre, plan.tone, plan.ratio, plan.episodeDurationSec ? t("common.durationSeconds", { seconds: plan.episodeDurationSec }) : ""].filter(Boolean).join(" · ");
+    const planText = [plan.genre, plan.tone, plan.visualStyle, plan.ratio, plan.episodeDurationSec ? t("common.durationSeconds", { seconds: plan.episodeDurationSec }) : ""].filter(Boolean).join(" · ");
     const checklistDone = project.checklist.filter((item) => item.done).length;
 
     return (

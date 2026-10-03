@@ -196,6 +196,24 @@ test("批量 create：200 个 id 不重复且形态正确", (t) => {
     assert.equal(new Set(Array.from({ length: 200 }, () => ulid())).size, 200);
 });
 
+test("create/update：visualStyle 默认补齐且可写入", (t) => {
+    const env = makeEnv();
+    t.after(env.cleanup);
+
+    const project = env.projects.create({ title: "像素剧", plan: { visualStyle: "像素风", genre: "科幻" } });
+    const onDisk = readProject(env.root, project.id);
+    assert.equal(onDisk.plan.visualStyle, "像素风");
+    assert.equal(onDisk.plan.genre, "科幻");
+
+    // 未给 visualStyle 时按 Plan 默认空串补齐
+    const plain = env.projects.create({ title: "普通剧" });
+    assert.equal(readProject(env.root, plain.id).plan.visualStyle, "");
+
+    const patched = env.projects.update(project.id, { plan: { visualStyle: "二维动画" } });
+    assert.equal(patched.plan.visualStyle, "二维动画");
+    assert.equal(patched.plan.genre, "科幻", "逐字段覆盖 plan 不应清掉其它字段");
+});
+
 test("index 集成：/api/projects 系列端点（真实 HTTP）", async (t) => {
     const root = mkdtempSync(join(tmpdir(), "canvas-projects-index-"));
     const skillsDir = join(root, "skills");

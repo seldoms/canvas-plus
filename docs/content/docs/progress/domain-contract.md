@@ -87,9 +87,10 @@
 | --- | --- | --- | --- |
 | `genre` | `string` | 是 | 题材 |
 | `tone` | `string` | 是 | 剧作基调 |
+| `visualStyle` | `string` | 是 | 视觉呈现形式（写实真人 / 二维动画 / 像素风 / 俳偶戏…）；可直接进提示词的短语 |
 | `ratio` | `string` | 是 | 画幅比例（如 `9:16`） |
 | `episodeDurationSec` | `number` | 是 | 单集时长（秒） |
-| `dramaMode` | `string` | 是 | 短剧向 / 微电影向等取向；枚举值 P0-a 定 |
+| `dramaMode` | `string` | 是 | 叙事取向：`短剧向` / `微电影向` / `单元剧` / `连续剧`；预置可选、也支持自定义 |
 | `audience` | `string` | 是 | 目标受众 |
 | `episodeCount` | `number` | 是 | 目标集数 |
 

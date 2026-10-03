@@ -63,6 +63,8 @@ export type StageGate = string;
 export type Plan = {
     genre: string;
     tone: string;
+    /** 视觉呈现形式（写实真人/二维动画/像素风…），可直接进提示词的短语。 */
+    visualStyle: string;
     ratio: string;
     episodeDurationSec: number;
     dramaMode: string;
