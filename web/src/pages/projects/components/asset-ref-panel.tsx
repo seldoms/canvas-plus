@@ -1,32 +1,34 @@
-import { Alert, App, Button, Card, Empty, Input, Select, Spin, Tag, Typography } from "antd";
-import { Plus } from "lucide-react";
+import { App, Button, Card, Empty, Image, Input, Select, Spin, Tag, Typography } from "antd";
+import { ImageOff, Plus } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 
+import { cn } from "@/lib/utils";
+import { resolveGatewayUrl } from "@/services/api/gateway";
 import type { AssetRefCreateInput, AssetRefPatchInput } from "@/services/api/projects";
 import type { AssetRef } from "@/types/domain";
 
-import { assetRefScope, buildAssetRefPatch, groupAssetRefs, shortId } from "../asset-ref-model";
+import { assetRefAdopted, assetRefCover, assetRefScope, bindingName, buildAssetRefPatch, groupAssetRefs, shortId } from "../asset-ref-model";
 import { AddAssetRefModal } from "./add-asset-ref-modal";
 
 /**
- * 资产工作区看板：按 role 分组列出 AssetRef，可登记新引用、改 bindingId、在多候选间切换采用的 artifact。
- * 数据与写回动作来自 useProjectAssets，本组件只做编排与渲染。
+ * 资产工作区看板：按 role 分组列出**项目 AssetRef**，每条带产物缩略图（点开站内弹窗预览）、绑定名、候选数与采用状态，
+ * 可登记新引用、改 bindingId、在多候选间切换采用的 artifact。
+ * 数据与写回动作来自 useProjectAssets（服务端上下文为唯一数据源），本组件只做编排与渲染。
  */
 export function AssetRefPanel({
     refs,
+    script,
     loading,
-    error,
-    onRetry,
     onPatch,
     onAdd,
     creating,
     savingRefId,
 }: {
     refs: AssetRef[];
+    /** 项目剧本（用于把 bindingId 解析成人读名字）；形状未冻结，按 unknown 处理。 */
+    script: unknown;
     loading: boolean;
-    error: string;
-    onRetry: () => void;
     onPatch: (refId: string, patch: AssetRefPatchInput) => Promise<unknown>;
     onAdd: (input: AssetRefCreateInput) => Promise<unknown>;
     creating: boolean;
@@ -48,22 +50,10 @@ export function AssetRefPanel({
             </div>
             <Card size="small">
                 <div className="max-h-[64vh] overflow-y-auto pr-1">
-                    {loading ? (
+                    {loading && !refs.length ? (
                         <div className="flex justify-center py-16">
                             <Spin />
                         </div>
-                    ) : error ? (
-                        <Alert
-                            type="error"
-                            showIcon
-                            message={t("projects.assetsView.loadFailed")}
-                            description={error}
-                            action={
-                                <Button size="small" onClick={onRetry}>
-                                    {t("projects.assetsView.retry")}
-                                </Button>
-                            }
-                        />
                     ) : groups.length ? (
                         groups.map((group) => (
                             <div key={group.role} className="mb-5 last:mb-0">
@@ -71,11 +61,14 @@ export function AssetRefPanel({
                                     <span className="text-sm font-medium">{t(`projects.assetsView.roles.${group.role}`)}</span>
                                     <Tag className="!mr-0">{group.refs.length}</Tag>
                                 </div>
-                                <div className="space-y-1">
-                                    {group.refs.map((ref) => (
-                                        <AssetRefRow key={ref.id} refItem={ref} saving={savingRefId === ref.id} onPatch={onPatch} />
-                                    ))}
-                                </div>
+                                {/* 同一类别（≈同一阶段）的缩略图共用一个预览组，弹窗里可左右切换。 */}
+                                <Image.PreviewGroup preview={{ closeIcon: false }}>
+                                    <div className="space-y-1.5">
+                                        {group.refs.map((ref) => (
+                                            <AssetRefRow key={ref.id} refItem={ref} script={script} saving={savingRefId === ref.id} onPatch={onPatch} />
+                                        ))}
+                                    </div>
+                                </Image.PreviewGroup>
                             </div>
                         ))
                     ) : (
@@ -88,23 +81,26 @@ export function AssetRefPanel({
     );
 }
 
-/** 单条引用：作用范围 + 绑定对象（就地改）+ 采用的候选产物（切换）。 */
-function AssetRefRow({ refItem, saving, onPatch }: { refItem: AssetRef; saving: boolean; onPatch: (refId: string, patch: AssetRefPatchInput) => Promise<unknown> }) {
+/** 单条资产：缩略图 + role 标签 + 绑定名 + 采用状态 + 候选数 + 切换采用 / 改绑定。 */
+function AssetRefRow({ refItem, script, saving, onPatch }: { refItem: AssetRef; script: unknown; saving: boolean; onPatch: (refId: string, patch: AssetRefPatchInput) => Promise<unknown> }) {
     const { t } = useTranslation();
     const { message } = App.useApp();
     const [bindingId, setBindingId] = useState(refItem.bindingId);
-    const [selected, setSelected] = useState(refItem.selectedArtifactId ?? "");
+    const [editing, setEditing] = useState(false);
 
     // 服务端返回新值（成功写回）时同步本地草稿。
     useEffect(() => setBindingId(refItem.bindingId), [refItem.bindingId]);
-    useEffect(() => setSelected(refItem.selectedArtifactId ?? ""), [refItem.selectedArtifactId]);
 
+    const cover = assetRefCover(refItem);
+    const name = bindingName(refItem, script);
+    const adopted = assetRefAdopted(refItem);
     const bindingDirty = Boolean(bindingId.trim()) && bindingId.trim() !== refItem.bindingId;
     const artifactOptions = refItem.artifactIds.map((id) => ({ value: id, label: shortId(id) }));
 
     const saveBinding = async () => {
         try {
             await onPatch(refItem.id, buildAssetRefPatch(refItem, { bindingId, selectedArtifactId: refItem.selectedArtifactId ?? null }));
+            setEditing(false);
             message.success(t("projects.assetsView.bindSaved"));
         } catch (patchError) {
             // 失败保留用户输入，不回退 bindingId 输入框。
@@ -112,44 +108,83 @@ function AssetRefRow({ refItem, saving, onPatch }: { refItem: AssetRef; saving: 
         }
     };
 
-    const changeSelected = async (value: string) => {
-        const previous = refItem.selectedArtifactId ?? "";
-        setSelected(value);
+    const changeSelected = async (value: string | null) => {
         try {
             await onPatch(refItem.id, { selectedArtifactId: value || null });
             message.success(t("projects.assetsView.selectSaved"));
         } catch (patchError) {
-            setSelected(previous); // 采用关系未落库，选择回到原值。
             message.error(t("projects.assetsView.updateFailed", { message: patchError instanceof Error ? patchError.message : String(patchError) }));
         }
     };
 
     return (
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-stone-200 px-3 py-2 dark:border-stone-800">
-            <Tag className="!mr-0 shrink-0">{t(`projects.assetsView.scope.${assetRefScope(refItem)}`)}</Tag>
-            <Input size="small" className="min-w-[160px] flex-1" value={bindingId} onChange={(event) => setBindingId(event.target.value)} onPressEnter={() => bindingDirty && void saveBinding()} placeholder={t("projects.assetsView.bindingPlaceholder")} />
-            <Button size="small" type="text" loading={saving} disabled={!bindingDirty} onClick={() => void saveBinding()}>
-                {t("projects.assetsView.saveBinding")}
-            </Button>
-            {refItem.artifactIds.length ? (
-                <Select
-                    size="small"
-                    className="min-w-[150px]"
-                    value={selected || undefined}
-                    placeholder={t("projects.assetsView.selectedArtifact")}
-                    options={artifactOptions}
-                    allowClear
-                    loading={saving}
-                    onChange={(value) => void changeSelected(value ?? "")}
+        <div className="flex items-start gap-3 rounded-lg border border-stone-200 px-3 py-2 dark:border-stone-800">
+            {cover ? (
+                <Image
+                    src={resolveGatewayUrl(cover)}
+                    alt={name}
+                    title={name}
+                    loading="lazy"
+                    rootClassName="block size-24 shrink-0 cursor-pointer overflow-hidden rounded border border-stone-200/80 bg-black/5 dark:border-stone-700/80 dark:bg-white/5"
+                    className="size-24 object-cover"
+                    preview={{ cover: false, closeIcon: false }}
                 />
             ) : (
-                <Typography.Text type="secondary" className="!text-xs">
-                    {t("projects.assetsView.noArtifact")}
-                </Typography.Text>
+                <span
+                    className="flex size-24 shrink-0 items-center justify-center rounded border border-dashed border-stone-300 text-stone-400 dark:border-stone-700 dark:text-stone-500"
+                    title={t("projects.assetsView.noArtifact")}
+                >
+                    <ImageOff className="size-5" />
+                </span>
             )}
-            <Typography.Text type="secondary" className="!text-xs">
-                {t("projects.assetsView.artifactCount", { count: refItem.artifactIds.length })}
-            </Typography.Text>
+
+            <div className="min-w-0 flex-1 py-0.5">
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <Tag className="!mr-0 shrink-0">{t(`projects.assetsView.roles.${refItem.role}`)}</Tag>
+                    <span className="truncate text-sm font-medium text-stone-950 dark:text-stone-100" title={refItem.bindingId}>
+                        {name}
+                    </span>
+                    <Tag className={cn("!mr-0 shrink-0", !adopted && "!bg-transparent !text-stone-400 dark:!text-stone-500")} color={adopted ? "blue" : undefined}>
+                        {adopted ? t("projects.assetsView.adopted") : t("projects.assetsView.notAdopted")}
+                    </Tag>
+                    <span className="text-xs text-stone-400 dark:text-stone-500">{t(`projects.assetsView.scope.${assetRefScope(refItem)}`)}</span>
+                </div>
+
+                <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1.5">
+                    <span className="text-xs text-stone-500 dark:text-stone-400">{t("projects.assetsView.artifactCount", { count: refItem.artifactIds.length })}</span>
+                    {refItem.artifactIds.length ? (
+                        <Select
+                            size="small"
+                            className="min-w-[180px]"
+                            value={refItem.selectedArtifactId ?? undefined}
+                            placeholder={t("projects.assetsView.selectedArtifact")}
+                            options={artifactOptions}
+                            allowClear
+                            loading={saving}
+                            onChange={(value) => void changeSelected(value ?? null)}
+                        />
+                    ) : null}
+                    {editing ? (
+                        <>
+                            <Input
+                                size="small"
+                                className="min-w-[160px] max-w-xs"
+                                value={bindingId}
+                                onChange={(event) => setBindingId(event.target.value)}
+                                onPressEnter={() => bindingDirty && void saveBinding()}
+                                placeholder={t("projects.assetsView.bindingPlaceholder")}
+                            />
+                            <Button size="small" type="text" loading={saving} disabled={!bindingDirty} onClick={() => void saveBinding()}>
+                                {t("projects.assetsView.saveBinding")}
+                            </Button>
+                        </>
+                    ) : (
+                        <Button size="small" type="text" className="!h-auto !px-0 !text-xs" onClick={() => setEditing(true)}>
+                            {t("projects.assetsView.editBinding")}
+                        </Button>
+                    )}
+                </div>
+            </div>
         </div>
     );
 }
