@@ -17,8 +17,16 @@
 
 | # | 阶段 | 现象 | 一手证据 | 严重度 | 影响面 | 状态 |
 | --- | --- | --- | --- | --- | --- | --- |
-| — | — | 待跑 | — | — | — | — |
-
+| 1 | 01 剧本 | `episodes: []` 为空，未按 `plan.episodeCount=2` 建立两集结构，导致后面全程单集 | `GET /api/pipeline/runs/run-murnwa81-k27eq` → `stages.script.output.episodes = []`（已实测） | 严重 | 技能与提示词 | 待讨论 |
+| 2 | 02 分镜 | 只产出 1 场 4 镜、每镜 4 秒（合计 16 秒），目标 2 集×30 秒=60 秒，**时长差 3.75 倍** | `stages.storyboard.output.shots` 长度 4，`durationSec` 合计 16（已实测） | 严重 | 技能与提示词 | 待讨论 |
+| 3 | 01/02 传导 | `plan` 的 `episodeCount`/`episodeDurationSec` 未进入剧本/分镜提示词，LLM 无从得知"分两集、每集 30 秒" | 同 1、2；`plan` 回填后各阶段产物无任何集/时长约束痕迹 | 严重 | 技能与提示词 | 待讨论 |
+| 4 | 02 分镜 | 角色双形态未区分：第 3 镜 prompt 同时写"小猫白色"与"变成大姐姐后"，生成时必然打架 | `shots[2].prompt` 原文："…小猫白色，变成大姐姐后，…" | 一般 | 技能与提示词 | 待讨论 |
+| 5 | 接口 | `GET /progress` 只报"当前/最后一个阶段"，无全阶段汇总，前端要额外拉 `/runs/:id` | 响应原文 `{"progress":{"stage":"script","phase":"done",...},"inflight":false}` | 改进 | 后端 | 待讨论 |
+| 6 | 接口 | 更新项目必须用 `PATCH`，但无 API 文档/发现入口，调用方只能读源码猜（我第一把用 POST 得到 404） | `POST /api/projects/:id` → 404；改 `PATCH` → 200（已实测） | 改进 | 后端 | 待讨论 |
+| 7 | 03 资产 | **阻断**：LLM 请求打到已停用的 `127.0.0.1:1234`（LM Studio）返回 400，阶段直接 error、产物 null | `stages.design.error` 原文：`LLM 请求失败：http://127.0.0.1:1234/v1/chat/completions 返回 400 No models loaded`；`config.json` 的 `llm.fallbacks=["http://127.0.0.1:1234","http://127.0.0.1:8080"]` 两个都是死服务 | 阻断 | 后端/配置 | 已修复待验证 |
+| 8 | 03 资产 | **阻断**：LLM 响应头超时 `UND_ERR_HEADERS_TIMEOUT`。根因不是"LLM 慢"，而是 `llm.defaultModel=qwen2.5:latest` **与 139 显存常驻的 `qwen3.8:27b` 反复互相挤占**（16G 显存装不下两个），每次调用先卸载再加载 | `stages.design.error` 原文；实测对照：兼容层调常驻模型 **4.4s**、原生 **1.9s**（均快）→ 排除 API 层慢 | 阻断 | 后端/配置 | 已修复待验证 |
+| 9 | 03 资产 | 同一模型下 OpenAI 兼容层比 ollama 原生 API 慢约 **2.3 倍**（4.4s vs 1.9s）；阶段技能要求的 `think:false` 兼容层也不认 | 本轮实测数据（见 #8 证据） | 改进 | 后端 | 待讨论 |
+| 10 | 05 片段/成片 | `stage.status=done` 与 `stage.output.assembly.status=queued` 语义冲突：片段都生成完了、阶段却显示 done，但成片根本没合成（无 url）。前端不得不自己加"done 且有 url 才算成片"的守卫 | 前端线在 `run-muprxois-wvmqq` 上实测发现；`pipeline.js` 的 `executeAssemble` 回写位置 | 一般 | 后端/契约 | 待讨论 |
 ### 本轮会诊结论
 
 （跑完由多角色评审汇总，含整改单与优先级）
