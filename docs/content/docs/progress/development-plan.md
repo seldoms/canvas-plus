@@ -534,16 +534,16 @@ ReviewNote { id, scope: project|episode|scene|shot, targetId?, stage,
 | --- | --- | --- |
 | **P0-0** 冻结领域契约 | ✅ | `canvas-server/src/contracts.js`(4.6KB)、`web/src/types/domain.ts`(9.5KB)、`docs/content/docs/progress/domain-contract.md`(29.7KB)；阶段 ID 权威命名 `plan/script/storyboard/design/keyframe/assembly/post` 冻结；D1–D12 决策全部登记 |
 | **P0-a** Project 内核 | 🟡 | `canvas-server/src/projects.js`(15.1KB) 把项目落盘到 `data/projects/<id>/`（`prj_` ULID + 原子写 + 乐观版本）；网关 `/api/projects` 列表/创建/详情/上下文/归档；前端「我的项目」+ 6 个工作区骨架页（带阶段门禁）。**缺口（2026-10-03 复核更正）**：会诊判定的「`Project.runIds[]` **全仓**无写入点」**只对后端成立** —— 回填实际由**前端**做：项目工作区内建 run 后 `attachProjectRun` 调 `PATCH /api/projects/:id`（`web/src/pages/projects/hooks/use-project-run.ts:106`，提交 `004f30a` 落地，失败还有 `linkFailed` 提示）。但回填**只覆盖这一条路径**：实测 `GET /api/projects/prj_01M3ZK27NYPXRPBVRAT0SSJ2B5/context` → `runIds = ["run-murnwa81-k27eq"]`（**有值** ✅），而**从流水线页建的 run 不在其中**（出片 run `run-murpt28o-46f5q` 的 `options.projectId` 指向本项目、却不在 `runIds[]` 里）。服务端侧仍无「建 run 时按 `options.projectId` 幂等追加」的逻辑（会诊建议的 `POST /api/projects/:id/runs` 未实现） |
-| **P0-b** Job→Artifact→Slot 回写断链 | ✅ | 网关订阅任务终态并重放 `jobs.json` 历史终态；`registerArtifacts`(pipeline.js:942) 幂等回写 `(projectId,runId,artifactUrl)`；阶段状态以任务终态为准（`done/running/partial/error/canceled`）。**活证据**：`run-murpt28o-46f5q` keyframe `artifacts=29`、assembly `artifacts=9`（此前恒为 0） |
+| **P0-b** Job→Artifact→Slot 回写断链 | ✅ | 网关订阅任务终态并重放 `jobs.json` 历史终态；`registerArtifacts`(pipeline.js:942) 幂等回写 `(projectId,runId,artifactUrl)`；阶段状态以任务终态为准（`done/running/partial/error/canceled`）。**活证据**：`run-murpt28o-46f5q` 复跑至终态 —— keyframe `artifacts=29`、assembly `artifacts=10`（此前恒为 0），且每个 clip 都带 `candidates[]`/`selected`（活扣机制一并生效） |
 | **P0-c** run 可恢复 | 🟡 | 异步 run（`POST .../run` 立即 202）+ 轻量 `progress.json` + `GET /runs/:id/progress` + 取消贯通 LLM/Job + 断点续跑 + `run.estimate` 成本预估 + 启动收敛 `reconcileRunning()`。**缺口（复核更正）**：反向导航**已部分可用** —— `context.runIds` 已被 `workspace-gates.ts`（阶段门禁）、过程时间线、资源面板、项目总览共用，不再是空数组。残留两条：① 只覆盖「项目内建 run」路径，从流水线页建的 run 不回填（见 P0-a 更正）；② 多 run 时前端**只取 `runIds[0]`**（`workspace-gate-panel.tsx:40`、`use-project-timeline.ts:20`），第二个及以后的 run 在门禁与时间线里不可见 |
 | **P0-d** 资源调度与注册表 | ✅ | `canvas-server/src/registry.js`(12.4KB)：本地 GPU / CPU / 外部 API / LLM 四类独立队列；`canRun` 提交前能力路由（能力不匹配直接拒，不静默换设备）；`deviceLabel`/`maxConcurrency`。测试 `registry`(8) + `registry-wiring`(5) |
 | **P1-a** 项目产物图谱 | 🟡 | 生成型阶段产物自动登记 AssetRef（幂等去重）；项目工作区新增「过程时间线」，图片/视频缩略图 + 文本摘要 + 成片清单，阶段运行中 3s/8s 节流轮询。**缺口**：① 资产页只有 artifact id、无缩略图（会诊 M3）；② 「资产」页读前端本地 store，与项目 AssetRef **仍是两个数据源** |
 | **P1-b** 活扣与批量执行 | ✅ | `GenerationSlot.candidates[]` + 逐条 `regenerate` 端点（换模型只追加候选、保留历史）+ 模型别名（`alias` 字段，请求仍用原名）+ 横向候选交互 + 逐镜重试（默认 2 次） |
-| **P1-c** 六阶段方法论 + 阶段 0 规划 | 🟡 | 阶段 0 预置选项（题材/基调/动画片/像素风/布偶戏）+ `planSuggestion` 自动回填（仅字段仍占位且建议≠现值）；01 改三段式 `analyze→outline→script`（`progress.steps` 可见）；五个阶段技能接进方法论库并加「内容创作红线」；`normalizeEpisodes` 强制集数对齐 `plan.episodeCount`。**缺口**：**D1 时长档位跟模型（`24×秒+3`，仅 5/10/15s）未落**；**D3 关键帧单镜 ≥4 张未落（现配置 2，自动重生成未接）**——两处因产品负责人 2026-10-03 喊停改码而挂起，`pipeline.js` 已空出 |
-| **P1-d** Delivery Executor | ✅ | `canvas-server/src/delivery.js`(15.2KB)：片段 ffmpeg concat（`cut`）/ xfade（`fade`/`dissolve`/`slide`）+ 外部音轨 `amix` 混音 + 字幕烧入 + 抽封面 + 可复现拼接清单 + ffmpeg 日志；独立接口 `POST /runs/:id/steps/assembly/assemble`（片段未全成功 400、已成片默认复用）。测试 `delivery`(19) + `delivery-wiring`(8) |
+| **P1-c** 六阶段方法论 + 阶段 0 规划 | 🟡 | 阶段 0 预置选项（题材/基调/动画片/像素风/布偶戏）+ `planSuggestion` 自动回填（仅字段仍占位且建议≠现值）；01 改三段式 `analyze→outline→script`（`progress.steps` 可见）；五个阶段技能接进方法论库并加「内容创作红线」；`normalizeEpisodes` 强制集数对齐 `plan.episodeCount`。**缺口**：**D1 时长档位跟模型（`24×秒+3`，仅 5/10/15s）未落**；**D3 关键帧单镜 ≥4 张未落（现配置 2，自动重生成未接）**——两处因产品负责人 2026-10-03 喊停改码而挂起，`pipeline.js` 已空出。**另注（证据效力）**：集数/时长修复只有**单元测试**背书，**尚无带该代码的端到端复跑**——唯一一轮复跑 `run-murpt28o-46f5q` 的 `script` stage **没有 `steps` 字段**（三段式会写 `stage.steps.<id>.output`），证明它跑的是**三段式之前的旧代码**，其 `episodes: []`（而项目 `plan.episodeCount=2`）**不能**用作「修复未生效」的证据；要判定必须**新跑一轮** |
+| **P1-d** Delivery Executor | ✅ | `canvas-server/src/delivery.js`(15.2KB)：片段 ffmpeg concat（`cut`）/ xfade（`fade`/`dissolve`/`slide`）+ 外部音轨 `amix` 混音 + 字幕烧入 + 抽封面 + 可复现拼接清单 + ffmpeg 日志；独立接口 `POST /runs/:id/steps/assembly/assemble`（片段未全成功 400、已成片默认复用）。测试 `delivery`(19) + `delivery-wiring`(8)。**注**：本轮复跑因上游 6 镜 OOM 落 `partial`，**成片实际未合成**（这正是设计行为：片段不齐不许出片），执行体本身未被证伪 |
 | **P2** 项目复用与清理 | ⬜ | 未开始（跨集资产版本、引用计数/清理、离线导出、移除旧兼容层）|
 
-**一句话**：P0 五个包（契约/内核/回写/恢复/调度）与 P1 的活扣、交付两个包**主体已落地且有测试或活证据**；剩下三处**明确缺口**——① 项目↔run 双向绑定（`runIds[]` 从未写）；② D1/D3 两条产品硬约束未实现；③ 资产页与项目 AssetRef 双数据源。
+**一句话**：P0 五个包（契约/内核/回写/恢复/调度）与 P1 的活扣、交付两个包**主体已落地且有测试或活证据**；剩下三处**明确缺口**——① 多 run 只取 `runIds[0]` + 跨路径（流水线页建的 run）不回填（**注**：会诊原判「`runIds[]` 从未写」已失效，见 P0-a）；② D1/D3 两条产品硬约束未实现；③ 资产页与项目 AssetRef 双数据源。**此外端到端复跑只完成一轮且成片失败**，见 §11.4。
 
 ### 11.2 遇到哪些问题（按严重度分级，仅列**当前仍未解决**的）
 
@@ -555,19 +555,18 @@ ReviewNote { id, scope: project|episode|scene|shot, targetId?, stage,
 | --- | --- | --- |
 | 22 | **角色形象没有固定下来**（用户 2026-10-03 报） | 「角色一致性」只存在于**文字**：01 让模型输出 `characters[].appearance`，之后每镜把这段文字重复写进提示词。**没有定妆图/参考图锁脸、没有 seed 锁定、没有角色 ID 贯穿到生图**。而 H3 参考图生视频模板（`video_h3_ref2v_image`，一张参考图即可锁角色）**已经具备能力却没被接进来** |
 | 23 | **角色音频 / 音色没有固定下来**（用户 2026-10-03 报） | `voice` 字段同样只是**文本描述**（"音色、语速、口音"），**下游零消费**：无 TTS 接线、无音色库、无配音产物。`delivery.js` 有 `amix` 混音能力，但 `plan.audio` **靠外部手工传入**，流水线没有任何环节生产音频轨 |
-| — | **成片配乐与配音不一致** | 根因未定位（上一轮排查被新诉求打断）。与 #23 同源：音频轨既非流水线产出、也无对齐校验 |
+| 24 | **成片配乐与配音不一致** | 根因未定位（上一轮排查被新诉求打断）。与 #23 同源：音频轨既非流水线产出、也无对齐校验 |
 | 25 | **成片 6 镜显存 OOM**（复跑实测） | 复跑 run `run-murpt28o-46f5q` 的 assembly 落 **`partial`**：16 镜前 10 成功、`sh11`–`sh16` 全数 ComfyUI `SamplerCustomAdvanced` 报 **`VBAR OOM`**（147 的 16GB 显存；首次 43 分钟后 OOM、重试 78 秒再 OOM，**非偶发**）。ComfyUI 本身活着（0.38.2 / 16310MB） |
-| — | 关键帧 / 视频工作区显示 | 会诊发现 12 行空壳、29 张图不可见；本轮已补「过程时间线」，**但尚未复跑验证** |
+| 26 | **渠道注册表被前端全量覆盖 → 外部 LLM 全废**（实测复现） | 前端 `POST /api/llm/providers` 是**全量替换**写回。2026-10-03 实测：`data/llm-providers.json` 只剩死渠道「默认渠道 → `api.openai.com`（无 key）」，可用的 `deepseek` 被冲掉 → **这就是「画布生成文章疯狂弹认证」的根因**（`/api/llm/providers` 实测 `providers:[]` 式空转 → 生成必 401）；网关日志被「每 8s 一条死渠道告警」刷满。已手动恢复 deepseek 并重启（`/v1/models` 现 10 个含 `deepseek::*`），**根因未修**。方案：服务端网关路由表唯一写者 / 浏览器渠道表浏览器唯一写者，只按 name 显式 upsert，禁止全量替换 |
+| — | 关键帧 / 视频工作区显示 | 会诊发现 12 行空壳、29 张图不可见；本轮已补「过程时间线」（已提交 `78e390a`）。**后端产物已齐**（keyframe 29 / assembly 10），但**前端 UI 未目视验证**——需打开项目工作区确认时间线真能把 29 张图铺出来 |
 
 **🟡 严重级（能跑但结果错 / 数据不可靠）**
 
 | # | 问题 | 现状 |
 | --- | --- | --- |
 | — | **多 run 只认第一个 + 跨路径不回填** | `workspace-gate-panel.tsx:40` / `use-project-timeline.ts:20` 硬编码 `runIds[0]`；回填只做在「项目内建 run」路径（`use-project-run.ts:106`），从**流水线页**建的 run 不进 `runIds[]`（实测出片 run `run-murpt28o-46f5q` 即如此）。**注**：会诊原判「`runIds[]` 从未被写」**已失效**，实测 `context.runIds=["run-murnwa81-k27eq"]` 非空 |
-| — | 渠道注册表**双写者** | 前端 `POST /api/llm/providers` **整车覆盖**写回。**2026-10-03 实测复现**：渠道表里只剩死渠道「默认渠道 → `api.openai.com`（无 key）」，可用的 deepseek 被冲掉，日志被「每 8s 一条」的死渠道告警刷满（1002 行里绝大多数是它）；已手动恢复 deepseek 并重启（`/v1/models` 现含 `deepseek::*`），**根因未修**。应改为「服务端网关路由表唯一写者 / 浏览器渠道表浏览器唯一写者，只按 name 显式 upsert」 |
 | — | 关键帧与分镜对不上 | `shots[5].negativePrompt` 含 `costume change, unnatural transformation`，把正向要求的变身镜用负向词否定；`sh12` 公园抛球实际室内抱狗 |
-| — | 「2 集 × 30 秒」无人负责 | 9 个 run `episodes=[]`、分镜 16 镜 83 秒超 38%。本轮 `normalizeEpisodes` + 集数进提示词**已部分修复**，待复跑验证 |
-| — | 网关 `/v1/models` 漏外部渠道 | 已修（`GET /v1/models` 在 `/v1/*path` 兜底前），**需重启才生效**，因出片 run 在跑故延后 |
+| — | 「2 集 × 30 秒」无人负责 | 9 个 run `episodes=[]`、分镜 16 镜 83 秒超 38%。`normalizeEpisodes` + 集数进提示词**代码已在**（`pipeline.js:523`/调用点 `814`，含单测），但**端到端尚未验证**——唯一一轮复跑跑的是旧代码（见 §11.1 P1-c 注） |
 | — | D1 / D3 两条产品硬约束未落 | 见 11.1 的 P1-c 缺口 |
 
 **🟢 一般 / 改进（不影响正确性）**
@@ -577,9 +576,29 @@ ReviewNote { id, scope: project|episode|scene|shot, targetId?, stage,
 - `pipeline.js` 1456 行「全能编排器」超 `AGENTS.md:24` 约定；通用编排器硬编码阶段 id、`|| []` 吞结构错误（架构视角 D1/D2，均带触发条件）。
 - `model-plugin.ts` 1435 行；`projects.js` 兼子模块微型框架。
 
-### 11.3 本轮风险面（交给下一个接手者）
+### 11.3 本轮状态与风险面（交给下一个接手者）
 
-1. **工作区有 20 个文件未提交**（含 `canvas-server/src/pipeline.js`、`test/pipeline.test.mjs`、`pilot-issues.md`、7 个前端新文件）——测试 206/206 与 tsc 均绿，属「已验证可提交」状态；建议按主题分批落盘（原文导入 / styleAnchor / 过程时间线）。
-2. **出片长跑仍在进行**：`run-murpt28o-46f5q`（项目 `prj_01M3ZK27NYPXRPBVRAT0SSJ2B5`）script/storyboard/design/keyframe ✅，assembly `running`（已 9 个片段产物）。重启网关会打断它——这是 `/v1/models` 修复延后的原因。
-3. **服务**：`canvas-server` systemd active，`127.0.0.1:8788`，`/api/health` ok；远端 ComfyUI `192.168.123.147:8188`(0.38.2)。
-4. **文档滞后已修正**：`pilot-issues.md` 第一轮 21 条状态此前一律写「待讨论」，与实际不符，本轮按核实结果逐条更新（见该文件）。
+1. **工作区已全部提交、干净**。本轮 7 笔：文档 5（`b3874d5` §11 初稿+清单复核+追加 #22–#24、`87d0485` 交接单同步、`39f1ad4` runIds 结论更正+CHANGELOG、`7a85ef0` 复跑结果与渠道事故登记）+ 代码 2（`e1383ac` 原文导入+styleAnchor 唯一事实源、`78e390a` 项目工作区过程时间线）。验证：后端 `206/206 pass`、前端 `tsc 0` 错、`npm run build` 通过。
+2. **出片复跑已结束，但成片没出来**。`run-murpt28o-46f5q` 落 assembly `partial`（16 镜 10 成 / 6 镜 OOM）。要先出片，顺序是：解决 147 显存（#25，建议先降 480×864 出草稿）→ **逐镜重试 `sh11`–`sh16`**（已有 `regenerate` 能力，不必重跑整条）→ 调 `assemble`。
+3. **服务已重启（在确认无在跑 job 后）**：`canvas-server` active @ `127.0.0.1:8788`，`/api/health` ok，模板 16 个；`/v1/models` 现 **10 个**（8 本地 + `deepseek::deepseek-flash` + `deepseek::deepseek-v4-pro`），那个压了很久的门禁修复顺带生效；外部渠道表已恢复到 `deepseek`（**但前端一保存/一键接入就会再被冲掉**，见 #26）。远端 ComfyUI `192.168.123.147:8188`（0.38.2，活着）。
+4. **⚠️ 证据效力提醒（接手者必读）**：`run-murpt28o-46f5q` 是**跨代码版本**的产物 —— 它的 script 段跑的是三段式**之前**的旧代码（`stage.steps` 字段缺失可证）。因此**只能拿它证明**两件事：① P0-b 回写断链已通（keyframe 29 / assembly 10 产物）；② 147 显存 OOM（#25）。**不能**用它评判集数对齐、时长、三段式、styleAnchor 等修复的效果 —— 要评判必须**新建 run 重跑**。
+
+### 11.4 第二轮复跑结论（run `run-murpt28o-46f5q`，2026-10-03）
+
+> 这是整改后的第一轮端到端复跑，也是**唯一**一轮。它跑通了五阶段，但**成片没出来**。
+
+| 阶段 | 终态 | 产物 | 实测细节 |
+| --- | --- | --- | --- |
+| plan | —（无阶段） | — | 阶段 0 由项目设定提供：`episodeCount=2`、`episodeDurationSec=30`、`ratio=9:16`、`visualStyle=二维动画`、`tone=治愈`、`genre=都市奇幻` |
+| script | done | 0 | `characters=2`（小猫/大姐姐、小狗）、`scenes=3`、**`episodes=[]`**；`planSuggestion` 回填 5 个字段（genre/tone/visualStyle/dramaMode/audience，**不含集数/时长**）。**跑的是旧代码** —— 无 `stage.steps`、`warnings=null` |
+| storyboard | done | 0 | **16 镜、合计 83 秒**（目标 2×30=60 秒，**超 38%**）；每镜含 `shotSize/camera/action/dialogue/audio/prompt/negativePrompt` |
+| design | done | 0 | 2 个角色造型（小猫/大姐姐、小狗） |
+| keyframe | ✅ done | **29** | 真实出图 —— P0-b 回写断链修复的活证据 |
+| assembly | ❌ **partial** | **10** | `sh1`–`sh10` ✅（每个 clip 带 `candidates[]`/`selected`）、`sh11`–`sh16` 全数 `VBAR OOM`；`assembly.output.assembly.status = queued`，**成片未合** |
+
+**结论**：五阶段**跑通到片段这一层**，成片为止未交付。想再往前走，按这个顺序：
+
+1. **解决 147 显存**（#25）—— 建议先把片段分辨率降到 480×864 出草稿，或改为一镜一清显存；
+2. **逐镜重试 `sh11`–`sh16`** —— 用已有的逐条 `regenerate`，不要重跑整条；
+3. **调 `assemble`** —— 片段齐了才能出片（这是设计行为，`partial` 时接口会拒）；
+4. **想验证集数 / 时长 / 三段式 / styleAnchor**，**必须新建 run** —— 本轮的 script 段是旧代码，证明不了任何事（见 §11.3 第 4 条）。
