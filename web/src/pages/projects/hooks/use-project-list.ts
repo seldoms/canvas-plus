@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 
+import { saveProjectSource, type GatewayProjectSourceInput } from "@/services/api/gateway";
 import { archiveProject, createProject, listProjects, type ProjectCreateInput, type ProjectSummary } from "@/services/api/projects";
 
 /**
@@ -45,5 +46,8 @@ export function useProjectList() {
         [refresh],
     );
 
-    return { projects, includeArchived, setIncludeArchived, loading, error, refresh, create, archive };
+    /** 新建项目后把原文落成源版本；失败原样抛出，由页面区分「项目已建但导入失败」。 */
+    const importSource = useCallback(async (projectId: string, input: GatewayProjectSourceInput) => saveProjectSource(projectId, input), []);
+
+    return { projects, includeArchived, setIncludeArchived, loading, error, refresh, create, archive, importSource };
 }

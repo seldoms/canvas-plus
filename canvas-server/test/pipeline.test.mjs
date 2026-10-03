@@ -1444,3 +1444,100 @@ test("登记失败只告警、不拖垮生成阶段", async (t) => {
     assert.equal(pipeline.get(run.id).stages.keyframe.output.frames[0].artifactUrl, "/api/artifacts/job/s1.png", "产物照常回写");
     assert.ok(warns.some((message) => message.includes("产物自动登记资产失败")), "登记失败要告警");
 });
+
+// ——— P0：styleAnchor 唯一事实源 + 胶片层条件叠加（Q1/G1） ———
+
+const ANIM_PROJECT = {
+    id: "prj_anim",
+    styleAnchor: "二维动画，治愈系暖色调，柔光，圆润可爱的角色造型，干净线条",
+    plan: { visualStyle: "二维动画", genre: "都市奇幻", tone: "治愈", ratio: "9:16", episodeDurationSec: 30, episodeCount: 2 },
+};
+
+/** 把 04-keyframes 技能模板改成引用 {{options.styleAnchor}}，用于验证 buildContext 的注入链路。 */
+function useStyleAnchorSkill(env) {
+    writeFileSync(
+        join(env.skillsDir, "04-keyframes", "SKILL.md"),
+        `---\nname: keyframes\ndescription: |\n  测试：风格锚点注入\n---\n\n# keyframes\n\n## 提示词模板\n\n你是关键帧提示词工程师。项目风格锚点：{{options.styleAnchor}}\n分镜：\n{{storyboard}}\n`,
+    );
+}
+
+/** 取发给模型的关键帧提示词（含被替换后的占位符）。 */
+function keyframePromptSent(llm) {
+    const call = llm.calls.find((entry) => entry.messages.at(-1).content.includes("关键帧提示词工程师"));
+    assert.ok(call, "关键帧阶段应调用过 LLM");
+    return call.messages.at(-1).content;
+}
+
+test("styleAnchor 唯一事实源：buildContext 注入使 {{options.styleAnchor}} 被真替换，最终 PROMPT 首句 = 锚点原句", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    useStyleAnchorSkill(env);
+    const { llm, startJob } = await toProjectKeyframe(env, ANIM_PROJECT);
+
+    // ① 技能占位符被真替换：发给模型的关键帧提示词含锚点原句、不含字面占位符
+    const sent = keyframePromptSent(llm);
+    assert.ok(sent.includes(`项目风格锚点：${ANIM_PROJECT.styleAnchor}`), "注入的 styleAnchor 必须出现在技能提示词里");
+    assert.ok(!sent.includes("{{options.styleAnchor}}"), "占位符必须被真替换，不能原样漏给模型");
+
+    // 最终发给 ComfyUI 的 PROMPT 首句一字不差是锚点
+    assert.equal(startJob.params.PROMPT.split("。")[0], ANIM_PROJECT.styleAnchor);
+    assert.ok(startJob.params.PROMPT.includes(ANIM_PROJECT.styleAnchor));
+});
+
+test("胶片层条件叠加：二维动画锚点不出现胶片词，胶片写实锚点才追加 Luster 冻结层", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    useStyleAnchorSkill(env);
+
+    // 二维动画锚点 → 胶片层默认关闭，全片 prompt 不得出现冲突介质词
+    const anim = await toProjectKeyframe(env, ANIM_PROJECT);
+    assert.doesNotMatch(anim.startJob.params.PROMPT, /film|Kodak|grain|tack-sharp|light leak|胶片/i, anim.startJob.params.PROMPT);
+
+    // 胶片 / 写实锚点 → 命中关键词，追加 Luster 冻结层
+    const filmProject = { id: "prj_film", styleAnchor: "35mm 胶片实拍，日系青春写实，生活流", plan: { visualStyle: "胶片写实", ratio: "16:9", episodeDurationSec: 6 } };
+    const film = await toProjectKeyframe(env, filmProject);
+    assert.ok(film.startJob.params.PROMPT.startsWith("35mm 胶片实拍"), film.startJob.params.PROMPT);
+    assert.match(film.startJob.params.PROMPT, /fine grain|light leak|tack-sharp/i, "命中胶片锚点才叠加 Luster 层");
+});
+
+test("无项目锚点：buildContext 注入中性兜底锚点（不静默、不回落胶片默认锚点）", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    useStyleAnchorSkill(env);
+    const jobs = fakeJobQueue();
+    const llm = fakeLlm(stageReply);
+    const { pipeline } = build(env, { llm, jobs, runJob: async () => ({ outputs: [] }) }); // 不注入 getProject
+    pipeline.bindJobs();
+
+    const run = pipeline.create({ novel: "很久以前", title: "短篇" });
+    await pipeline.runStage(run.id, "script");
+    await pipeline.runStage(run.id, "storyboard");
+    await pipeline.runStage(run.id, "keyframe");
+
+    const sent = keyframePromptSent(llm);
+    const injected = /项目风格锚点：(.+)/.exec(sent)?.[1]?.trim();
+    assert.ok(injected, "缺锚点时必须注入明确的中性锚点，不能留占位符（不静默）");
+    assert.ok(!sent.includes("{{options.styleAnchor}}"), "占位符必须被替换");
+    assert.doesNotMatch(injected, /film|Kodak|grain|35mm|胶片/i, "兜底锚点不得回落胶片默认锚点");
+
+    // 未绑项目且无锚点：生成层不叠加任何风格层，最终 PROMPT 与旧行为逐字一致
+    assert.equal(jobs.get(`${run.id}-sh1-start`).params.PROMPT, "少女走进老屋，中景");
+});
+
+test("首句锚点只由一层负责：模型已写锚点时最终 PROMPT 不重复前置（去掉两头写）", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    useStyleAnchorSkill(env);
+    const body = `${ANIM_PROJECT.styleAnchor}。一只橘白小猫走进老屋，中景`;
+    const reply = (content) => {
+        if (content.includes("关键帧提示词工程师")) {
+            return { frames: [{ id: "sh1-start", shotId: "sh1", role: "start", prompt: body, template: null, jobId: null, artifactUrl: null, status: "queued" }] };
+        }
+        return stageReply(content);
+    };
+    const { startJob } = await toProjectKeyframe(env, ANIM_PROJECT, { reply });
+
+    const prompt = startJob.params.PROMPT;
+    assert.equal(prompt, body, "锚点已在首句时不再前置，也不追加胶片层");
+    assert.equal(prompt.split(ANIM_PROJECT.styleAnchor).length - 1, 1, "锚点只能出现一次（两头写已消除）");
+});

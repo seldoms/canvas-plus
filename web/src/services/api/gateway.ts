@@ -136,7 +136,7 @@ export type GatewayRunEstimate = {
 export type GatewayStageProgress = {
     runId: string;
     stage: string;
-    phase: "map" | "reduce" | "single" | "done" | "failed";
+    phase: "map" | "reduce" | "single" | "running" | "done" | "failed";
     done?: number;
     total?: number;
     label?: string;
@@ -549,7 +549,10 @@ export function isBuiltinGatewayTemplate(name: string, capability: "image" | "vi
  * ------------------------------------------------------------------ */
 
 /** GET /api/projects/:id/sources 的元素摘要（不含正文）。 */
-export type GatewayProjectSourceSummary = { id: string; kind: string; title: string; chars?: number };
+export type GatewayProjectSourceSummary = { id: string; kind: string; title: string; sha256?: string; chars?: number; createdAt?: string };
+
+/** POST /api/projects/:id/sources 请求体；text 是整篇原文，前端不分块（长篇分块由后端负责）。 */
+export type GatewayProjectSourceInput = { text: string; title?: string; kind?: string; from?: string };
 
 /**
  * 读项目当前采用的源文本，供「项目内建 run」当 novel 用。
@@ -570,6 +573,27 @@ export async function resolveProjectSourceText(projectId: string, revisionId?: s
     );
     const text = String(data?.source?.text ?? data?.source?.content ?? "");
     return text.trim() ? { revisionId: id, text } : null;
+}
+
+/**
+ * 落一个不可变源版本：服务端写入后再把 project.sourceRevisionId 指向它。
+ * 不传 id，每次都是新版本（重复 id 会被服务端 409 拒绝）；返回新版本摘要。
+ */
+export async function saveProjectSource(projectId: string, input: GatewayProjectSourceInput, baseUrl?: string) {
+    const data = await gatewayRequest<{ source: GatewayProjectSourceSummary }>(
+        { method: "post", url: `/api/projects/${encodeURIComponent(projectId)}/sources`, data: input },
+        baseUrl,
+    );
+    return data.source;
+}
+
+/** 列项目源版本摘要（不含正文），新版本在前；用于展示当前源的字数与版本。 */
+export async function listProjectSources(projectId: string, baseUrl?: string) {
+    const data = await gatewayRequest<{ sources: GatewayProjectSourceSummary[] }>(
+        { method: "get", url: `/api/projects/${encodeURIComponent(projectId)}/sources` },
+        baseUrl,
+    );
+    return Array.isArray(data?.sources) ? data.sources : [];
 }
 
 /** 把 runId 追加回项目 runIds（PATCH /api/projects/:id）；run.options.projectId 只是过渡位，项目侧关联仍要显式回填。 */

@@ -13,7 +13,7 @@
 | --- | --- | --- |
 | 库（`skills/libraries/Luster-iwai-aesthetic-prompt/`） | 视觉风格方法论：胶片介质、色彩公式、光学事件、机位态度、踩坑 | **不改动** |
 | 阶段技能（`skills/04-keyframes/SKILL.md`） | 把风格层翻成项目生图模板能吃的英文 `prompt`；与项目级 `styleAnchor` 组合；剥掉 MJ 尾参与人物 / 场景默认锚点 | **本次改写** |
-| 编排器（`canvas-server/src/pipeline.js`） | 读 SKILL.md 的 `## 提示词模板` 一节、填 `{{storyboard}}` / `{{design}}`、把 `PROMPT` 交给生图模板 | **不改动**（越界） |
+| 编排器（`canvas-server/src/pipeline.js`） | 读 SKILL.md 的 `## 提示词模板` 一节、填 `{{storyboard}}` / `{{design}}`、**注入 `options.styleAnchor` + `plan`、按锚点条件叠加胶片层**、把 `PROMPT` 交给生图模板 | **本次接线**：`buildContext` 注入锚点，`productionDefaults` / `withPromptHead` 条件叠加胶片层（见 §3） |
 
 **契约不变**：阶段产出仍是 `{ frames[] }`（`registry.json` 的 `produces: "keyframes"` 不变），每个 `frames[]` 仍是 `{ id, shotId, role, prompt, template, jobId, artifactUrl, status }`。下游 `05-clip-assembly` 只读 `frames[].id` / `shotId` / `role` / `artifactUrl`，任何字段名或结构改动都会连挂。
 
@@ -29,9 +29,9 @@
 
 | 库文件 · 部分 | 进到阶段技能的哪里 | 处理 |
 | --- | --- | --- |
-| `SKILL.md` §5「冻结（任何图一字不改）」的风格层 | 「二、日系胶片风格层」的 `overexposure melting contours golden rim on hair, grey-blue shadows, fine grain, light leak upper right` | 逐字保留；作为**条件叠加层**（是否启用由 `styleAnchor` 定，见 §3） |
+| `SKILL.md` §5「冻结（任何图一字不改）」的风格层 | 「二、」的 Luster 冻结层（`overexposure melting contours golden rim on hair, grey-blue shadows, fine grain, light leak upper right, 1/100s shutter, tack-sharp`） | 改为**由编排器条件叠加**：只有 `styleAnchor` 命中胶片/写实关键词才追加（见 §3）；阶段技能不再自写该层 |
 | 同节「焦点层」`1/100s shutter` + 主体实焦短语；动态模糊只给环境元素 | 「二、」焦点层 + 「动态模糊只允许给环境元素，禁止给人物」 | 逐字保留；`subject tack-sharp` 在多人时改 `subjects tack-sharp`（与库 examples 一致） |
-| `references/style-system.md`「色彩公式」（过期 Kodak Gold 200：灰蓝暗部 × 暖黄高光 × 右上漏光 × 细颗粒 × 冷暖分离） | 「一、提示词的分层结构」默认风格锚点 + 「二、」色彩公式 | 保留公式描述；默认锚点用它的首句 `35mm film still, expired Kodak Gold 200` |
+| `references/style-system.md`「色彩公式」（过期 Kodak Gold 200：灰蓝暗部 × 暖黄高光 × 右上漏光 × 细颗粒 × 冷暖分离） | 「二、」胶片层说明（作为编排器条件叠加的判定依据） | 不再作为默认锚点；仅当 `styleAnchor` 命中胶片/写实关键词时由编排器叠加 |
 | `references/style-system.md`「光学事件库（每图恰好一个）」全 20 条 | 「二、」光学事件列表 | 保留「**每帧恰好一个**」硬规则与 20 条事件清单；英文短语参考仍指向库 `references/style-system.md` |
 | `references/style-system.md`「有态度机位库」 | 「二、」有态度机位条 | 采纳为**可选**：分镜已给景别 / 运镜时以分镜为准，避免本阶段越权改分镜 |
 | `references/style-system.md`「复用骨架 / 结构模板」（机位 → 单一来源光 + 一个光学事件 → 发丝级动作 → 冻结色彩 → 一步距离感收尾） | 「一、提示词的分层结构」四层顺序 | 转写成模型可执行的**四层拼接顺序**（首句锚点 → 主体场景 → 光学 → 介质） |
@@ -99,21 +99,20 @@
    │
    ├─ 若其基调 = 其它（赛博 / 硬科幻 / 古装 / 暗黑…） →  ② 不叠加冻结句，只借「单一光源 + 恰好一个光学事件 + 发丝级细节 + 冷暖分离」的结构
    │
-   └─ 若运行层未提供锚点（占位未被替换）→  用本技能默认锚点（= Luster 首句），并在接入项目锚点后被覆盖
+   └─ 若运行层未提供锚点 →  编排器注入中性兜底锚点（不再回落胶片默认锚点）
 ```
 
 - **覆盖**：`styleAnchor` 存在时压过一切默认风格；这是「不写死」的保证。
 - **组合**：基调匹配时，`styleAnchor`（首句）与 Luster 层（后续光学 / 色彩 / 介质短语）**并存**，而不是二选一。
-- **默认**：本项目默认取向为东方生活流 / 日系胶片（PRD §4 已点名 Luster 为该流派锚点大师），故未提供 `styleAnchor` 时默认启用 Luster 层；**一旦项目给出 `styleAnchor`，默认即被覆盖**。若某剧明确不要这个默认，只需给 `styleAnchor` 写自己的基调。
+- **默认**：胶片层默认**关闭**——只有 `styleAnchor` 命中胶片 / 写实关键词才叠加；未提供锚点时用中性兜底锚点，同样不叠加 Luster 层。
 
-### 3.2 注入路径（以及为什么现在还不能读 `Project`）
+### 3.2 注入路径（已落地）
 
-- `pipeline.js` 的 `buildContext` 只把 `novel` / `title` / `options` / `pipeline` 与**上游阶段产物**放进模板上下文，**不注入 `Project.styleAnchor`**。
-- 因此模板用 **`{{options.styleAnchor}}`** 取项目锚点：运行层把它写进 `run.options.styleAnchor` 即可被 `fillTemplate` 替换（`fillTemplate` 支持 `options.*`）。
-- 运行层没写时，该占位**不被替换**，模型会看到字面量 `{{options.styleAnchor}}`；技能明确要求：此时改用默认锚点，**绝不把占位符字样写进 `prompt`**。
-- 把 `Project` 字段接进 run 属于编排器 / P0-a 范围，**不在本阶段技能可改范围**（改 `pipeline.js` 越界）。这与 01 接线说明把「长篇绕道」记为已知限制是同一处理方式。
+- `pipeline.js` 的 `buildContext` 现在把项目级 `styleAnchor`（其次 `run.options.styleAnchor`）注入 `options.styleAnchor`、把项目 `plan` 注入 `options.plan`，所以模板用 **`{{options.styleAnchor}}`** 取的锚点**一定被替换**；缺锚点时注入中性兜底锚点，不再回落胶片默认锚点。
+- 胶片层不再由阶段技能写死：`productionDefaults` 用关键词正则（`胶片 / 菲林 / 写实 / 实拍 / film / Kodak / 35mm / grain / 颗粒`）判定锚点是否胶片类，命中才把 Luster 冻结层交给 `withPromptHead` 追加；未命中（如「二维动画」）默认关闭。
+- `withPromptHead` 同时消除「两头写」：锚点已由模型写在正文首句时不再重复前置。
 
-> 一句话：**Luster 是可被 `styleAnchor` 覆盖和组合的「默认风格层」，不是写死的全局风格**；钩子通过 `run.options.styleAnchor` 落地，`Project → run` 的注入留给编排器。
+> 一句话：**Luster 是被 `styleAnchor` 覆盖和条件组合的「可选风格层」，不是写死的全局风格**；是否叠加由编排器按锚点关键词判定，默认关闭。
 
 ---
 
@@ -140,10 +139,10 @@
 ## 5. 待验证 / 风险
 
 1. **风格层是否真的改善画面，需要真跑一次关键帧才能判断**——本轮只做静态接线与契约核对，**未做真机生成验证**（任务边界要求）。已写入「待验证」。
-2. **`styleAnchor` 注入未落地**：目前 `pipeline.js` 不注入 `Project.styleAnchor`，只能靠 `run.options.styleAnchor`；在运行层接上之前，实际生效的是本技能默认锚点（= Luster 层）。这是**已知限制**，修它要动 `pipeline.js`，属越界。
-3. **默认启用 Luster 的取舍**：未提供 `styleAnchor` 时默认套用日系胶片层。若某剧不想套用，必须显式给 `styleAnchor`（已写成规则）。这是「默认 + 可覆盖」，不是「硬编死」；若评审认为应改成「无锚点则用中性锚点、不默认套 Luster」，只需改「二、」的启用条件一句。
-4. **未做机器校验**：项目里没有 per-stage JSON schema 校验器，`## 校验规则` 是文档而非代码；`prompt` 首句 / 逐字冻结句等只能靠模型自检 + 人工抽检。
-5. **未更新 CHANGELOG / docs**：按任务边界（只允许改 `skills/04-*`、`skills/05-*` 与新增本文件），未动 `CHANGELOG.md` / `docs/`；如需入库请由负责人补齐。
+2. **`styleAnchor` 注入已落地**：`pipeline.js` 的 `buildContext` 现在注入 `options.styleAnchor`（项目优先，其次 `run.options`）+ `options.plan`；缺锚点时注入中性兜底锚点。胶片层由 `productionDefaults` / `withPromptHead` 按锚点关键词**条件叠加**，不再无条件套用（见 §3）。
+3. **默认取向已改为「胶片层默认关闭」**：只有 `styleAnchor` 命中胶片/写实关键词才叠加 Luster 层；未提供锚点时用中性兜底锚点，同样不叠加。已写进 `04/SKILL.md`「二、」。
+4. **未做机器校验**：项目里没有 per-stage JSON schema 校验器，`## 校验规则` 是文档而非代码；编排器侧已用正则判定胶片锚点，但 `prompt` 首句是否逐字等于锚点仍靠模型自检 + 人工抽检（`canvas-server/test/pipeline.test.mjs` 已补假 LLM 单测断言最终 PROMPT 含锚点原句、不含冲突胶片词）。
+5. **未更新 CHANGELOG / docs**：本轮只改 `pipeline.js`、`skills/04-*`、`skills/libraries/**` 与单测；`CHANGELOG.md` / `docs/` 如需入库请由负责人补齐。
 
 ---
 

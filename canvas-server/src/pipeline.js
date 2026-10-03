@@ -70,10 +70,35 @@ function dimensionsForRatio(ratio, base) {
     };
 }
 
-/** 生成提示词首句固定为项目风格锚点：把创作上下文拼在原始 prompt 前面，空上下文时原样返回（保证旧行为逐字不变）。 */
-function withPromptHead(context, text) {
-    if (!context) return text;
-    return text ? `${context}。${text}` : context;
+/**
+ * 胶片 / 写实介质类关键词：只有最终风格锚点命中它们，才允许叠加 Luster 冻结胶片层。
+ * 「二维动画」这类锚点一律不命中 → 胶片层默认关闭，杜绝「二维动画 + 35mm 胶片」自相矛盾。
+ */
+const FILM_ANCHOR_PATTERN = /胶片|菲林|写实|实拍|film|photographic|photoreal|analog|kodak|35mm|grain|颗粒|live[-\s]?action/i;
+
+/** Luster 冻结胶片层（风格层 + 焦点层 + 色彩公式），作为「条件叠加层」由本模块按锚点判定后追加。 */
+const LUSTER_FILM_LAYER =
+    "overexposure melting contours golden rim on hair, grey-blue shadows, fine grain, light leak upper right, 1/100s shutter, tack-sharp";
+
+/** 缺项目/run 锚点时的中性兜底锚点：只声明画面方向，不写死任何介质，避免非胶片项目被套上胶片词。 */
+const NEUTRAL_STYLE_ANCHOR = "统一视觉方向，自然光，干净画面";
+
+/**
+ * 生成提示词的风格出口（唯一）：首句锚点只在这里保证在场。
+ * - `style.anchor` 已由 LLM 写在正文首句（buildContext 注入了 styleAnchor）时不再重复前置，去掉「两头写」；
+ * - `style.filmLayer` 为空（锚点非胶片类）时绝不叠加胶片层，只有锚点命中胶片类关键词才追加；
+ * - 传空 style（未绑项目且 run.options 无锚点）时原样返回，保证旧行为逐字不变。
+ */
+function withPromptHead(style, text) {
+    const body = String(text ?? "").trim();
+    const anchor = String(style?.anchor ?? "").trim();
+    const context = String(style?.context ?? "").trim();
+    let head;
+    if (!context) head = body;
+    else if (anchor && body.startsWith(anchor)) head = body; // 锚点已在首句 → 不重复前置
+    else head = body ? `${context}。${body}` : context;
+    const layer = String(style?.filmLayer ?? "").trim();
+    return layer ? `${head} ${layer}`.trim() : head;
 }
 
 function nowIso() {
@@ -337,9 +362,20 @@ export function createPipeline({ config, skillsDir, jobs, comfy, llm, runJob, as
         return saveRun(run);
     }
 
-    /** 把 novel、流水线配置与全部已产出的上游产物组装成模板上下文，上游 key 用该阶段 produces 的名字。 */
+    /**
+     * 把 novel、流水线配置与全部已产出的上游产物组装成模板上下文，上游 key 用该阶段 produces 的名字。
+     * 风格维度只在这里注入事实源：项目级 styleAnchor（其次 run.options.styleAnchor）写进 options.styleAnchor，
+     * 使技能里的 {{options.styleAnchor}} 一定能被替换；缺锚点时给中性兜底，绝不让占位符原样漏给模型。
+     */
     function buildContext(run, def) {
-        const context = { novel: run.novel, title: run.title, options: run.options || {}, pipeline: pipelineConfig };
+        const project = projectOf(run);
+        const plan = project?.plan && typeof project.plan === "object" ? project.plan : {};
+        const context = {
+            novel: run.novel,
+            title: run.title,
+            options: { ...(run.options || {}), styleAnchor: resolveStyleAnchor(run) || NEUTRAL_STYLE_ANCHOR, plan },
+            pipeline: pipelineConfig,
+        };
         for (const item of registry.stages) {
             if (item.id === def.id) continue;
             const output = run.stages?.[item.id]?.output;
@@ -914,6 +950,17 @@ ${JSON.stringify(partials, null, 2)}
     }
 
     /**
+     * 风格维度的唯一事实源：项目级 styleAnchor 最优先，其次 run.options.styleAnchor（未绑项目时的过渡位）。
+     * 两处都没有时返回空串，由调用方决定兜底（buildContext 用中性锚点、生成层不叠加任何风格层）。
+     */
+    function resolveStyleAnchor(run) {
+        const project = projectOf(run);
+        const projectAnchor = String(project?.styleAnchor ?? "").trim();
+        if (projectAnchor) return projectAnchor;
+        return String(run?.options?.styleAnchor ?? "").trim();
+    }
+
+    /**
      * 剧本阶段完成后，把 01 产出的 planSuggestion 回填项目 plan。
      * 只填空字段的判定与写入交给注入的 applyPlanSuggestion（projects.applyPlanSuggestion，依 PLAN_DEFAULTS 判定 + 原子写 + version 自增），
      * 这里只负责「何时调用」：仅 script 阶段、run 绑了项目、且有 planSuggestion 时才调。
@@ -978,12 +1025,13 @@ ${JSON.stringify(partials, null, 2)}
 
     /**
      * 项目级制作参数：plan.ratio / episodeDurationSec 与 styleAnchor + visualStyle/genre/tone 组成创作上下文。
-     * project 有值用 project、没有回落 config；未传 project 时全部为空 → 生成参数与旧版逐字一致。
+     * 风格锚点走 resolveStyleAnchor（项目优先，其次 run.options）；未绑项目且无锚点时全部为空 → 生成参数与旧版逐字一致。
+     * filmLayer 是「条件叠加」的判定结果：只有锚点命中胶片/写实类关键词才给 Luster 冻结胶片层，否则为空（默认关闭）。
      */
     function productionDefaults(run) {
         const project = projectOf(run);
         const plan = project?.plan && typeof project.plan === "object" ? project.plan : null;
-        const anchor = String(project?.styleAnchor ?? "").trim();
+        const anchor = resolveStyleAnchor(run);
         // 创作上下文首句固定是 styleAnchor（一字不差），其后才是视觉形式/题材/基调。
         const flavor = [plan?.visualStyle, plan?.tone, plan?.genre]
             .map((value) => String(value ?? "").trim())
@@ -992,18 +1040,20 @@ ${JSON.stringify(partials, null, 2)}
         return {
             ratio: String(plan?.ratio ?? "").trim(),
             episodeDurationSec: Number(plan?.episodeDurationSec) > 0 ? Number(plan.episodeDurationSec) : null,
+            anchor,
             context: [anchor, flavor].filter(Boolean).join("。"),
+            filmLayer: anchor && FILM_ANCHOR_PATTERN.test(anchor) ? LUSTER_FILM_LAYER : "",
         };
     }
 
     /** 单个条目的生成参数与就绪判定：模板要求的 token 必须全给，尺寸取 config.pipeline 默认值。 */
     function generativePlan(run, def, item, frames, shots) {
         const extraParams = (def.id === "keyframe" ? run.options?.image : run.options?.video) || {};
-        const project = productionDefaults(run);
+        const style = productionDefaults(run);
         const start = frames.find((frame) => frame.shotId === item.shotId && frame.role === "start");
         if (def.id === "keyframe") {
             // ratio 有值时按项目画幅推导尺寸（32 倍数），无值时沿用 config 默认宽高。
-            const imageDims = dimensionsForRatio(project.ratio, Math.min(Number(pipelineConfig.imageWidth) || 768, Number(pipelineConfig.imageHeight) || 1344));
+            const imageDims = dimensionsForRatio(style.ratio, Math.min(Number(pipelineConfig.imageWidth) || 768, Number(pipelineConfig.imageHeight) || 1344));
             // start / key / end 都用同一个文生图模板；end 帧要等同镜 start 帧产出后才能带参考图入队。
             return {
                 kind: "image",
@@ -1013,18 +1063,18 @@ ${JSON.stringify(partials, null, 2)}
                     WIDTH: imageDims ? imageDims.WIDTH : Number(pipelineConfig.imageWidth) || 768,
                     HEIGHT: imageDims ? imageDims.HEIGHT : Number(pipelineConfig.imageHeight) || 1344,
                     BATCH: Number(pipelineConfig.imageBatch) || 1,
-                    PROMPT: withPromptHead(project.context, item.prompt),
+                    PROMPT: withPromptHead(style, item.prompt),
                     ...(item.role === "end" ? { INPUT_IMAGE: start?.artifactUrl } : {}),
                     ...extraParams,
                 },
             };
         }
         // 单集时长作片段默认时长：条目自带 durationSec 时优先用它，否则用 plan.episodeDurationSec，再回落 config.videoSeconds。
-        const videoDefaultSeconds = project.episodeDurationSec ?? (Number(pipelineConfig.videoSeconds) || 5);
+        const videoDefaultSeconds = style.episodeDurationSec ?? (Number(pipelineConfig.videoSeconds) || 5);
         item.durationSec = Number(item.durationSec) > 0 ? Number(item.durationSec) : videoDefaultSeconds;
         if (!item.keyframeId) item.keyframeId = start?.id ?? null;
         const shot = shots.find((entry) => entry.id === item.shotId);
-        const videoDims = dimensionsForRatio(project.ratio, Math.min(Number(pipelineConfig.videoWidth) || 768, Number(pipelineConfig.videoHeight) || 1344));
+        const videoDims = dimensionsForRatio(style.ratio, Math.min(Number(pipelineConfig.videoWidth) || 768, Number(pipelineConfig.videoHeight) || 1344));
         return {
             kind: "video",
             template: pipelineConfig.videoTemplate,
@@ -1033,7 +1083,7 @@ ${JSON.stringify(partials, null, 2)}
             params: {
                 WIDTH: videoDims ? videoDims.WIDTH : Number(pipelineConfig.videoWidth) || 768,
                 HEIGHT: videoDims ? videoDims.HEIGHT : Number(pipelineConfig.videoHeight) || 1344,
-                PROMPT: withPromptHead(project.context, [shot?.prompt, shot?.action].filter(Boolean).join(", ")),
+                PROMPT: withPromptHead(style, [shot?.prompt, shot?.action].filter(Boolean).join(", ")),
                 LENGTH: frameCountFor(item.durationSec, Number(pipelineConfig.videoFps) || 24),
                 ...(start?.artifactUrl ? { INPUT_IMAGE: start.artifactUrl } : {}),
                 ...extraParams,

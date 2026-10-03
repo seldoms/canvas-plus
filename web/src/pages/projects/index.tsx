@@ -7,23 +7,34 @@ import type { ProjectCreateInput, ProjectSummary } from "@/services/api/projects
 
 import { CreateProjectModal } from "./components/create-project-modal";
 import { ProjectCard } from "./components/project-card";
+import type { ProjectSourceSubmit } from "./components/source-input";
 import { useProjectList } from "./hooks/use-project-list";
 
 /** 项目列表页：只做编排（工具栏 + 列表区块），数据与动作来自 useProjectList。 */
 export default function ProjectsPage() {
     const { message } = App.useApp();
     const { t } = useTranslation();
-    const { projects, includeArchived, setIncludeArchived, loading, error, refresh, create, archive } = useProjectList();
+    const { projects, includeArchived, setIncludeArchived, loading, error, refresh, create, archive, importSource } = useProjectList();
     const [createOpen, setCreateOpen] = useState(false);
     const [submitting, setSubmitting] = useState(false);
     const [archiving, setArchiving] = useState<ProjectSummary | null>(null);
 
-    const handleCreate = async (input: ProjectCreateInput) => {
+    /** 先建项目，再（可选）把原文落成源版本；导入失败不回滚项目，单独提示。 */
+    const handleCreate = async (input: ProjectCreateInput, source: ProjectSourceSubmit | null) => {
         setSubmitting(true);
         try {
-            await create(input);
+            const project = await create(input);
+            if (source) {
+                try {
+                    await importSource(project.id, source);
+                    message.success(t("projects.source.createdWith"));
+                } catch (sourceError) {
+                    message.warning(t("projects.source.saveFailedAfterCreate", { message: sourceError instanceof Error ? sourceError.message : String(sourceError) }));
+                }
+            } else {
+                message.success(t("projects.created"));
+            }
             setCreateOpen(false);
-            message.success(t("projects.created"));
         } catch (createError) {
             message.error(createError instanceof Error ? createError.message : t("projects.createFailed"));
         } finally {
@@ -99,7 +110,7 @@ export default function ProjectsPage() {
                 </div>
             </main>
 
-            <CreateProjectModal open={createOpen} submitting={submitting} onCancel={() => setCreateOpen(false)} onSubmit={(input) => void handleCreate(input)} />
+            <CreateProjectModal open={createOpen} submitting={submitting} onCancel={() => setCreateOpen(false)} onSubmit={(input, source) => void handleCreate(input, source)} />
 
             <Modal
                 title={t("projects.archiveConfirmTitle")}

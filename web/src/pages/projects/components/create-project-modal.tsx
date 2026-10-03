@@ -1,4 +1,5 @@
-import { Form, Input, InputNumber, Modal, Select, Tag } from "antd";
+import { App, Form, Input, InputNumber, Modal, Select, Tag } from "antd";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import {
@@ -12,6 +13,8 @@ import {
     type DramaPresetOption,
 } from "@/constant/drama-presets";
 import type { ProjectCreateInput } from "@/services/api/projects";
+
+import { EMPTY_SOURCE_DRAFT, SourceInput, type ProjectSourceDraft, type ProjectSourceSubmit } from "./source-input";
 
 /** 新建项目弹窗的表单值；规划参数平铺，提交时收进 plan。预置维度为标签数组，可多选也可自定义。 */
 export type CreateProjectFormValues = {
@@ -65,7 +68,7 @@ function toCreateInput(values: CreateProjectFormValues): ProjectCreateInput {
     };
 }
 
-/** 新建项目弹窗：剧名 + 风格锚点 + 基础规划参数（预置可选、也可自定义）。 */
+/** 新建项目弹窗：剧名 + 原文导入（可选）+ 风格锚点 + 基础规划参数（预置可选、也可自定义）。 */
 export function CreateProjectModal({
     open,
     submitting,
@@ -75,13 +78,36 @@ export function CreateProjectModal({
     open: boolean;
     submitting: boolean;
     onCancel: () => void;
-    onSubmit: (input: ProjectCreateInput) => void;
+    onSubmit: (input: ProjectCreateInput, source: ProjectSourceSubmit | null) => void;
 }) {
     const { t } = useTranslation();
+    const { message } = App.useApp();
     const [form] = Form.useForm<CreateProjectFormValues>();
+    const [source, setSource] = useState<ProjectSourceDraft>(EMPTY_SOURCE_DRAFT);
+
+    // 每次打开重置原文草稿，避免上次的文件内容带到下一次新建。
+    useEffect(() => {
+        if (open) setSource(EMPTY_SOURCE_DRAFT);
+    }, [open]);
 
     const genreOptions = GENRE_PRESET_GROUPS.map((group) => ({ label: t(`projects.form.${group.labelKey}`), options: presetOptions(group.options) }));
     const multiPlaceholder = t("projects.form.multiOrCustom");
+
+    /** 原文可选；空内容不阻塞建项目（之后可在工作区补录）。 */
+    const handleFinish = (values: CreateProjectFormValues) => {
+        const input = toCreateInput(values);
+        if (source.reading) {
+            message.error(t("projects.source.reading"));
+            return;
+        }
+        if (source.mode === "file" && source.fileName && !source.text.trim()) {
+            message.error(t("projects.source.empty"));
+            return;
+        }
+        const text = source.text.trim();
+        const payload: ProjectSourceSubmit | null = text ? { text: source.text, title: source.title.trim() || input.title, kind: "novel", from: source.mode === "file" ? "upload" : "paste" } : null;
+        onSubmit(input, payload);
+    };
 
     return (
         <Modal
@@ -95,9 +121,12 @@ export function CreateProjectModal({
             onOk={() => void form.submit()}
             destroyOnHidden
         >
-            <Form form={form} layout="vertical" requiredMark={false} initialValues={{ ratio: "9:16", episodeDurationSec: 60, dramaMode: ["短剧向"], episodeCount: 1 }} onFinish={(values) => onSubmit(toCreateInput(values))}>
+            <Form form={form} layout="vertical" requiredMark={false} initialValues={{ ratio: "9:16", episodeDurationSec: 60, dramaMode: ["短剧向"], episodeCount: 1 }} onFinish={handleFinish}>
                 <Form.Item name="title" label={t("projects.form.title")} rules={[{ required: true, message: t("projects.form.titleRequired") }]}>
                     <Input size="large" placeholder={t("projects.form.titlePlaceholder")} />
+                </Form.Item>
+                <Form.Item label={t("projects.form.source")} extra={t("projects.form.sourceHelp")}>
+                    <SourceInput draft={source} onChange={setSource} disabled={submitting} />
                 </Form.Item>
                 <Form.Item name="styleAnchor" label={t("projects.form.styleAnchor")} extra={t("projects.form.styleAnchorHelp")}>
                     <Input placeholder={t("projects.form.styleAnchorPlaceholder")} />
