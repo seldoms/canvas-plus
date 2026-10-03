@@ -4,13 +4,24 @@ import { join } from "node:path";
 import { splitNovelIntoChunks } from "./chunk-novel.js";
 import { assembleEpisode } from "./delivery.js";
 import { artifactUrl, ensureDir, safeJoin } from "./files.js";
+import { listTemplates } from "./providers/comfy.js";
 import { loadRegistry, readSkill } from "./skills.js";
 
 /** 生成型阶段：只构造生成任务参数并交给任务队列，不等真实产物。 */
 const GENERATIVE_STAGES = new Set(["keyframe", "assembly"]);
 
+/** 生成型阶段 → 可用模板 family：关键帧出图、片段出视频。 */
+const STAGE_TEMPLATE_FAMILY = Object.freeze({ keyframe: "image", assembly: "video" });
+
 /** Job 终态：只有落到这里才回写流水线。 */
 const TERMINAL_JOB = new Set(["done", "error", "canceled"]);
+
+/** 带 HTTP 状态码的业务错误：路由层据此回 400/409，不再一律 400（门禁拒绝路径需要区分）。 */
+function gateError(message, status = 400) {
+    const error = new Error(message);
+    error.status = status;
+    return error;
+}
 
 /**
  * H3 系列模板的 LENGTH 走 17n+5 帧网格（5s≈123 帧、10s≈243 帧）。
@@ -77,6 +88,8 @@ export function createPipeline({ config, skillsDir, jobs, comfy, llm, runJob, as
     const runsDir = ensureDir(join(config?.dataDir || "data", "runs"));
     const registry = loadRegistry(skillsDir);
     const stageDefs = new Map(registry.stages.map((item) => [item.id, item]));
+    // 模板名 → family（image/video/edit/upscale）。regenerate 用它校验「换的模型属于该阶段该出图还是出视频」。
+    const templateFamilies = new Map(listTemplates(config?.workflowsDir).map((template) => [template.name, template.family]));
 
     const runFile = (runId) => safeJoin(runsDir, String(runId), "run.json");
     const stageFile = (runId, stageId) => safeJoin(runsDir, String(runId), `${stageId}.json`);
@@ -555,11 +568,12 @@ ${JSON.stringify(partials, null, 2)}
         };
     }
 
-    /** 入队一次生成尝试并追加候选。重跑用带时间戳的 id，绝不覆盖旧 jobId/artifactUrl。 */
+    /** 入队一次生成尝试并追加候选。重跑用带时间戳的新 id，绝不覆盖旧 jobId/artifactUrl。 */
     function enqueueAttempt(run, def, item, plan) {
         if (typeof runJob !== "function" || typeof jobs?.enqueue !== "function") return null;
         const base = `${run.id}-${item.id}`;
-        const id = item.candidates?.length ? `${base}-${Date.now().toString(36)}` : base;
+        // 重跑必然带时间戳 + 随机后缀：同一毫秒内连点两次也不能撞出同一个 jobId，否则候选会被 upsert 合并。
+        const id = item.candidates?.length ? `${base}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}` : base;
         const job = jobs.enqueue({ id, kind: plan.kind, template: plan.template, name: item.id, params: plan.params, meta: { runId: run.id, stageId: def.id, itemId: item.id } }, runJob);
         if (!job) return null;
         item.candidates = [...(item.candidates || []), { template: plan.template, jobId: job.id, artifactUrl: null, status: "queued", params: plan.params, createdAt: nowIso() }];
@@ -577,6 +591,59 @@ ${JSON.stringify(partials, null, 2)}
             if (item.jobId || !plan.ready) continue;
             enqueueAttempt(run, def, item, plan);
         }
+    }
+
+    /**
+     * 逐条重跑（regenerate）同步部分：只做门禁与本次 attempt 的生成计划，**不产生任何副作用**。
+     * 语义：给一个 item 换模板再追加一个候选，不动其它 item、不删旧候选；慢的真实生成由任务队列后台跑。
+     * 门禁失败抛 gateError：参数/引用非法 400，阶段或条目正忙（防并发重复入队）409。
+     */
+    function beginRegenerate(runId, stageId, { itemId, template, params } = {}) {
+        const run = requireRun(runId);
+        const def = requireStageDef(stageId);
+        const stage = requireStage(run, def);
+        // 只有生成型阶段有候选活扣；文本阶段（script/storyboard 等）明确拒绝。
+        const family = STAGE_TEMPLATE_FAMILY[def.id];
+        if (!family) throw gateError(`阶段「${def.title}」不是生成型阶段，不支持逐条重跑`);
+        // 阶段整体在跑（LLM 编排中，或已有条目在排队/生成）→ 拒绝并发重复入队。
+        if (stage.status === "running") throw gateError(`阶段「${def.title}」正在运行中，请先取消或等它结束再逐条重跑`, 409);
+        const items = def.id === "keyframe" ? stage.output?.frames : stage.output?.clips;
+        const item = Array.isArray(items) ? items.find((entry) => entry.id === itemId) : null;
+        if (!item) throw gateError(`阶段「${def.title}」里没有条目：${itemId ?? "(空)"}`);
+        // 该条目自己已有未完成候选 → 拒绝（即便阶段状态因人为修订不是 running，也不能撞 jobId）。
+        const unfinished = (item.candidates || []).find((candidate) => candidate.status === "queued" || candidate.status === "running");
+        if (unfinished) throw gateError(`条目「${item.id}」已有未完成候选（${unfinished.jobId}），请等它结束或先取消`, 409);
+        if (typeof runJob !== "function" || typeof jobs?.enqueue !== "function") throw gateError("未接入生成执行体，无法逐条重跑");
+        // template 必须存在且属于该阶段 family（图/视频），杜绝把视频模板塞进关键帧阶段。
+        const chosen = String(template ?? "").trim();
+        if (chosen) {
+            const known = templateFamilies.get(chosen);
+            if (!known) throw gateError(`模板不存在：${chosen}`);
+            if (known !== family) throw gateError(`模板「${chosen}」属于 ${known} family，不能用于「${def.title}」（需要 ${family}）`);
+        }
+        const shots = run.stages?.storyboard?.output?.shots || [];
+        const frames = def.id === "keyframe" ? items : run.stages?.keyframe?.output?.frames || [];
+        const plan = generativePlan(run, def, item, frames, shots);
+        if (!plan.ready) throw gateError(`条目「${item.id}」的前置产物还没就绪，不能重跑`);
+        plan.template = chosen || plan.template;
+        if (params && typeof params === "object") plan.params = { ...plan.params, ...params };
+        return { run, def, stage, item, plan };
+    }
+
+    /**
+     * 逐条重跑（regenerate）异步部分：把本次 attempt 入队并追加候选，新候选成为 selected。
+     * 入队非阻塞（真实执行在任务队列后台），job 终态由 projectJob 幂等回写。
+     */
+    function executeRegenerate(begun) {
+        const { run, def, stage, item, plan } = begun;
+        const jobId = enqueueAttempt(run, def, item, plan);
+        if (!jobId) throw gateError("生成任务入队失败");
+        item.template = plan.template;
+        recomputeStage(stage);
+        // 写一条 running 进度：阶段此前多半是 done，不刷新的话轻量进度轮询会一直读到旧的 phase:"done"。
+        writeProgress(run.id, { ...(readProgress(run.id) || {}), runId: run.id, stage: def.id, phase: "running", label: `重跑条目 ${item.id}（${plan.template}）` });
+        saveRun(run);
+        return { run, jobId };
     }
 
     /**
@@ -887,5 +954,5 @@ ${JSON.stringify(partials, null, 2)}
         return fixed;
     }
 
-    return { stages, list, get, create, estimate: estimateFor, runStage, beginStage, executeStage, stageProgress, reconcileRunning, setStageInput, projectJob, bindJobs, cancelStage, beginAssemble, executeAssemble, assembleStage };
+    return { stages, list, get, create, estimate: estimateFor, runStage, beginStage, executeStage, stageProgress, reconcileRunning, setStageInput, projectJob, bindJobs, cancelStage, beginAssemble, executeAssemble, assembleStage, beginRegenerate, executeRegenerate };
 }

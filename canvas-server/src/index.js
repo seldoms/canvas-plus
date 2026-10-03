@@ -457,6 +457,24 @@ router.post("/api/pipeline/runs/:id/steps/assembly/assemble", async (req, res, {
     }
 });
 
+/**
+ * 逐条重跑（活扣）：只给指定 item 换模型再追加一个候选，不动其它 item、不删旧候选。
+ * body `{ itemId, template?, params? }`；模板必须是该阶段同 family 的已有模板。
+ * 同步部分做门禁：参数/引用非法（item 不存在、文本阶段、模板非法）→ 400；
+ * 阶段或条目正忙（防并发重复入队）→ 409。通过后入队（非阻塞）→ 202，真实生成在任务队列后台跑。
+ */
+router.post("/api/pipeline/runs/:id/steps/:stage/regenerate", async (req, res, { params }) => {
+    try {
+        const body = await readJson(req).catch(() => ({}));
+        const options = body && typeof body === "object" ? body : {};
+        const begun = pipeline.beginRegenerate(params.id, params.stage, options);
+        const result = pipeline.executeRegenerate(begun);
+        sendJson(res, 202, { run: result.run, inflight: true, jobId: result.jobId, itemId: options.itemId });
+    } catch (error) {
+        sendError(res, error.status || 400, error.message);
+    }
+});
+
 // ——— P0-a Project 内核：/api/projects 系列 ———
 // 错误码约定：不存在 404、非法引用/参数 400、版本冲突 409。PATCH 冲突时回当前 version（D7 识别写入归属）。
 router.get("/api/projects", (req, res, { url }) => {

@@ -823,3 +823,167 @@ test("分块路径 resume：复用块结果不变，补跑块的提示词仍带�
     assert.match(rerun.messages.at(-1).content, /测试红线-忠于原著/);
     assert.ok(existsSync(join(env.config.dataDir, "runs", run.id, "chunks", "2.json")));
 });
+
+// ——— 活扣 regenerate（逐条换模型重跑）———
+
+/** 造几个最小模板文件供 family 校验；family 由文件名前缀推断（img→image、video→video）。 */
+function makeWorkflows(root, names) {
+    const dir = join(root, "workflows");
+    mkdirSync(dir, { recursive: true });
+    for (const name of names) writeFileSync(join(dir, `${name}.json`), "{}");
+    return dir;
+}
+
+/** 把关键帧阶段跑到 done（start / end 两个 Job 都成功），得到可安全重跑的流水线。 */
+async function toKeyframeDone(env) {
+    const ctx = await toKeyframe(env);
+    ctx.jobs.finish(ctx.startJob.id, "done", { outputs: [{ url: "/api/artifacts/job/s.png" }] });
+    ctx.jobs.finish(ctx.jobs.get(`${ctx.run.id}-sh1-end`).id, "done", { outputs: [{ url: "/api/artifacts/job/e.png" }] });
+    assert.equal(ctx.pipeline.get(ctx.run.id).stages.keyframe.status, "done");
+    return ctx;
+}
+
+test("regenerate：只给指定 item 追加一个候选，旧候选与其它 item 都不动", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    env.config.workflowsDir = makeWorkflows(env.root, ["img-alt", "img-alt2", "video-alt"]);
+    const { pipeline, jobs, run } = await toKeyframeDone(env);
+
+    const before = pipeline.get(run.id).stages.keyframe.output.frames;
+    const beforeStart = structuredClone(before.find((frame) => frame.id === "sh1-start"));
+    const beforeEnd = structuredClone(before.find((frame) => frame.id === "sh1-end"));
+
+    // 未指定 template 时沿用阶段默认模板（此时阶段仍是 done，可安全试算）
+    const defaulted = pipeline.beginRegenerate(run.id, "keyframe", { itemId: "sh1-end" });
+    assert.equal(defaulted.plan.template, "img-test");
+
+    const result = pipeline.executeRegenerate(pipeline.beginRegenerate(run.id, "keyframe", { itemId: "sh1-start", template: "img-alt" }));
+    assert.equal(result.run.stages.keyframe.status, "running", "新候选入队后阶段回到 running");
+    // 轻量进度也要刷新，否则前端会一直读到上一次的 phase:"done"
+    assert.equal(pipeline.stageProgress(run.id)?.phase, "running");
+    assert.match(pipeline.stageProgress(run.id)?.label, /sh1-start/);
+
+    const frames = pipeline.get(run.id).stages.keyframe.output.frames;
+    const start = frames.find((frame) => frame.id === "sh1-start");
+    const end = frames.find((frame) => frame.id === "sh1-end");
+
+    // ① 追加一个新候选，旧候选一条不少、内容原样保留
+    assert.equal(start.candidates.length, beforeStart.candidates.length + 1);
+    assert.deepEqual(start.candidates[0], beforeStart.candidates[0]);
+    // ② 换的模型写进新候选，并同步到 item.template
+    assert.equal(start.candidates.at(-1).template, "img-alt");
+    assert.equal(start.template, "img-alt");
+    assert.equal(start.selected, start.candidates.at(-1).jobId, "新候选成为 selected");
+    assert.notEqual(start.selected, beforeStart.selected, "旧 selected 不被沿用");
+    assert.notEqual(start.candidates.at(-1).jobId, beforeStart.candidates.at(-1).jobId, "新 jobId 不是旧 id");
+    // ③ 其它 item 完全不动（回写过的 end 帧一条候选不增）
+    assert.deepEqual(end, beforeEnd);
+    // 新任务确实入队，kind=image、template 为新值、沿用原 params 与 meta
+    const newJob = jobs.get(start.candidates.at(-1).jobId);
+    assert.equal(newJob.kind, "image");
+    assert.equal(newJob.template, "img-alt");
+    assert.equal(newJob.params.PROMPT, "少女走进老屋，中景");
+    assert.deepEqual(newJob.meta, { runId: run.id, stageId: "keyframe", itemId: "sh1-start" });
+});
+
+test("regenerate：assembly 阶段换 video 模板追加候选，错 family 模板被拒", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    env.config.workflowsDir = makeWorkflows(env.root, ["img-alt", "video-alt"]);
+    const { pipeline, jobs, run, startJob } = await toKeyframe(env);
+    jobs.finish(startJob.id, "done", { outputs: [{ url: "/api/artifacts/job/s.png" }] });
+    jobs.finish(jobs.get(`${run.id}-sh1-end`).id, "done", { outputs: [{ url: "/api/artifacts/job/e.png" }] });
+    await pipeline.runStage(run.id, "assembly");
+    const clipJob = jobs.get(pipeline.get(run.id).stages.assembly.output.clips[0].jobId);
+    jobs.finish(clipJob.id, "done", { outputs: [{ url: "/api/artifacts/job/c.mp4" }] });
+    assert.equal(pipeline.get(run.id).stages.assembly.status, "done");
+
+    // 图模板不能塞进视频阶段 → 400
+    assert.throws(
+        () => pipeline.beginRegenerate(run.id, "assembly", { itemId: "sh1-clip", template: "img-alt" }),
+        (error) => error.status === 400 && /不能用于/.test(error.message),
+    );
+
+    const result = pipeline.executeRegenerate(pipeline.beginRegenerate(run.id, "assembly", { itemId: "sh1-clip", template: "video-alt" }));
+    const clip = result.run.stages.assembly.output.clips[0];
+    assert.equal(clip.candidates.length, 2, "是追加而非替换");
+    assert.equal(clip.candidates.at(-1).template, "video-alt");
+    const newJob = jobs.get(result.jobId);
+    assert.equal(newJob.kind, "video");
+    assert.equal(newJob.params.INPUT_IMAGE, "/api/artifacts/job/s.png");
+});
+
+test("regenerate：文本阶段 / item 不存在 / 模板非法 → 400 且无副作用", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    env.config.workflowsDir = makeWorkflows(env.root, ["img-alt", "video-alt"]);
+    const { pipeline, jobs, run } = await toKeyframeDone(env);
+    const snapshot = JSON.stringify(pipeline.get(run.id).stages.keyframe);
+    const jobCount = jobs.list().length;
+
+    // 文本阶段没有候选活扣
+    assert.throws(() => pipeline.beginRegenerate(run.id, "script", { itemId: "sh1-start" }), (error) => error.status === 400 && /不是生成型阶段/.test(error.message));
+    // item 不存在
+    assert.throws(() => pipeline.beginRegenerate(run.id, "keyframe", { itemId: "nope", template: "img-alt" }), (error) => error.status === 400 && /没有条目/.test(error.message));
+    // 模板不存在
+    assert.throws(() => pipeline.beginRegenerate(run.id, "keyframe", { itemId: "sh1-start", template: "nope" }), (error) => error.status === 400 && /模板不存在/.test(error.message));
+    // 模板不属于该阶段 family（视频模板塞进关键帧）
+    assert.throws(() => pipeline.beginRegenerate(run.id, "keyframe", { itemId: "sh1-start", template: "video-alt" }), (error) => error.status === 400 && /不能用于/.test(error.message));
+    // 未知阶段 / 流水线不存在
+    assert.throws(() => pipeline.beginRegenerate(run.id, "nope", { itemId: "x" }), /未知阶段/);
+    assert.throws(() => pipeline.beginRegenerate("run-nope", "keyframe", { itemId: "x" }), /流水线不存在/);
+
+    // 所有拒绝路径都不得产生副作用
+    assert.equal(JSON.stringify(pipeline.get(run.id).stages.keyframe), snapshot);
+    assert.equal(jobs.list().length, jobCount);
+});
+
+test("regenerate：阶段运行中或该 item 已有未完成候选 → 409", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    env.config.workflowsDir = makeWorkflows(env.root, ["img-alt", "video-alt"]);
+
+    // 场景一：阶段正 running（start 已入队、还没终态）
+    const running = await toKeyframe(env);
+    assert.equal(running.pipeline.get(running.run.id).stages.keyframe.status, "running");
+    assert.throws(
+        () => running.pipeline.beginRegenerate(running.run.id, "keyframe", { itemId: "sh1-start", template: "img-alt" }),
+        (error) => error.status === 409 && /正在运行中/.test(error.message),
+    );
+
+    // 场景二：人为把阶段标成 done，但该条目仍挂着 queued 候选 → 条目级门禁 409
+    const done = await toKeyframeDone(env);
+    const output = structuredClone(done.pipeline.get(done.run.id).stages.keyframe.output);
+    output.frames[0].candidates.push({ template: "img-alt", jobId: "manual-pending", artifactUrl: null, status: "queued", params: {}, createdAt: new Date().toISOString() });
+    done.pipeline.setStageInput(done.run.id, "keyframe", { output });
+    assert.equal(done.pipeline.get(done.run.id).stages.keyframe.status, "done", "人为修订后阶段是 done");
+    assert.throws(
+        () => done.pipeline.beginRegenerate(done.run.id, "keyframe", { itemId: "sh1-start", template: "img-alt" }),
+        (error) => error.status === 409 && /已有未完成候选/.test(error.message),
+    );
+});
+
+test("regenerate：连续两次各追加一条候选，不会合并成一条", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    env.config.workflowsDir = makeWorkflows(env.root, ["img-alt", "img-alt2", "video-alt"]);
+    const { pipeline, jobs, run } = await toKeyframeDone(env);
+    const baseCount = pipeline.get(run.id).stages.keyframe.output.frames.find((frame) => frame.id === "sh1-start").candidates.length;
+
+    const first = pipeline.executeRegenerate(pipeline.beginRegenerate(run.id, "keyframe", { itemId: "sh1-start", template: "img-alt" }));
+    jobs.finish(first.jobId, "done", { outputs: [{ url: "/api/artifacts/job/re1.png" }] });
+    assert.equal(pipeline.get(run.id).stages.keyframe.status, "done", "第一次重跑完成后阶段回到 done");
+
+    const second = pipeline.executeRegenerate(pipeline.beginRegenerate(run.id, "keyframe", { itemId: "sh1-start", template: "img-alt2" }));
+    assert.notEqual(first.jobId, second.jobId, "两次重跑必须是两个不同 jobId");
+
+    const start = pipeline.get(run.id).stages.keyframe.output.frames.find((frame) => frame.id === "sh1-start");
+    assert.equal(start.candidates.length, baseCount + 2, "两次重跑各自追加一条，不合并");
+    const ids = start.candidates.map((candidate) => candidate.jobId);
+    assert.equal(new Set(ids).size, ids.length, "候选 jobId 全部唯一");
+    assert.ok(ids.includes(first.jobId) && ids.includes(second.jobId));
+    // 第二次换的是新模板；第一次已成功的产物没有丢
+    assert.equal(start.candidates.at(-1).template, "img-alt2");
+    assert.equal(start.artifactUrl, "/api/artifacts/job/re1.png");
+    assert.equal(start.candidates.find((candidate) => candidate.jobId === first.jobId).status, "done");
+});
