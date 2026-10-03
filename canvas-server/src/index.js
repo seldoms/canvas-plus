@@ -746,6 +746,11 @@ router.post("/api/projects/:id/asset-refs/:refId/unlink", routeHandler(async (re
     sendJson(res, 200, { assetRef: projects.assets.unlink(params.id, params.refId, await readJson(req)) });
 }));
 
+// 跨项目资产总览（只读聚合）：汇总全部项目的 AssetRef，供顶部「我的资产」页跨项目筛选、站内预览与跳转。
+router.get("/api/asset-refs", routeHandler((req, res) => {
+    sendJson(res, 200, projects.assets.overview());
+}));
+
 // ——— P0-f 制作圣经与确认锁：/bibles 系列（实体持久化 + 状态机 + revision 语义）———
 // 错误码沿用：不存在 404、非法类别/非法迁移 400、重复 id 409。改已批准/已锁对象→派生新 revision（不静默覆盖）。
 router.get("/api/projects/:id/bibles", routeHandler((req, res, { params }) => {

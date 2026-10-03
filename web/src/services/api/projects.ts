@@ -1,7 +1,7 @@
 import axios, { type AxiosRequestConfig } from "axios";
 
 import i18n from "@/i18n";
-import type { ArtifactId, AssetRef, AssetRole, Episode, EpisodeId, Plan, Project, Scene, SceneId, Shot, ShotId } from "@/types/domain";
+import type { ArtifactId, AssetRef, AssetRefId, AssetRole, Episode, EpisodeId, Plan, Project, ProjectId, Scene, SceneId, Shot, ShotId } from "@/types/domain";
 import { gatewayBaseUrl } from "./gateway";
 
 /**
@@ -227,6 +227,50 @@ export async function updateShot(projectId: string, shotId: string, patch: ShotP
 export async function listAssetRefs(projectId: string): Promise<AssetRef[]> {
     const data = await projectRequest<unknown>({ method: "get", url: `/api/projects/${encodeURIComponent(projectId)}/asset-refs` });
     return unwrapList<AssetRef>(data, "assetRefs");
+}
+
+/** 跨项目资产总览里的一条记录：服务端已把常用字段解析好（见 canvas-server/README.md「资产总览」）。 */
+export type AssetOverviewRef = {
+    id: AssetRefId;
+    projectId: ProjectId;
+    projectTitle: string;
+    role: AssetRole;
+    kind: string;
+    name: string;
+    bindingId: string;
+    /** 渲染用产物 URL（相对路径，需过 resolveGatewayUrl）；无产物为空串。 */
+    url: string;
+    artifactCount: number;
+    episodeId: string;
+    sceneId: string;
+    shotId: string;
+    stageId: string;
+    createdAt: string | null;
+    updatedAt: string | null;
+};
+
+/** GET /api/asset-refs 的响应；counts 供筛选项与页头统计，warnings 是跳过的损坏项目。 */
+export type AssetOverview = {
+    assetRefs: AssetOverviewRef[];
+    counts: {
+        total: number;
+        byRole: Record<string, number>;
+        byProject: { projectId: string; projectTitle: string; count: number }[];
+    };
+    warnings: string[];
+};
+
+/** 读跨项目资产总览；网关未挂该端点时回落到 SPA 页，这里兜底成空总览，避免页面崩。 */
+export async function listAssetRefsOverview(): Promise<AssetOverview> {
+    const data = await projectRequest<Partial<AssetOverview> | null>({ method: "get", url: "/api/asset-refs" });
+    const assetRefs = Array.isArray(data?.assetRefs) ? data.assetRefs : [];
+    const byRole = data?.counts?.byRole && typeof data.counts.byRole === "object" ? data.counts.byRole : {};
+    const byProject = Array.isArray(data?.counts?.byProject) ? data.counts.byProject : [];
+    return {
+        assetRefs,
+        counts: { total: Number(data?.counts?.total) || assetRefs.length, byRole, byProject },
+        warnings: Array.isArray(data?.warnings) ? data.warnings : [],
+    };
 }
 
 export async function createAssetRef(projectId: string, input: AssetRefCreateInput) {

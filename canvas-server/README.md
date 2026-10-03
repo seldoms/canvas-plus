@@ -95,6 +95,22 @@ RunningHub 是**保留的可选云端后端**：未配置 `runninghub.apiKey` �
 `Job` = `{ id, kind: "image"｜"video"｜"upscale"｜"edit", backend: "local"｜"runninghub", template, name, params, status: "queued"｜"running"｜"done"｜"error"｜"canceled", promptId?, progress?: { value, max, node? }, outputs: Artifact[], error?, createdAt, startedAt?, finishedAt? }`
 `Artifact` = `{ filename, url, type: "image"｜"video"｜"audio"｜"file", width?, height?, bytes? }`
 
+### 资产总览（跨项目聚合）
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/asset-refs` | 只读聚合全部活动项目的 `AssetRef`，供顶部「我的资产」页跨项目筛选/预览/跳转 |
+
+响应：`{ assetRefs: AssetRefView[], counts: { total, byRole: { [role]: number }, byProject: [{ projectId, projectTitle, count }] }, warnings: string[] }`
+
+`AssetRefView` = `{ id, projectId, projectTitle, role, kind, name, url, artifactCount, bindingId, episodeId, sceneId, shotId, stageId, createdAt, updatedAt }`
+
+- **已解析字段**：`role` 取引用自身；`kind`/`stageId` 取 `metadata`；`name` 优先 `metadata.name`、回落 `bindingId`；
+  `url` 按 **`selectedArtifactId` → `metadata.artifactUrl` → `artifactIds[0]` → 空串** 回落，前端可直接喂 `<img>` / `<video>`。
+- **排序**：按项目成段（项目按 `updatedAt` 新→旧），组内按 `id` 的 ULID 时序新→旧（引用自身无时间字段时用它兜底）。
+- **计数**：`byRole` 只列数据里真实出现过的 role（筛选项据此生成，不在前端硬编码名单）；`byProject` 只含有资产的项目。
+- **容错**：某个 `project.json` 缺失/损坏、`assetRefs` 非数组、单条引用损坏时**跳过并在 `warnings[]` 记录**，接口不 500。
+
 ### 流水线（五段式）
 
 | 方法 | 路径 | 说明 |
