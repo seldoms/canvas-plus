@@ -243,3 +243,22 @@ test("applyAudioProjection 对空项目/空候选为空操作，非法项目返�
     const invalid = applyAudioProjection(null, { profiles: [], cues: [] });
     assert.deepEqual(invalid, { project: null, applied: false, appliedProfiles: false, appliedCues: false });
 });
+
+test("projectAudioCues 透传 performance 与 speed：注解不进朗读文本、语速默认不被注解驱动", () => {
+    const cues = projectAudioCues({
+        project: { script: { characters: [{ id: "c1", name: "老周" }] }, episodes: [] },
+        storyboard: {
+            shots: [{
+                id: "sh5", sceneId: "sc1", durationSec: 6, episodeId: "ep_0001", characterId: "c1",
+                dialogue: "姑娘，这么晚，去哪儿？（低声、音量低、语速慢、略带关心）",
+            }],
+        },
+        voiceProfiles: [{ id: "vp_c1", characterId: "c1", speaker: "Uncle_fu" }],
+    });
+    assert.equal(cues.length, 1);
+    const cue = cues[0];
+    assert.equal(cue.text, "姑娘，这么晚，去哪儿？", "text 必须是清洗后的纯台词");
+    assert.ok(!/语速慢/.test(cue.text), "注解不得残留进朗读文本");
+    assert.equal(cue.performance, "低声、音量低、语速慢、略带关心", "注解应独立保留供人工/口型参考");
+    assert.equal(cue.speed, 1, "语速默认正常 1.0 —— 表演注解不参与生产参数（#50）");
+});

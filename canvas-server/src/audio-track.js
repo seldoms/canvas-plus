@@ -258,6 +258,10 @@ export function projectAudioCues({ project, storyboard, voiceProfiles } = {}) {
             speakerId: cue.characterId ?? null,
             voiceProfileId: cue.voiceProfileId ?? null,
             text: cue.text ?? "",
+            // 表演提示（台词括号注解）与解析出的语速：注解供人工/口型参考，speed 供构造 TTS 请求体；
+            // 二者都**不进朗读文本**（text 已是清洗后的纯台词）。
+            performance: cue.performance ?? "",
+            speed: num(cue.speed) ?? null,
             startSec: start ?? 0,
             durationSec,
             type: cue.type,
