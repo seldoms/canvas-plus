@@ -1,7 +1,7 @@
 // 分镜数据模型、解析、重排与本地体检规则(不调 LLM)。
 
 export type Shot = {
-    id: string; // sh1, sh2... 与排序位置一致
+    id: string; // sh_ 稳定 id，建镜时生成；增删调序只改 index，id 永不变（契约 §4）
     index: number; // 从 1 严格递增
     sceneId?: string;
     durationSec: number; // 1~8
@@ -33,7 +33,7 @@ export function readStoryboard(raw: unknown): Storyboard {
     const shots = (Array.isArray(obj.shots) ? obj.shots : []).map(normalizeShot).filter((shot): shot is Shot => Boolean(shot));
     return {
         title: typeof obj.title === "string" ? obj.title : undefined,
-        shots: reindex(shots),
+        shots: reindex(ensureShotIds(shots)),
         sourceFiles: Array.isArray(obj.sourceFiles) ? obj.sourceFiles.filter((f): f is string => typeof f === "string") : undefined,
         sourceText: typeof obj.sourceText === "string" ? obj.sourceText : undefined,
     };
@@ -62,9 +62,51 @@ function normalizeShot(raw: unknown): Shot | null {
     };
 }
 
-// 增删调序后重排:id 与 index 保持 sh1..shN 连续
+/** 生成一个稳定镜头 id（sh_ 前缀，对应契约 §4 的 Shot.id）。 */
+export function newShotId(): string {
+    const rand =
+        typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+            ? crypto.randomUUID().replace(/-/g, "").slice(0, 20)
+            : `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+    return `sh_${rand}`;
+}
+
+/** 只给缺失 id 的镜头补一个稳定 id；已有 id（含旧版 sh1..shN）逐字保留，保证旧数据仍可读。 */
+export function ensureShotIds(shots: Shot[]): Shot[] {
+    return shots.map((shot) => (shot.id ? shot : { ...shot, id: newShotId() }));
+}
+
+/** 重排 index（从 1 严格递增）。id 稳定不可重排：增删调序只改 index（契约 §4）。 */
 export function reindex(shots: Shot[]): Shot[] {
-    return shots.map((shot, i) => ({ ...shot, id: `sh${i + 1}`, index: i + 1 }));
+    return shots.map((shot, i) => ({ ...shot, index: i + 1 }));
+}
+
+/** 在 afterId 之后插入一个新镜（新镜分配新 id）；afterId 不存在时追加到末尾。其余镜 id 不变，只重排 index。 */
+export function insertShotAfter(shots: Shot[], afterId: string): Shot[] {
+    const found = shots.findIndex((shot) => shot.id === afterId);
+    const at = found < 0 ? shots.length : found + 1;
+    const inserted: Shot = { ...emptyShot(), id: newShotId(), index: 0 };
+    return reindex([...shots.slice(0, at), inserted, ...shots.slice(at)]);
+}
+
+/** 追加一个新镜到末尾。 */
+export function appendShot(shots: Shot[]): Shot[] {
+    return insertShotAfter(shots, "");
+}
+
+/** 删除指定镜；其余镜 id 不变，只重排 index。id 不回收：删掉的 id 不会被后续新镜复用。 */
+export function removeShotById(shots: Shot[], id: string): Shot[] {
+    return reindex(shots.filter((shot) => shot.id !== id));
+}
+
+/** 与相邻镜交换次序；只重排 index，所有 id 不变。越界时仅重排 index。 */
+export function moveShotBy(shots: Shot[], id: string, dir: -1 | 1): Shot[] {
+    const i = shots.findIndex((shot) => shot.id === id);
+    const j = i + dir;
+    if (i < 0 || j < 0 || j >= shots.length) return reindex(shots);
+    const next = [...shots];
+    [next[i], next[j]] = [next[j], next[i]];
+    return reindex(next);
 }
 
 export function stripCodeFence(text: string): string {

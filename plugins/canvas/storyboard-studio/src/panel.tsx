@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "@infinite-canvas/plugin-sdk";
 import type { CSSProperties } from "react";
 import type { CanvasNodeContext, CanvasNodePanelProps, ModelCapability, ModelOption } from "@infinite-canvas/plugin-sdk";
-import { REWRITE_PROMPT, SHOT_SIZES, STORYBOARD_PROMPT, checkShot, emptyShot, parseStoryboard, readStoryboard, reindex, stripCodeFence, type Shot, type ShotIssue, type Storyboard } from "./storyboard";
+import { REWRITE_PROMPT, SHOT_SIZES, STORYBOARD_PROMPT, appendShot, checkShot, insertShotAfter, moveShotBy, parseStoryboard, readStoryboard, removeShotById, stripCodeFence, type Shot, type ShotIssue, type Storyboard } from "./storyboard";
 
 type Settings = { textModel: string; imageModel: string; videoModel: string; count: number; size: string };
 const SETTINGS_KEY = "settings";
@@ -117,25 +117,12 @@ export function StoryboardPanel({ ctx, onClose }: CanvasNodePanelProps) {
     const [issueMap, setIssueMap] = useState<Record<string, ShotIssue[]>>({});
     const issueCount = Object.keys(issueMap).length;
 
-    // ---- 镜头结构操作(增删调序后重排 id/index) ----
-    const mutateShots = (fn: (shots: Shot[]) => Shot[]) => scheduleCommit({ ...board, shots: reindex(fn(board.shots)) });
+    // ---- 镜头结构操作(增删调序只重排 index;id 稳定不变) ----
+    const mutateShots = (fn: (shots: Shot[]) => Shot[]) => scheduleCommit({ ...board, shots: fn(board.shots) });
     const updateShot = (id: string, patch: Partial<Shot>) => mutateShots((shots) => shots.map((s) => (s.id === id ? { ...s, ...patch } : s)));
-    const moveShot = (id: string, dir: -1 | 1) =>
-        mutateShots((shots) => {
-            const i = shots.findIndex((s) => s.id === id);
-            const j = i + dir;
-            if (i < 0 || j < 0 || j >= shots.length) return shots;
-            const next = [...shots];
-            [next[i], next[j]] = [next[j], next[i]];
-            return next;
-        });
-    const insertShot = (id: string) =>
-        mutateShots((shots) => {
-            const i = shots.findIndex((s) => s.id === id);
-            const shot: Shot = { ...emptyShot(), id: "", index: 0 };
-            return [...shots.slice(0, i + 1), shot, ...shots.slice(i + 1)];
-        });
-    const removeShot = (id: string) => mutateShots((shots) => shots.filter((s) => s.id !== id));
+    const moveShot = (id: string, dir: -1 | 1) => mutateShots((shots) => moveShotBy(shots, id, dir));
+    const insertShot = (id: string) => mutateShots((shots) => insertShotAfter(shots, id));
+    const removeShot = (id: string) => mutateShots((shots) => removeShotById(shots, id));
 
     // ---- 原文文件导入(拖入/点选多个文本文件,按文件名自然排序拼接) ----
     const TEXT_FILE_RE = /\.(txt|md|markdown|srt|ass|csv|json|text)$/i;
@@ -598,7 +585,7 @@ export function StoryboardPanel({ ctx, onClose }: CanvasNodePanelProps) {
                     <div style={{ color: theme.node.placeholder, textAlign: "center", padding: "24px 0" }}>还没有镜头。拖入剧本/小说文件或连接上游文本节点后点「生成分镜」,或点卡片上的 ＋ 手动添加。</div>
                 )}
                 <div>
-                    <button type="button" className="sb-btn" onClick={() => mutateShots((shots) => [...shots, { ...emptyShot(), id: "", index: 0 } as Shot])}>
+                    <button type="button" className="sb-btn" onClick={() => mutateShots(appendShot)}>
                         ＋ 添加镜头
                     </button>
                 </div>
