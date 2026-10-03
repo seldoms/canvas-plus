@@ -150,6 +150,8 @@ const pipeline = createPipeline({
     attachProjectRun: (projectId, runId) => projects.attachRun(projectId, runId),
     // 生成型阶段（关键帧/片段合成）产物自动登记为项目 AssetRef：幂等、解耦、失败不拖垮阶段。
     registerAssetRef: (projectId, input) => projects.assets.create(projectId, input),
+    // 就地更新已存在的资产引用（参考图绑定走这条路：空引用自愈为已绑定，不产生重复引用）。
+    updateAssetRef: (projectId, refId, patch) => projects.assets.update(projectId, refId, patch),
 });
 // 订阅一次任务队列的 change 事件：Job 落终态时把产物回写流水线条目；并重放 jobs.json 里的终态任务，
 // 让服务重启后能从任务队列重建流水线状态（幂等）。

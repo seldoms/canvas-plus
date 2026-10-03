@@ -134,12 +134,12 @@ function fakeLlm({ frames = FRAMES } = {}) {
     };
 }
 
-/** 假项目存储：引用写回同一对象，形状对齐 assets.create 的产物。 */
+/** 假项目存储：引用写回同一对象，形状对齐 assets.create / assets.update 的产物。 */
 function fakeProject(id = "prj_ref_lock") {
     const project = { id, styleAnchor: "", plan: {}, assetRefs: [] };
     const calls = [];
     const register = (projectId, input) => {
-        calls.push({ projectId, input });
+        calls.push({ op: "create", projectId, input });
         const ref = {
             id: `as_${calls.length}`,
             projectId,
@@ -152,7 +152,16 @@ function fakeProject(id = "prj_ref_lock") {
         project.assetRefs = [...project.assetRefs, ref];
         return ref;
     };
-    return { project, calls, register };
+    // 对齐 assets.update：按 refId 就地改字段（含 role/artifactIds/selectedArtifactId/metadata），不新增引用。
+    const update = (projectId, refId, patch = {}) => {
+        calls.push({ op: "update", projectId, refId, input: patch });
+        const ref = project.assetRefs.find((item) => item.id === refId);
+        if (!ref) throw new Error(`资产引用不存在：${refId}`);
+        Object.assign(ref, patch);
+        if (ref.selectedArtifactId && !ref.artifactIds.includes(ref.selectedArtifactId)) throw new Error(`selectedArtifactId 不在 artifactIds 内：${ref.selectedArtifactId}`);
+        return ref;
+    };
+    return { project, calls, register, update };
 }
 
 /** 人工预置角色/场景参考图引用（模拟「参考图已生成并选定」）。 */
@@ -163,7 +172,7 @@ function seedRefs(project, runId) {
     ];
 }
 
-function build(env, { jobs, llm, getProject, registerAssetRef }) {
+function build(env, { jobs, llm, getProject, registerAssetRef, updateAssetRef }) {
     return createPipeline({
         config: env.config,
         skillsDir: env.skillsDir,
@@ -173,6 +182,7 @@ function build(env, { jobs, llm, getProject, registerAssetRef }) {
         runJob: async () => ({ outputs: [] }),
         getProject,
         registerAssetRef,
+        updateAssetRef,
     });
 }
 
@@ -182,7 +192,7 @@ async function runToDesignBound(root, opts = {}) {
     const project = fakeProject();
     const jobs = fakeJobQueue();
     const llm = fakeLlm(opts);
-    const pipeline = build(env, { jobs, llm, getProject: (id) => (id === project.project.id ? project.project : null), registerAssetRef: project.register });
+    const pipeline = build(env, { jobs, llm, getProject: (id) => (id === project.project.id ? project.project : null), registerAssetRef: project.register, updateAssetRef: project.update });
     pipeline.bindJobs();
     const run = pipeline.create({ novel: "末班车的约定", title: "短篇", options: { projectId: project.project.id } });
     await pipeline.runStage(run.id, "script");
@@ -410,4 +420,67 @@ test("④ OUTPUT_PREFIX 按 run+条目隔离：不同 run 的同一 item 不再�
     const endPrefix = jobs.get(`${run.id}-sh1-end`).params.OUTPUT_PREFIX;
     assert.equal(endPrefix, `canvas/${run.id}_sh1-end`);
     assert.notEqual(endPrefix, startPrefix, "同一 run 内不同条目前缀不同");
+});
+
+// ——— ①b/①c/①d 幂等判据修复：空引用不再挡住绑定（自愈存量空占位） ———
+
+test("①b 存量空引用（artifactIds:[]）在本轮参考图终态后就地 update 填充，不新增重复引用（自愈）", async (t) => {
+    const root = mkdtempSync(join(tmpdir(), "canvas-reflock-heal-empty-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const env = makeEnv(root);
+    const project = fakeProject("prj_heal");
+    const jobs = fakeJobQueue();
+    const pipeline = build(env, { jobs, llm: fakeLlm(), getProject: (id) => (id === project.project.id ? project.project : null), registerAssetRef: project.register, updateAssetRef: project.update });
+    pipeline.bindJobs();
+    const run = pipeline.create({ novel: "末班车的约定", title: "短篇", options: { projectId: project.project.id } });
+    await pipeline.runStage(run.id, "script");
+    await pipeline.runStage(run.id, "storyboard");
+    await pipeline.runStage(run.id, "design");
+    // 复现 bug 现场：上一版 registerDesignAssets 预建的 3 条空引用（同 runId/stageId，artifactIds 空、selected null）
+    project.project.assetRefs = [
+        { id: "as_empty_c1", role: "character", bindingId: "c1", artifactIds: [], selectedArtifactId: null, metadata: { runId: run.id, stageId: "design" } },
+        { id: "as_empty_c2", role: "character", bindingId: "c2", artifactIds: [], selectedArtifactId: null, metadata: { runId: run.id, stageId: "design" } },
+        { id: "as_empty_loc1", role: "scene", bindingId: "loc1", artifactIds: [], selectedArtifactId: null, metadata: { runId: run.id, stageId: "design" } },
+    ];
+    const beforeIds = project.project.assetRefs.map((ref) => ref.id);
+    for (const job of jobs.list().filter((entry) => entry.meta?.stageId === "design")) jobs.finish(job.id, "done", { outputs: [{ url: `/api/artifacts/${job.id}/${job.id}.png`, type: "image" }] });
+
+    // 关键断言：条数不变（就地 update，不新增引用）；原来的空引用被打通
+    assert.deepEqual(project.project.assetRefs.map((ref) => ref.id), beforeIds, "空引用不新增重复引用（就地 update）");
+    const c1 = project.project.assetRefs.find((ref) => ref.id === "as_empty_c1");
+    assert.deepEqual(c1.artifactIds, [`/api/artifacts/${run.id}-c1-closeup/${run.id}-c1-closeup.png`, `/api/artifacts/${run.id}-c1-turnaround/${run.id}-c1-turnaround.png`]);
+    assert.equal(c1.selectedArtifactId, `/api/artifacts/${run.id}-c1-closeup/${run.id}-c1-closeup.png`, "空引用填上正脸特写");
+    const loc1 = project.project.assetRefs.find((ref) => ref.id === "as_empty_loc1");
+    assert.equal(loc1.selectedArtifactId, `/api/artifacts/${run.id}-loc1-master/${run.id}-loc1-master.png`, "场景空引用填上空场母版");
+    assert.ok(project.calls.some((call) => call.op === "update" && call.refId === "as_empty_c1"), "空引用走 update 而非 create");
+    assert.ok(!project.calls.some((call) => call.op === "create"), "绑定路径不产生任何新引用");
+});
+
+test("①c 已有产物引用：重复投递终态不覆盖已有 selectedArtifactId、不重复登记（幂等）", async (t) => {
+    const root = mkdtempSync(join(tmpdir(), "canvas-reflock-bound-idem-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const { project, jobs, pipeline, run } = await runToDesignBound(root);
+
+    const turnaround = `/api/artifacts/${run.id}-c1-turnaround/${run.id}-c1-turnaround.png`;
+    const c1 = project.project.assetRefs.find((ref) => ref.bindingId === "c1");
+    c1.selectedArtifactId = turnaround; // 模拟既有/用户选择：采用版本不是默认正脸特写
+    const beforeLen = project.project.assetRefs.length;
+    const beforeCalls = project.calls.length;
+
+    for (const job of jobs.list().filter((entry) => entry.meta?.stageId === "design")) pipeline.projectJob(jobs.get(job.id));
+
+    assert.equal(project.project.assetRefs.length, beforeLen, "已有产物 → 不重复登记");
+    assert.equal(project.calls.length, beforeCalls, "已有产物 → 既不 create 也不 update");
+    assert.equal(c1.selectedArtifactId, turnaround, "不覆盖已有 selectedArtifactId");
+});
+
+test("①d 无任何已有引用：按 bindingId 新建引用（create），每个 binding 恰好一条", async (t) => {
+    const root = mkdtempSync(join(tmpdir(), "canvas-reflock-create-new-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const { project, run } = await runToDesignBound(root);
+
+    const forRun = project.project.assetRefs.filter((ref) => ref.metadata?.runId === run.id && ref.metadata?.stageId === "design");
+    assert.deepEqual(forRun.map((ref) => ref.bindingId).sort(), ["c1", "c2", "loc1"], "每个 binding 一条新建引用");
+    assert.ok(project.calls.some((call) => call.op === "create"), "无引用 → 走 create");
+    assert.ok(!project.calls.some((call) => call.op === "update"), "无引用 → 不需要 update");
 });

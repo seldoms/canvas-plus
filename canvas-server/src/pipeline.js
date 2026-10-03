@@ -239,7 +239,7 @@ function fillTemplate(text, context) {
  * assemble 是「片段 → 成片」的后期执行体，默认用 delivery.js 的 assembleEpisode；
  * 编排器只负责判定何时拼接、把清单与参数交给它，ffmpeg 命令构造与执行都留在 delivery.js。
  */
-export function createPipeline({ config, skillsDir, jobs, comfy, llm, runJob, assemble = assembleEpisode, getProject, applyPlanSuggestion, applyScriptProjection, applyEpisodeProjection, attachProjectRun, registerAssetRef } = {}) {
+export function createPipeline({ config, skillsDir, jobs, comfy, llm, runJob, assemble = assembleEpisode, getProject, applyPlanSuggestion, applyScriptProjection, applyEpisodeProjection, attachProjectRun, registerAssetRef, updateAssetRef } = {}) {
     const pipelineConfig = config?.pipeline || {};
     // 半自动总开关：注入 getProject（项目化模式）时才启用「单镜失败自动重试」。
     // 未注入时一律保持旧的「失败即止」行为；plan 驱动参数靠 projectOf 返回 null 自然回落，不需要额外开关。
@@ -1299,8 +1299,10 @@ ${JSON.stringify(partials, null, 2)}
 
     /**
      * 参考图条目落地后把产物绑定到对应 AssetRef：artifactIds 收全部已产出参考图、selectedArtifactId 取最高优先级那张
-     * （角色优先正脸特写、场景取空场母版）。等同一绑定的参考图全部终态才登记——一次写入即最终结果，不需要二次 update
-     * （registerAssetRef 只 create；assets.update 未接线）。幂等：同 (runId,stageId,bindingId) 已有引用即跳过。
+     * （角色优先正脸特写、场景取空场母版；referenceKindRank 语义不变）。等同一绑定的参考图全部终态才登记——一次写入即最终结果。
+     * 幂等判据 = 「同 (runId, stageId, bindingId) 且**已绑定产物**」：命中即跳过，绝不复写已有 selectedArtifactId（不覆盖既有选择）。
+     * 关键修复：历史遗留的**空引用**（artifactIds 空且无 selectedArtifactId）不再算「已有」而 continue——那样会让参考图永远绑不上去；
+     * 改为就地 update 该引用填入本轮产物（自愈存量空占位），否则才 create（同 bindingId 不产生重复引用）。
      */
     function bindDesignReferenceArtifacts(run, stage) {
         if (typeof registerAssetRef !== "function") return;
@@ -1311,9 +1313,20 @@ ${JSON.stringify(partials, null, 2)}
         const items = Array.isArray(stage.output?.references) ? stage.output.references : [];
         if (!items.length) return;
         const refs = Array.isArray(project.assetRefs) ? project.assetRefs : [];
-        const existing = new Set(
-            refs.filter((ref) => ref?.metadata?.runId === run.id && ref?.metadata?.stageId === "design").map((ref) => ref.bindingId),
-        );
+        // 已有「同 (runId, stageId)」引用按 bindingId 索引，并区分「已绑定产物」/「空引用」两种语义：
+        //  - 已绑定（artifactIds 非空 或 selectedArtifactId 存在）→ 幂等锚点，跳过；
+        //  - 空引用（上一版 registerDesignAssets 预建的占位）→ 待 update 填充，不能跳过。
+        const existingByBinding = new Map();
+        for (const ref of refs) {
+            if (ref?.metadata?.runId !== run.id || ref?.metadata?.stageId !== "design") continue;
+            const key = String(ref.bindingId ?? "").trim();
+            if (!key) continue;
+            const bound = (Array.isArray(ref.artifactIds) && ref.artifactIds.length > 0) || Boolean(ref.selectedArtifactId);
+            const prev = existingByBinding.get(key);
+            // 同 bindingId 多条（历史重复）：已绑定的那条优先作幂等锚点；否则保留第一条空引用用于就地填充。
+            if (!prev) existingByBinding.set(key, { ref, bound });
+            else if (bound && !prev.bound) existingByBinding.set(key, { ref, bound });
+        }
         const byBinding = new Map();
         for (const item of items) {
             const key = String(item?.bindingId ?? "").trim();
@@ -1322,33 +1335,40 @@ ${JSON.stringify(partials, null, 2)}
             byBinding.get(key).push(item);
         }
         for (const [bindingId, group] of byBinding) {
-            if (existing.has(bindingId)) continue;
+            const existing = existingByBinding.get(bindingId);
+            if (existing?.bound) continue; // 已绑定产物 → 幂等跳过，不覆盖已有 selectedArtifactId
             const terminal = group.every((item) => item.status === "done" || item.status === "error" || item.status === "canceled");
             if (!terminal) continue;
             const role = String(group[0]?.role ?? "").trim();
             if (role !== ASSET_ROLE.CHARACTER && role !== ASSET_ROLE.SCENE) continue;
             const ordered = group.slice().sort((a, b) => referenceKindRank(a.kind) - referenceKindRank(b.kind));
             const artifactIds = ordered.map((item) => item.artifactUrl).filter(Boolean);
+            if (!artifactIds.length) continue; // 全失败/无产物：不登记空引用（避免污染项目引用表）
             const preferred = ordered.find((item) => item.artifactUrl);
+            const selectedArtifactId = preferred?.artifactUrl ?? null;
+            const metadata = {
+                source: "pipeline",
+                runId: run.id,
+                stageId: stage.id,
+                kind: "reference",
+                name: String(group[0]?.name ?? ""),
+                artifactUrl: preferred?.artifactUrl ?? null,
+                jobId: preferred?.jobId ?? null,
+                views: Array.isArray(group[0]?.views) ? group[0].views : [],
+                confirmed: false,
+            };
             try {
-                registerAssetRef(projectId, {
-                    role,
-                    bindingId,
-                    artifactIds,
-                    selectedArtifactId: preferred?.artifactUrl ?? null,
-                    metadata: {
-                        source: "pipeline",
-                        runId: run.id,
-                        stageId: stage.id,
-                        kind: "reference",
-                        name: String(group[0]?.name ?? ""),
-                        artifactUrl: preferred?.artifactUrl ?? null,
-                        jobId: preferred?.jobId ?? null,
-                        views: Array.isArray(group[0]?.views) ? group[0].views : [],
-                        confirmed: false,
-                    },
-                });
-                existing.add(bindingId);
+                if (existing?.ref && typeof updateAssetRef === "function") {
+                    // 空引用就地填充（自愈存量空引用的关键路径）：不新增引用、不产生重复。
+                    updateAssetRef(projectId, existing.ref.id, { role, artifactIds, selectedArtifactId, metadata });
+                    existing.bound = true;
+                } else {
+                    // 无引用 → create；有引用但未注入 updateAssetRef → 仍 create（下游 mergedAssetRefs 会合并重复），
+                    // 绝不静默漏绑（绑定成功优先于「不留占位」）。
+                    if (existing?.ref) console.warn(`[pipeline] 未注入 updateAssetRef，参考图绑定将新增引用而非就地填充（bindingId=${bindingId}）`);
+                    registerAssetRef(projectId, { role, bindingId, artifactIds, selectedArtifactId, metadata });
+                    existingByBinding.set(bindingId, { ref: existing?.ref ?? null, bound: true });
+                }
             } catch (error) {
                 console.warn(`[pipeline] 参考图资产绑定失败（不影响阶段）：${error.message}`);
             }
