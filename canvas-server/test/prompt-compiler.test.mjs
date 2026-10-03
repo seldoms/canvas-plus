@@ -15,6 +15,7 @@ import {
     h3Mode,
     negativeClause,
     presetForTemplate,
+    readStyleFields,
     speakerId,
 } from "../src/prompt-compiler.js";
 
@@ -154,11 +155,106 @@ test("H3 运镜：官方词表 + 自然句式（static / pan right slow）", () 
     assert.match(pan, /The camera pans right at slow speed\./);
 });
 
-test("H3 台词：说话人稳定 ID (S1) + <d>[English] ...</d> 逐字不翻译", () => {
+test("H3 台词：说话人稳定 ID (S1) + <d>[English] ...</d> 只放纯台词正文", () => {
     const out = compileH3VideoPrompt({ template: "video_h3_talk", shot: SH5, scene, characters: [{ name: "老周" }], style: STYLE, slots: { images: [{ url: "/a/f.png", kind: "first_frame" }] }, overlays: [], durationSec: 4 });
     assert.match(out, /\(S1\)/);
-    assert.ok(out.includes("<d>[English] 姑娘，这么晚，去哪儿？（低声、音量低、语速慢、略带关心）</d>"), "台词逐字保留、不翻译");
+    assert.ok(out.includes("<d>[English] 姑娘，这么晚，去哪儿？</d>"), "台词正文逐字保留、不翻译");
     assert.ok(!out.includes("<d>[Chinese]"), "口径固定用 [English] 标签（见规则表 dialogue.content）");
+    // 括号表演注解已剥出 <d>（见「验收问题②」）：只留纯台词正文。
+    const block = out.slice(out.indexOf("<d>"), out.indexOf("</d>") + 4);
+    assert.ok(!/[（(]/.test(block), `<d> 内不得含括号表演注解：${block}`);
+    assert.ok(out.includes("Performance: 低声、音量低、语速慢、略带关心."), "注解移到描述层作表演提示");
+});
+
+test("H3 台词带括号表演注解：<d> 内只有纯台词，注解以描述层表演提示出现（不塞回 <d>）", () => {
+    const out = compileH3VideoPrompt({ template: "video_h3_talk", shot: SH5, scene, characters: [{ name: "老周" }], style: STYLE, slots: { images: [{ url: "/a/f.png", kind: "first_frame" }] }, overlays: [], durationSec: 4 });
+    const start = out.indexOf("<d>");
+    const end = out.indexOf("</d>");
+    assert.ok(start >= 0 && end > start, "有台词正文 → 必须输出 <d> 块");
+    const block = out.slice(start, end + 4);
+    assert.ok(!/[（(]/.test(block), `<d> 块内不得含括号（全角/半角都不行）：${block}`);
+    assert.ok(!block.includes("低声") && !block.includes("语速慢"), "表演注解不得留在 <d> 内");
+    assert.ok(out.includes("低声、音量低、语速慢、略带关心"), "注解不得丢失");
+    assert.ok(out.includes("Performance: 低声、音量低、语速慢、略带关心."), "注解写进描述层作表演提示");
+    // 半角括号同样处理（英文台词）。
+    const half = compileH3VideoPrompt({ template: "video_h3_talk", shot: { ...SH5, dialogue: "Are you okay? (soft voice, slow)" }, scene, characters: [{ name: "老周" }], style: STYLE, slots: { images: [] }, overlays: [], durationSec: 4 });
+    assert.ok(half.includes("<d>[English] Are you okay?</d>"), half);
+    assert.ok(!/<d>[^<]*[（(]/.test(half), "半角括号注解也不得进 <d>");
+});
+
+test("H3 台词只有括号注解、无正文：<d> 块整块不输出（不输出空 <d>[English] </d>）", () => {
+    const shot = { ...SH5, dialogue: "（低声、语速慢）", audio: "环境音：公交车行驶低频震动；本镜无对白。" };
+    const out = compileH3VideoPrompt({ template: "video_h3_talk", shot, scene, characters: [{ name: "老周" }], style: STYLE, slots: { images: [{ url: "/a/f.png", kind: "first_frame" }] }, overlays: [], durationSec: 4 });
+    assert.ok(!out.includes("<d>") && !out.includes("</d>"), `整条只有注解 → 不输出 <d> 块：${out}`);
+    assert.ok(!/\(S1\)/.test(out), "无台词正文 → 不写说话人");
+    assert.ok(!out.includes("says"), "无台词正文 → 不写 says");
+    assert.ok(!out.includes("Performance:"), "无台词正文 → 不为不存在的台词写歧义表演提示");
+});
+
+test("H3 Ref2VA：台词注解同样剥出 <d> 并进 detailed_description 描述层", () => {
+    const out = compileH3VideoPrompt({ template: "video_h3_ref2v", shot: SH5, scene, characters: [{ name: "老周" }], style: STYLE, slots: { images: [{ url: "/a/g.png", kind: "reference", role: "character", name: "老周" }] }, overlays: [], durationSec: 4 });
+    const block = out.slice(out.indexOf("<d>"), out.indexOf("</d>") + 4);
+    assert.ok(!/[（(]/.test(block), `<d> 内不得含括号：${block}`);
+    assert.ok(out.includes("Performance: 低声、音量低、语速慢、略带关心."), "注解进 detailed_description");
+});
+
+/* ————————————————————— 验收问题①：style 防御性归一（readStyleFields） ————————————————————— */
+
+test("readStyleFields：字符串→纯锚点、对象→只取字符串字段、null/其它→全空（绝不函数/对象强转）", () => {
+    assert.deepEqual(readStyleFields("写实电影感"), { anchor: "写实电影感", context: "", filmLayer: "" });
+    assert.deepEqual(readStyleFields("  带空白  "), { anchor: "带空白", context: "", filmLayer: "" });
+    assert.deepEqual(readStyleFields({ anchor: "a", context: "c", filmLayer: "l" }), { anchor: "a", context: "c", filmLayer: "l" });
+    assert.deepEqual(readStyleFields({ anchor: "a", context: 123, filmLayer: {} }), { anchor: "a", context: "", filmLayer: "" }, "非字符串字段视为空");
+    assert.deepEqual(readStyleFields(null), { anchor: "", context: "", filmLayer: "" });
+    assert.deepEqual(readStyleFields(undefined), { anchor: "", context: "", filmLayer: "" });
+    assert.deepEqual(readStyleFields(42), { anchor: "", context: "", filmLayer: "" });
+    // 关键：绝不能解析到 String.prototype.anchor（函数）。
+    assert.equal(typeof readStyleFields("x").anchor, "string");
+    assert.ok(!readStyleFields("x").anchor.includes("native code"));
+});
+
+test("style 传字符串：H3 输出不含 native code，字符串作为风格锚点进描述层（不再踩 String.prototype.anchor）", () => {
+    const ANCHOR = "写实电影感，暖色路灯与冷调夜色的对比，浅景深，细腻胶片颗粒";
+    const out = compileH3VideoPrompt({ template: "video_h3_i2v", shot: SH1, scene, characters: [], style: ANCHOR, slots: { images: [{ url: "/a/f.png", kind: "first_frame" }] }, overlays: [], durationSec: 5 });
+    assert.ok(!out.includes("native code"), `不得把 String.prototype.anchor 函数体写进提示词：${out.slice(0, 220)}`);
+    assert.ok(!out.includes("function anchor"), "不得出现 function anchor 字样");
+    assert.ok(out.includes(`Live-action, cinematic, ${ANCHOR}.`), "字符串 style 视为纯锚点，进描述层");
+    // Ref2VA 分支同样经 readStyleFields。
+    const ref2 = compileH3VideoPrompt({ template: "video_h3_ref2v", shot: SH1, scene, characters: [], style: ANCHOR, slots: { images: [{ url: "/a/g.png", kind: "reference", role: "scene" }] }, overlays: [], durationSec: 5 });
+    assert.ok(!ref2.includes("native code"));
+    assert.ok(ref2.includes(`${ANCHOR}.`), "Ref2VA detailed_description 用锚点");
+    // 中文降级分支（imageFactsCn）同样经 readStyleFields。
+    const krea = compileKrea2ImagePrompt({ template: "img_krea2_artistic", shot: SH1, style: ANCHOR, slots: { images: [] }, basePrompt: SH1.prompt });
+    assert.ok(!krea.includes("native code"));
+    assert.ok(krea.includes(`风格：${ANCHOR}`), "Krea2 中文降级把字符串 style 当锚点");
+    // styleHead 出口（Qwen）同样不注入垃圾。
+    const qwen = compileQwen21ImagePrompt({ template: "img_qwen21_t2i", shot: SH1, scene, characters: [], style: ANCHOR, slots: { images: [] }, legacyBody: "a bus" });
+    assert.ok(!qwen.includes("native code"));
+    // 通用兜底：字符串 style 且无 context → 与「只有 anchor 的对象」同口径（不前置，逐字不变）。
+    assert.equal(compileGenericPrompt({ style: ANCHOR, legacyBody: "a bus arrives" }), "a bus arrives");
+});
+
+test("style 传对象：与既有行为一致（回归，逐字不变）", () => {
+    const out = compileH3VideoPrompt({ template: "video_h3_i2v", shot: SH1, scene, characters: [], style: STYLE, slots: { images: [{ url: "/a/f.png", kind: "first_frame" }] }, overlays: [], durationSec: 5 });
+    assert.ok(out.includes(`Live-action, cinematic, ${STYLE.anchor}.`), "对象 anchor 仍进描述层");
+    // styleHead 对正确对象的既有输出逐字不变（兼容红线）。
+    const body = `${STYLE.anchor}，一辆末班车。`;
+    assert.equal(compileGenericPrompt({ style: STYLE, legacyBody: body }), `${body} ${STYLE.filmLayer}`);
+    assert.equal(compileGenericPrompt({ style: {}, legacyBody: "a bus arrives" }), "a bus arrives");
+});
+
+test("style 传 null / 非字符串字段：不崩、不注入垃圾", () => {
+    const nullOut = compileH3VideoPrompt({ template: "video_h3_i2v", shot: SH1, scene, characters: [], style: null, slots: { images: [{ url: "/a/f.png", kind: "first_frame" }] }, overlays: [], durationSec: 5 });
+    assert.equal(typeof nullOut, "string");
+    assert.ok(!nullOut.includes("native code") && !nullOut.includes("undefined") && !nullOut.includes("[object Object]"), nullOut.slice(0, 200));
+    assert.ok(nullOut.includes("[Shot 1] Live-action, cinematic, a wide shot"), "空 style → 退回中性头部");
+    // 含非字符串字段的对象：全部视为空（不得 String(函数) 进提示词）。
+    assert.equal(compileGenericPrompt({ style: { anchor: 123, context: {}, filmLayer: () => "zzz" }, legacyBody: "x" }), "x");
+    assert.equal(compileGenericPrompt({ style: { anchor: null, context: [], filmLayer: 0 }, legacyBody: "y" }), "y");
+    // 数字 style（经分派入口）不崩。
+    const num = compilePromptForTemplate({ template: "video_h3_i2v", family: "video", shot: SH1, scene, characters: [], style: 42, slots: { images: [{ url: "/a/f.png", kind: "first_frame" }] }, overlays: [], durationSec: 5 });
+    assert.equal(typeof num, "string");
+    assert.ok(!num.includes("native code"));
 });
 
 test("H3 画外音：写 says in an off-screen voiceover 且紧跟嘴唇保持闭合", () => {

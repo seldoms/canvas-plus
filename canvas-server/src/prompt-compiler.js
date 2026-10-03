@@ -50,22 +50,44 @@ import {
     loadModelRules,
 } from "./model-rules.js";
 import { rewriterForTemplate, rewritePrompt } from "./prompt-rewriter.js";
+import { splitDialogue } from "./audio.js";
 
 /* ------------------------------------------------------------------ *
  * 通用小工具
  * ------------------------------------------------------------------ */
 
+/**
+ * 归一 style 参数的**唯一入口**（所有取 style.* 的位置都必须经此，不得直接 style?.anchor）。
+ *
+ * 为什么必须在这里挡（验收问题①）：若调用方把 `style` 传成**字符串**（如 `'写实电影感'`），
+ * 那么 `style.anchor` 会沿原型链命中 `String.prototype.anchor`（一个函数），
+ * `String(style.anchor)` 就会把 "function anchor() { [native code] }" 静默写进发给模型的提示词。
+ * 因此这里对每个字段断言 `typeof === "string"`：**任何情况下都不得把函数/对象强转进提示词**。
+ *
+ * 口径：
+ *   · style 是字符串 → 视为纯风格锚点文本（等价 `{ anchor: style }`）；
+ *   · style 是对象     → 只取**字符串类型**的 anchor / context / filmLayer，非字符串字段一律视为空；
+ *   · null / undefined / 数字 / 布尔等其它 → 全部为空串（既有「空 style 原样返回」回退行为不变）。
+ * @returns {{ anchor: string, context: string, filmLayer: string }}
+ */
+export function readStyleFields(style) {
+    if (typeof style === "string") return { anchor: style.trim(), context: "", filmLayer: "" };
+    if (style && typeof style === "object") {
+        const pick = (value) => (typeof value === "string" ? value.trim() : "");
+        return { anchor: pick(style.anchor), context: pick(style.context), filmLayer: pick(style.filmLayer) };
+    }
+    return { anchor: "", context: "", filmLayer: "" };
+}
+
 /** 生成提示词的风格出口（唯一）：首句锚点只在这里保证在场。与 pipeline.withPromptHead 同口径。 */
 export function styleHead(style, text) {
     const body = String(text ?? "").trim();
-    const anchor = String(style?.anchor ?? "").trim();
-    const context = String(style?.context ?? "").trim();
+    const { anchor, context, filmLayer } = readStyleFields(style);
     let head;
     if (!context) head = body;
     else if (anchor && body.startsWith(anchor)) head = body; // 锚点已在首句 → 不重复前置
     else head = body ? `${context}。${body}` : context;
-    const layer = String(style?.filmLayer ?? "").trim();
-    return layer ? `${head} ${layer}`.trim() : head;
+    return filmLayer ? `${head} ${filmLayer}`.trim() : head;
 }
 
 /** 归一为字符串数组（去空、去非字符串）。 */
@@ -419,9 +441,37 @@ function splitEndState(action) {
     return { process: text.slice(0, match.index).trim(), endState: text.slice(match.index + match[0].length).trim() };
 }
 
-/** 台词剔除表演提示（括号内），用于判定是否画外音等，不影响正文逐字保留。 */
-function spokenOnly(dialogue) {
-    return String(dialogue ?? "").replace(/[（(][^）)]*[）)]/g, "").trim();
+/**
+ * 拆分分镜台词：**复用 audio.js 的 splitDialogue**（#50 的产物），不另写括号解析。
+ *
+ * 为什么要拆（验收问题②）：`shot.dialogue` 常写成
+ * 「姑娘，这么晚，去哪儿？（低声、音量低、语速慢、略带关心）」——括号里是表演注解。
+ * 调研口径（config/model-prompt-rules.json · minimax_h3.prompt.structure_notes，依据 sources/video-models.md:160）
+ * 要求 `<d>[English] ...</d>` 内**逐字是台词正文**；把注解留在 `<d>` 内会被模型当台词读出来。
+ * 按 #50 的定论「表演注解不参与生产参数」，注解应剥出、移到描述层作表演提示，绝不塞回 `<d>`。
+ *
+ * @returns {{ text: string, performance: string, hasText: boolean }}
+ *   text=纯台词正文；performance=表演注解（无则空串）；
+ *   hasText=false 表示整条只有注解、无正文（splitDialogue 以 warning code=empty_after_cleaning 标记回退原文）。
+ */
+function splitShotDialogue(raw) {
+    const source = typeof raw === "string" ? raw.trim() : "";
+    if (!source) return { text: "", performance: "", hasText: false };
+    const { text, performance, warnings } = splitDialogue(source);
+    // splitDialogue 在「剥完为空」时会回退原文并给出 warning —— 据此判定「整条只有注解」，
+    // 让 <d> 块整块不输出（不得输出空的 `<d>[English] </d>`）。
+    const onlyAnnotation = warnings.some((entry) => entry?.code === "empty_after_cleaning");
+    const script = onlyAnnotation ? "" : text.trim();
+    return { text: script, performance: String(performance ?? "").trim(), hasText: script.length > 0 };
+}
+
+/**
+ * 表演提示句（描述层）：注解按调研口径并入 integrated_multimodal_description，
+ * **绝不塞回 `<d>` 内**。无注解返回空串。
+ */
+function h3PerformanceHint(shot) {
+    const { performance } = splitShotDialogue(shot?.dialogue);
+    return hasText(performance) ? `Performance: ${stripTail(performance)}.` : "";
 }
 
 /** 说话人 ID：按出场顺序稳定编号 (S1)(S2)…（H3 官方要求同一说话人跨镜保持同 ID）。 */
@@ -448,16 +498,18 @@ function pickSpeaker(shot, characters) {
 }
 
 /**
- * H3 台词句（逐字不翻译）：
+ * H3 台词句（正文逐字不翻译、**不含表演注解**）：
  *   `<角色> (S1) says: <d>[English] ...</d>`；画外音写 `says in an off-screen voiceover` 且紧跟「嘴唇保持闭合」。
+ * 括号表演注解已由 splitShotDialogue 剥出（见 h3PerformanceHint 写进描述层）；
+ * 整条只有注解、无正文时返回空串（`<d>` 块整块不输出）。
  */
 export function h3DialogueSentence(shot, characters, { voiceover = false } = {}) {
-    const dialogue = String(shot?.dialogue ?? "").trim();
-    if (!dialogue) return "";
+    const { text, hasText: hasLine } = splitShotDialogue(shot?.dialogue);
+    if (!hasLine) return "";
     const { name, id } = pickSpeaker(shot, characters);
     const isVoiceover = voiceover || shot?.voiceover === true || /画外音|旁白|off-?screen/.test(`${shot?.audio ?? ""} ${shot?.action ?? ""}`);
     const tag = isVoiceover ? "says in an off-screen voiceover" : "says";
-    const block = `${name} (${id}) ${tag}: <d>[English] ${dialogue}</d>`;
+    const block = `${name} (${id}) ${tag}: <d>[English] ${text}</d>`;
     return isVoiceover ? `${block}, while the lips remain completely closed.` : `${block}`;
 }
 
@@ -487,7 +539,7 @@ function h3Music(shot) {
  */
 function h3Description(shot, { scene, characters, style, mode, durationSec, overlays, textInImage }) {
     const parts = [];
-    const styleAnchor = String(style?.anchor ?? "").trim();
+    const { anchor: styleAnchor } = readStyleFields(style);
     // [Shot 1] 头部：风格 + 初始构图。
     const headBits = ["Live-action, cinematic"];
     const size = shotSizeEn(shot);
@@ -512,9 +564,15 @@ function h3Description(shot, { scene, characters, style, mode, durationSec, over
     });
     // 段末可见状态。
     if (hasText(endState)) parts.push(`By the end of the shot, ${stripTail(endState)}.`);
-    // 台词（逐字不翻译）。
+    // 台词（正文逐字不翻译；括号表演注解已被剥出）。
     const dialogue = h3DialogueSentence(shot, characters);
-    if (dialogue) parts.push(dialogue);
+    if (dialogue) {
+        parts.push(dialogue);
+        // 表演注解 → 描述层作表演提示（绝不塞回 <d>）。仅在有台词正文时输出：
+        // 整条只有注解、无正文时 <d> 块整块不输出，也不该为不存在的台词写表演提示。
+        const performance = h3PerformanceHint(shot);
+        if (performance) parts.push(performance);
+    }
     // 画面文字（英文双引号包原文）。
     const overlay = overlayClauseH3(overlays, textInImage);
     if (overlay) parts.push(overlay);
@@ -585,14 +643,17 @@ function compileH3Ref2VA({ shot, scene, characters, style, slots, overlays, dura
     lines.push(`retention_analysis: ${retention}`);
     // detailed_description（350–500 英文词目标；此处按事实精炼，交由官方改写器扩写）
     const place = hasText(scene?.name) ? String(scene.name).trim() : "";
-    const styleAnchor = String(style?.anchor ?? "").trim();
+    const { anchor: styleAnchor } = readStyleFields(style);
+    // 台词：正文逐字不翻译、括号表演注解剥出；有正文才带描述层的表演提示（绝不塞回 <d>）。
+    const dialogueLine = h3DialogueSentence(shot, characters);
     const detailParts = [
         styleAnchor ? `${stripTail(styleAnchor)}.` : "Live-action, cinematic.",
         place ? `The scene is set in ${place}.` : "",
         refs.length ? `The subjects are defined by ${refs.join(", ")}.` : "",
         stripTail(splitEndState(shot?.action).process) ? `${stripTail(splitEndState(shot?.action).process)}.` : "",
         cameraSentence(shot),
-        h3DialogueSentence(shot, characters),
+        dialogueLine,
+        dialogueLine ? h3PerformanceHint(shot) : "",
         overlayClauseH3(overlays, textInImage),
     ].filter(Boolean);
     lines.push(`detailed_description: ${detailParts.join(" ")}`);
@@ -723,7 +784,8 @@ function imageFactsCn({ shot, scene, characters, style, overlays, slots, basePro
     if (action) bits.push(`画面内容：${action}`);
     const camera = cameraSentence(shot);
     if (camera) bits.push(`机位与运镜：${stripTail(camera)}`);
-    if (style?.anchor) bits.push(`风格：${String(style.anchor).trim()}`);
+    const { anchor: styleAnchor } = readStyleFields(style);
+    if (styleAnchor) bits.push(`风格：${styleAnchor}`);
     const base = String(basePrompt ?? legacyBody ?? shot?.prompt ?? "").trim();
     if (base) bits.push(stripTail(base));
     const overlay = overlayClauseCn(overlays);
@@ -852,7 +914,8 @@ function rewriteSourceText(input) {
     if (action) bits.push(`画面内容：${action}`);
     const camera = cameraSentence(shot);
     if (camera) bits.push(`机位与运镜：${stripTail(camera)}`);
-    if (style?.anchor) bits.push(`风格：${String(style.anchor).trim()}`);
+    const { anchor: styleAnchor } = readStyleFields(style);
+    if (styleAnchor) bits.push(`风格：${styleAnchor}`);
     if (hasText(shot?.dialogue)) bits.push(`台词：${String(shot.dialogue).trim()}`);
     const overlay = overlayClauseCn(overlays);
     if (overlay) bits.push(overlay);
