@@ -580,3 +580,33 @@
 ### 10.8 边界
 
 不接线、不落盘、不建路由。`TimelineRevision`（§13.6）与影响分析 / `markStale`（§11.5.3 的 `impact.plan`）由并行工作包处理；本节只冻结 `RevisionRef` / `InputFingerprint` / `StaleStatus` 这三个数据形状。
+
+### 10.9 制作圣经与确认锁（P0-f 接线，2026-10-03 追加）
+
+> 本节为**追加**：§1–§10.8 一字不动。把已交付的纯函数 `canvas-server/src/bible.js`（五类实体规整 + 状态机 + revision 语义）
+> 接进项目存储、阶段门禁与 HTTP 路由，兑现 P0-f「下游只消费已批准版本；改已锁对象产生新 revision，不静默覆盖」。
+
+**五类实体（`normalizeX(input) → { value, warnings }`，永不抛异常）**
+
+| 类别 `kind` | 对应实体 | 门禁阶段 | 主要字段 |
+| --- | --- | --- | --- |
+| `project_brief` | ProjectBrief（§13.1） | `plan` | 复用 §10.1 内核 + `genre/tone/audience` |
+| `series` | SeriesBible（§13.2） | `script` | `logline/theme/worldview/timeline/narrativeRules/immutableFacts/styleAnchors/episodeSkeleton/relationships` |
+| `character` | CharacterBible（§13.2 / §11.5.2） | `design` | `name/identity/appearance/turnaroundArtifactIds/closeupArtifactIds/costumes/performanceBounds/voiceProfileId/language/speechHabits` |
+| `world` | WorldBible（§13.2） | `design` | `name/era/sceneMasterArtifactId/floorPlanArtifactId/keyViewArtifactIds/dayNightVersions/weatherVersions/lightDirection/allowedProps/forbiddenProps` |
+| `audio` | AudioBible（§13.2 / §11.5.1） | `post` | `voiceProfileIds/language/pronunciationNotes/emotionRange/bgmDirection/ambience/forbiddenSounds` |
+
+统一字段：`id`（缺省自动 `bib_` + ULID）、`revision`（≥1）、`status ∈ draft/review/approved/locked`（新建一律 `draft`）。
+
+**持久化**：实体落 `data/projects/<pid>/bibles/<bibleId>.json`（归档项目落 `data/projects-archive/<pid>/bibles/`）。
+写入为派生记账语义（更新 `updatedAt`，**不改 Project.version**，不触发 D7 乐观并发）；幂等：patch 归一后与现状逐字相同则跳过不写盘。
+**revision 语义**：`draft`/`review` 就地在当前 revision 合并；**`approved`/`locked` 发生实际改动 → 派生新 revision**（`status` 回 `draft`），旧版本快照进 `history[]`，绝不静默覆盖。`approved.reopen` / `locked.revise` 同样产生新 revision。
+
+**门禁（`gates.deriveGates({ project, episodes, bibles })`）**：项目**存在**对应类别的圣经实体时，该阶段 `ready` 须其实体为 `approved`/`locked`，否则以 `blockedBy: { type: "bible", stageId, bibleId, kind, status, message }` 阻断、`reason` 给可读原因。
+⚠️ 项目**没有**该实体时不产生任何约束（向后兼容：旧项目门禁行为逐字不变；`bibles` 入参缺省时输出与旧版一致）。
+
+**HTTP（`canvas-server/src/index.js`）**：`GET/POST /api/projects/:id/bibles`、`GET/PATCH/POST /api/projects/:id/bibles/:bibleId`、`POST /api/projects/:id/bibles/:bibleId/transition`（`action` = `submit_review`/`approve`/`reject`/`lock`/`reopen`/`revise`）。
+错误码：不存在 404、非法类别/非法迁移 400（原因可读）、重复 id 409。`/api/projects/:id/gates` 与 `/context?include=refs` 均带圣经判据。
+
+**落点**：存储内核与类别映射 `canvas-server/src/bible.js`（新增导出）；门禁判据 `canvas-server/src/gates.js`；路由接线 `canvas-server/src/index.js`。
+单测 `canvas-server/test/bible-wiring.test.mjs`（存储 + 门禁）、`canvas-server/test/bible-wiring-http.test.mjs`（HTTP 实打）。

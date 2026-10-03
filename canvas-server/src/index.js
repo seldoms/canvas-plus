@@ -12,8 +12,12 @@ import { createRouter, readJson, readBody, sendError, sendJson, serveFile, apply
 import { createJobQueue, waitForJob } from "./jobs.js";
 import { createPipeline } from "./pipeline.js";
 import { createProjects } from "./projects.js";
+import { createBibleStore } from "./bible.js";
+import { deriveGates } from "./gates.js";
 import { loadRegistry } from "./skills.js";
 import { createComfyClient, probeComfy, listComfyCapabilities, listTemplates } from "./providers/comfy.js";
+// 时长档位（D1）与模板清单同源；/api/durations 供前端按「当前视频模型」取可选档位。
+import { durationMetaForTemplate } from "./durations.js";
 import { probeLlm, listLlmModels, forwardToLlm, chat as llmChat, externalProviders } from "./providers/llm.js";
 import { createLocalRunner } from "./generate.js";
 import { probeRunningHub, listRunningHubModels, runRunningHubJob } from "./providers/runninghub.js";
@@ -58,6 +62,9 @@ const uploads = ensureDir(safeJoin(config.dataDir, "uploads"));
 
 // Project 服务端内核：data/projects/<id>/ 落盘，路由见下方 /api/projects 系列。
 const projects = createProjects({ dataDir: config.dataDir });
+
+// P0-f 制作圣经与确认锁：实体落 data/projects/<id>/bibles/（独立于 projects.js 内核，仅复用其 ULID）。
+const bibles = createBibleStore({ dataDir: config.dataDir, ulid: projects.ulid });
 
 // Device/Provider/Tool Registry（D6 按资源调度）：把现有真实资源登记进来，
 // 供提交前能力校验、设备归属与按类别分队列使用。注册表不探活，健康状态由本层按需写回。
@@ -239,6 +246,15 @@ router.get("/api/providers", async (req, res) => {
         listComfyCapabilities(config).catch((error) => ({ templates: listTemplates(config.workflowsDir), models: {}, error: error.message })),
     ]);
     sendJson(res, 200, { llm: { baseUrl: config.llm.baseUrl, models }, comfy: capabilities, backends: backends() });
+});
+
+/**
+ * 时长档位（D1「时长锚点跟着模型走」）：选定视频模板 → 可选时长集合 + 帧数映射（与模板清单同源）。
+ * ?template=<name> 显式指定；缺省用 config.pipeline.videoTemplate。durations:null = 该模型档位待查证。
+ */
+router.get("/api/durations", (req, res, { url }) => {
+    const template = String(url?.searchParams?.get("template") || config.pipeline?.videoTemplate || "").trim();
+    sendJson(res, 200, { template, ...durationMetaForTemplate(template) });
 });
 
 router.get("/api/skills", (req, res) => {
@@ -584,11 +600,31 @@ router.post("/api/projects", async (req, res) => {
     }
 });
 
+/**
+ * 门禁推导（P0-f 接线）：与 projects.gates 同样的项目+集视图，但把**该项目的圣经实体**一并喂给 deriveGates，
+ * 使「存在但未 approved/locked」的圣经能阻断对应阶段；项目无该实体时行为与旧版逐字相同（向后兼容）。
+ */
+function projectGates(id) {
+    const project = projects.get(id);
+    if (!project) return null;
+    const details = projects.episodes.listDetails(id);
+    const episodes = details.length ? details : Array.isArray(project.episodes) ? project.episodes : [];
+    let bibleRows = [];
+    try {
+        bibleRows = bibles.list(id);
+    } catch {
+        bibleRows = []; // 项目刚建、bibles 目录尚未生成时按空处理，绝不因门禁读盘失败而 500。
+    }
+    return deriveGates({ project, episodes, bibles: bibleRows });
+}
+
 router.get("/api/projects/:id/context", (req, res, { params, url }) => {
-    // 默认轻量形状（保持既有契约）；?include=refs 追加 assetRefs 与 gates（阶段门禁）。
-    const context = projects.context(params.id, { includeRefs: url.searchParams.get("include") === "refs" });
-    if (!context) return sendError(res, 404, "项目不存在");
-    sendJson(res, 200, context);
+    // 默认轻量形状（保持既有契约）；?include=refs 追加 assetRefs 与 gates（阶段门禁，含圣经放行判据）。
+    const project = projects.get(params.id);
+    if (!project) return sendError(res, 404, "项目不存在");
+    const base = { project, episodes: project.episodes || [], runIds: project.runIds || [], canvasIds: project.canvasIds || [] };
+    if (url.searchParams.get("include") !== "refs") return sendJson(res, 200, base);
+    sendJson(res, 200, { ...base, assetRefs: project.assetRefs || [], gates: projectGates(params.id) });
 });
 
 router.get("/api/projects/:id", (req, res, { params }) => {
@@ -710,9 +746,42 @@ router.post("/api/projects/:id/asset-refs/:refId/unlink", routeHandler(async (re
     sendJson(res, 200, { assetRef: projects.assets.unlink(params.id, params.refId, await readJson(req)) });
 }));
 
-// 阶段门禁（纯推导）
+// ——— P0-f 制作圣经与确认锁：/bibles 系列（实体持久化 + 状态机 + revision 语义）———
+// 错误码沿用：不存在 404、非法类别/非法迁移 400、重复 id 409。改已批准/已锁对象→派生新 revision（不静默覆盖）。
+router.get("/api/projects/:id/bibles", routeHandler((req, res, { params }) => {
+    sendJson(res, 200, { bibles: bibles.list(params.id) });
+}));
+
+router.post("/api/projects/:id/bibles", routeHandler(async (req, res, { params }) => {
+    const { bible, warnings } = bibles.create(params.id, await readJson(req));
+    sendJson(res, 201, { bible, warnings });
+}));
+
+router.get("/api/projects/:id/bibles/:bibleId", routeHandler((req, res, { params }) => {
+    const bible = bibles.get(params.id, params.bibleId);
+    if (!bible) return sendError(res, 404, "圣经实体不存在");
+    sendJson(res, 200, { bible });
+}));
+
+// 改实体：前端走 PATCH、契约保留 POST；status 不走这里（只能经 /transition）。
+const updateBible = routeHandler(async (req, res, { params }) => {
+    const body = (await readJson(req)) || {};
+    const result = bibles.update(params.id, params.bibleId, body, { actor: body?.actor });
+    sendJson(res, 200, { bible: result.bible, changed: result.changed, requiresNewRevision: result.requiresNewRevision });
+});
+router.add("PATCH", "/api/projects/:id/bibles/:bibleId", updateBible);
+router.post("/api/projects/:id/bibles/:bibleId", updateBible);
+
+// 推进状态机：body 形如 { action: "submit_review" | "approve" | "reject" | "lock" | "reopen" | "revise", actor? }
+router.post("/api/projects/:id/bibles/:bibleId/transition", routeHandler(async (req, res, { params }) => {
+    const body = (await readJson(req)) || {};
+    const result = bibles.transition(params.id, params.bibleId, body?.action, body?.actor);
+    sendJson(res, 200, { bible: result.bible, action: result.action, from: result.from, to: result.to, bumped: result.bumped });
+}));
+
+// 阶段门禁（纯推导；P0-f：把项目圣经实体并入判据，存在未批准实体则对应阶段被阻）
 router.get("/api/projects/:id/gates", routeHandler((req, res, { params }) => {
-    const gates = projects.gates(params.id);
+    const gates = projectGates(params.id);
     if (!gates) return sendError(res, 404, "项目不存在");
     sendJson(res, 200, { gates });
 }));
@@ -938,4 +1007,4 @@ if (isMain) {
     });
 }
 
-export { server, config, jobs, registry, pipeline, projects, comfy, llm, local, runJob, submitGeneration, backends, waitForJob, fileSize, artifactUrl };
+export { server, config, jobs, registry, pipeline, projects, bibles, comfy, llm, local, runJob, submitGeneration, backends, waitForJob, fileSize, artifactUrl };

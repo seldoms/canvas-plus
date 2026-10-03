@@ -449,6 +449,10 @@ export default {
             optional: "Optional",
             source: "Source text",
             sourceHelp: "Optional: upload txt / md or paste the novel.",
+            videoModel: "Video model (duration tiers source)",
+            durationTier: "Episode length (tier)",
+            durationTierHelp: "Duration follows the video model: pick from its tiers; set the skeleton first, then fill shots.",
+            durationTierPending: "This model's duration tiers are unverified; enter an empirical value for now.",
         },
         detail: {
             back: "Back to projects",

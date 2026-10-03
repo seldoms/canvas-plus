@@ -76,7 +76,15 @@ export type GatewayHealth = {
     queue: { running: number; pending: number };
 };
 
-export type GatewayTemplateInfo = { name: string; family: string; title: string; tokens: string[] };
+export type GatewayTemplateInfo = {
+    name: string;
+    family: string;
+    title: string;
+    tokens: string[];
+    /** D1 时长档位（秒数组）：与模型清单同源下发；null 表示该模型档位待查证，未登记。 */
+    durations?: number[] | null;
+    durationMeta?: { durations: number[] | null; verified: boolean; frameRate: number; formula: string; frameCounts: Record<string, number> | null; note: string } | null;
+};
 
 export type GatewayProviders = {
     llm: { models: string[] };

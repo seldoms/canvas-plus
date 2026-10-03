@@ -5,6 +5,8 @@ import { dirname, join } from "node:path";
 import { splitNovelIntoChunks } from "./chunk-novel.js";
 import { ASSET_ROLE } from "./contracts.js";
 import { assembleEpisode } from "./delivery.js";
+// D1：模型时长档位（与「模型清单」同源）。骨架对齐、plan 时长校验都从这里取口径。
+import { durationsForTemplate, durationMetaForTemplate, isDurationAllowed, skeletonAlignment } from "./durations.js";
 import { artifactUrl, ensureDir, safeJoin } from "./files.js";
 import { listTemplates } from "./providers/comfy.js";
 import { buildShotBinding, missingRefsReport, resolveSelectedArtifacts, stableSeed } from "./reference-lock.js";
@@ -269,6 +271,16 @@ export function createPipeline({ config, skillsDir, jobs, comfy, llm, runJob, as
     // 单镜失败自动重试次数：pipeline.maxItemRetries 可配，默认 2；用尽后阶段自然落到 error/partial。
     const maxItemRetries =
         Number.isFinite(Number(pipelineConfig.maxItemRetries)) && Number(pipelineConfig.maxItemRetries) >= 0 ? Math.floor(Number(pipelineConfig.maxItemRetries)) : 2;
+    // D3：单镜一次入队的候选数（≥4）。maxKeyframesPerShot 既是 04-keyframes 提示词里的单镜帧数上限，
+    // 也是关键帧阶段每条目一次入队的候选数 —— 产品拍板「一次生产 4 张以上，不达标就重新生成」。
+    // 未配置时按 1（旧行为）保底；仓库 config.json / config.example.json / config.js 默认均为 4；上限 8。
+    const maxKeyframesPerShot = (() => {
+        const raw = Number(pipelineConfig.maxKeyframesPerShot);
+        const value = Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : 1;
+        return Math.min(Math.max(value, 1), 8);
+    })();
+    // 关键帧阶段每条目「一次入队」的候选数；视频阶段仍是 1。
+    const candidatesPerEnqueue = (stageId) => (stageId === "keyframe" ? maxKeyframesPerShot : 1);
     const runsDir = ensureDir(join(config?.dataDir || "data", "runs"));
     const registry = loadRegistry(skillsDir);
     const stageDefs = new Map(registry.stages.map((item) => [item.id, item]));
@@ -1058,6 +1070,30 @@ ${JSON.stringify(partials, null, 2)}
         }
     }
 
+    /**
+     * 候选达标判据（D3「不达标就重新生成」）。没有像素级 QC 字段（无全黑检测），因此用可得元数据判定：
+     *   任务成功 + 有可访问产物 + 产物非空文件 + 尺寸（若上报）为正；任何一项不满足即判不达标。
+     * 尺寸/字节数缺省时不惩罚（ComfyUI 未回报就按通过），只对「明确非法」的值判负。
+     */
+    function candidateQcFor(job) {
+        if (job?.status === "error") return { pass: false, reason: "任务失败" };
+        if (job?.status === "canceled") return { pass: false, reason: "任务已取消" };
+        if (job?.status !== "done") return { pass: false, reason: "未完成" };
+        const outputs = (Array.isArray(job.outputs) ? job.outputs : []).filter((output) => output && output.url);
+        if (!outputs.length) return { pass: false, reason: "任务没有产物" };
+        const want = job.kind === "video" ? "video" : "image";
+        const hit = outputs.find((output) => output.type === want) || outputs[0];
+        if (Number.isFinite(Number(hit.bytes)) && Number(hit.bytes) <= 0) return { pass: false, reason: "产物为空文件" };
+        if (Number.isFinite(Number(hit.width)) && Number(hit.width) <= 0) return { pass: false, reason: `产物宽度非法（${hit.width}）` };
+        if (Number.isFinite(Number(hit.height)) && Number(hit.height) <= 0) return { pass: false, reason: `产物高度非法（${hit.height}）` };
+        return { pass: true, reason: "" };
+    }
+
+    /** 候选是否已达标：成功且 QC 未判负（qc 缺省的历史候选视为达标，避免重放旧 run 触发误重试）。 */
+    function candidatePassed(candidate) {
+        return Boolean(candidate) && candidate.status === "done" && candidate.qc?.pass !== false;
+    }
+
     /** item 的派生别名（jobId/artifactUrl/status）由候选列表算出，selected 指向当前采用的候选；绝不删除旧候选。 */
     function syncItem(item) {
         const candidates = Array.isArray(item.candidates) ? item.candidates : [];
@@ -1077,13 +1113,15 @@ ${JSON.stringify(partials, null, 2)}
         // 回写即断言：只落「磁盘上真的存在」的产物 URL（#40：索引指向不存在文件 → 按 URL 取图 404）。
         // 选择范围限定在本 job 自己的 outputs 内，绝不「扫描目录取最新」。
         const artifactUrl = job.status === "done" ? resolvingOutputUrl(config, job) : null;
+        const qc = candidateQcFor(job);
         const existing = item.candidates.find((candidate) => candidate.jobId === job.id);
         if (existing) {
             existing.status = job.status;
             existing.artifactUrl = artifactUrl;
+            existing.qc = qc;
             return;
         }
-        item.candidates.push({ template: job.template, jobId: job.id, artifactUrl, status: job.status, params: job.params, createdAt: job.createdAt || nowIso() });
+        item.candidates.push({ template: job.template, jobId: job.id, artifactUrl, status: job.status, params: job.params, qc, createdAt: job.createdAt || nowIso() });
     }
 
     /**
@@ -1315,6 +1353,92 @@ ${JSON.stringify(partials, null, 2)}
         }
         if (normalized.warnings.length) stage.warnings = [...(Array.isArray(stage.warnings) ? stage.warnings : []), ...normalized.warnings];
         persistProjectEpisodeShotIds(run, normalized.episodes);
+    }
+
+    /**
+     * D1 骨架对齐（「先定骨架再填内容，Σ段时长必须等于骨架，缺一段都要报出来」）：
+     * 每集骨架 = 模型时长档位值（项目集 durationSec 优先，其次 plan.episodeDurationSec）；
+     * 逐集校验 Σ(shots[].durationSec) 是否等于骨架，并把每条不一致（缺多少 / 超多少 / 不在档位内）
+     * 显式追加进 stage.warnings，同时把逐集对齐结果落到 stage.skeleton —— 绝不静默放过。
+     * 档位未查证的模型（durations:null）不做档位强制，但仍校验 Σ段时长 == 骨架。
+     */
+    function validateSkeleton(run, stage) {
+        const plan = planConstraints(run);
+        const project = projectOf(run);
+        const videoTemplate = String(pipelineConfig.videoTemplate ?? "").trim();
+        const tiers = durationsForTemplate(videoTemplate);
+        const output = stage?.output && typeof stage.output === "object" ? stage.output : {};
+        const shots = (Array.isArray(output.shots) ? output.shots : []).filter((shot) => shot && typeof shot === "object");
+        const planSkeleton = plan.episodeDurationSec;
+        const projectEpisodes = Array.isArray(project?.episodes) ? project.episodes : [];
+        const durationOfEpisode = (episodeId) => {
+            const hit = projectEpisodes.find((episode) => String(episode?.id) === String(episodeId));
+            const value = Number(hit?.durationSec);
+            return Number.isFinite(value) && value > 0 ? value : 0;
+        };
+        // 按集分组（无 episodeId 时全部归入单集）
+        const groups = new Map();
+        for (const shot of shots) {
+            const key = String(shot.episodeId ?? "").trim() || "ep1";
+            if (!groups.has(key)) groups.set(key, []);
+            groups.get(key).push(shot);
+        }
+        const hasSkeleton = planSkeleton > 0 || [...groups.keys()].some((id) => durationOfEpisode(id) > 0);
+        if (!shots.length || !hasSkeleton) {
+            // 没有可比基准（未设每集时长 / 无镜头）时跳过对齐，不制造假告警。
+            stage.skeleton = {
+                videoTemplate,
+                durations: tiers,
+                planSkeletonSeconds: planSkeleton || null,
+                episodes: [],
+                ok: true,
+                skipped: true,
+                reason: shots.length ? "未设置每集时长骨架（时长应从模型档位里选）" : "分镜无镜头",
+            };
+            return stage.skeleton;
+        }
+        const warnings = [];
+        if (tiers && planSkeleton > 0 && !tiers.includes(planSkeleton)) {
+            warnings.push(`项目每集时长 ${planSkeleton}s 不在视频模型「${videoTemplate}」的时长档位 [${tiers.join("/")}]s 内；时长必须从档位里选（D1）`);
+        }
+        const slimEpisodes = Array.isArray(output.episodes) ? output.episodes : [];
+        const episodes = [];
+        for (const [episodeId, epShots] of groups) {
+            const meta = slimEpisodes.find((episode) => String(episode?.id) === String(episodeId));
+            const skeletonSeconds = durationOfEpisode(episodeId) || planSkeleton;
+            const alignment = skeletonAlignment({ skeletonSeconds, segments: epShots, tiers });
+            episodes.push({ episodeId, index: Number(meta?.index) > 0 ? Number(meta.index) : null, shotCount: epShots.length, ...alignment });
+            if (!alignment.ok) {
+                const label = Number(meta?.index) > 0 ? `第${meta.index}集` : `集 ${episodeId}`;
+                warnings.push(`${label}分镜时长未对齐骨架：${alignment.message}`);
+            }
+        }
+        stage.skeleton = { videoTemplate, durations: tiers, planSkeletonSeconds: planSkeleton || null, episodes, ok: episodes.every((episode) => episode.ok) };
+        if (warnings.length) stage.warnings = [...new Set([...(Array.isArray(stage.warnings) ? stage.warnings : []), ...warnings])];
+        return stage.skeleton;
+    }
+
+    /**
+     * D1「时长从档位里选」的后端校验：选定视频模板 → 可选时长集合；所选时长必须属于该集合。
+     * 供 HTTP 层（GET /api/durations 一类）与流水线自检复用。durations 为 null 表示该模型档位待查证。
+     */
+    function durationPolicy(runId) {
+        const run = typeof runId === "string" ? get(runId) : runId;
+        const project = projectOf(run);
+        const plan = project?.plan && typeof project.plan === "object" ? project.plan : {};
+        const videoTemplate = String(pipelineConfig.videoTemplate ?? "").trim();
+        const durations = durationsForTemplate(videoTemplate);
+        const selected = Number(plan.episodeDurationSec) > 0 ? Number(plan.episodeDurationSec) : null;
+        const allowed = !durations ? true : isDurationAllowed(videoTemplate, selected);
+        return {
+            videoTemplate,
+            durations,
+            frameRate: durationMetaForTemplate(videoTemplate).frameRate,
+            frameCounts: durationMetaForTemplate(videoTemplate).frameCounts,
+            selectedEpisodeDurationSec: selected,
+            allowed,
+            reason: allowed ? "" : `每集时长 ${selected}s 不在视频模型「${videoTemplate}」的档位 [${(durations || []).join("/")}]s 内（时长必须从档位里选）`,
+        };
     }
 
     /** 原子写 JSON（临时文件 + 同目录 rename，与 projects.js 的写盘约定一致）。 */
@@ -2009,19 +2133,39 @@ ${JSON.stringify(partials, null, 2)}
         };
     }
 
-    /** 入队一次生成尝试并追加候选。重跑用带时间戳的新 id，绝不覆盖旧 jobId/artifactUrl。 */
-    function enqueueAttempt(run, def, item, plan) {
+    /**
+     * 入队一次生成尝试并追加候选。重跑用带时间戳的新 id，绝不覆盖旧 jobId/artifactUrl。
+     * variant>0 用于同一镜一次入队多个候选（D3）：给每个候选换一版 seed，保证 4 张不是同一张。
+     */
+    function enqueueAttempt(run, def, item, plan, { variant = 0 } = {}) {
         if (typeof runJob !== "function" || typeof jobs?.enqueue !== "function") return null;
         const base = `${run.id}-${item.id}`;
         // 重跑必然带时间戳 + 随机后缀：同一毫秒内连点两次也不能撞出同一个 jobId，否则候选会被 upsert 合并。
-        const id = item.candidates?.length ? `${base}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}` : base;
-        const job = jobs.enqueue({ id, kind: plan.kind, template: plan.template, name: item.id, params: plan.params, meta: { runId: run.id, stageId: def.id, itemId: item.id } }, runJob);
+        const id = item.candidates?.length || variant > 0 ? `${base}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}` : base;
+        // 同一镜的多个候选换 seed（同一个 seed 会出同一张图，失去「多候选挑一张」的意义）。
+        const params =
+            variant > 0 && plan.params?.SEED !== undefined && Number.isFinite(Number(plan.params.SEED))
+                ? { ...plan.params, SEED: (Number(plan.params.SEED) + variant * 7919) % 2147483647 }
+                : plan.params;
+        const job = jobs.enqueue({ id, kind: plan.kind, template: plan.template, name: item.id, params, meta: { runId: run.id, stageId: def.id, itemId: item.id } }, runJob);
         if (!job) return null;
-        item.candidates = [...(item.candidates || []), { template: plan.template, jobId: job.id, artifactUrl: null, status: "queued", params: plan.params, createdAt: nowIso() }];
+        item.candidates = [...(item.candidates || []), { template: plan.template, jobId: job.id, artifactUrl: null, status: "queued", params, createdAt: nowIso() }];
         item.jobId = job.id;
         item.selected = job.id;
         item.status = "queued";
         return job.id;
+    }
+
+    /** 同一镜一次入队 count 个候选（D3「一次生产 4 张以上」）；count<=1 时退化为单次入队。 */
+    function enqueueAttemptBatch(run, def, item, plan, count) {
+        const total = Math.max(1, Math.floor(Number(count) || 1));
+        const ids = [];
+        for (let index = 0; index < total; index += 1) {
+            const id = enqueueAttempt(run, def, item, plan, { variant: index });
+            if (!id) break;
+            ids.push(id);
+        }
+        return ids;
     }
 
     /**
@@ -2042,24 +2186,39 @@ ${JSON.stringify(partials, null, 2)}
             if (plan.warning) item.warning = plan.warning.reason;
             else if (item.warning) delete item.warning;
             if (item.jobId || !plan.ready) continue;
-            enqueueAttempt(run, def, item, plan);
+            // D3：关键帧每条目一次入队 ≥4 个候选；视频阶段仍单次入队。
+            enqueueAttemptBatch(run, def, item, plan, candidatesPerEnqueue(def.id));
         }
     }
 
     /**
-     * 单镜失败自动重试：最新候选为 error 且自动重试预算未用尽时，用**同一份 template/params** 追加一个新候选。
+     * 单镜失败自动重试（D3：不达标自动重新生成）：最新候选落终态且整条 item 无任何达标候选时，
+     * 用**同一份 template/params**追加一个新候选，预算由 maxItemRetries 封顶（绝不无限重试）。
+     * 触发条件覆盖两类「不达标」：error（任务失败）与 done-但-QC-判负（产物缺失/空文件/尺寸非法）。
      * 幂等：预算由候选列表里 autoRetry 候选的数量导出（不依赖内存计数器），
-     * 且新候选入队后 latest 立刻变 queued，重放同一失败事件不会再触发一次；
+     * 且新候选入队后 latest 立刻变 queued（非终态），重放同一失败事件不会再触发一次；
      * 未注入 getProject（autoRetryEnabled=false）时不启用，保持旧的「失败即止」。
      */
     function retryFailedItem(run, def, item) {
         if (!autoRetryEnabled) return false;
         const candidates = Array.isArray(item.candidates) ? item.candidates : [];
         const latest = candidates.at(-1);
-        if (!latest || latest.status !== "error") return false;
+        // 只在终态上判定：queued/running（含刚入队的重试）不处理。
+        if (!latest || !TERMINAL_JOB.has(latest.status)) return false;
+        // 取消是用户意图，不自动重试。
+        if (latest.status === "canceled") return false;
+        // 有任一候选达标 → 该镜已达标，不必再折腾（D3「一次出 ≥4 张，够用就不重生成」）。
+        if (candidates.some(candidatePassed)) return false;
+        if (latest.status !== "error" && latest.status !== "done") return false;
         const used = candidates.filter((candidate) => candidate.autoRetry).length;
         if (used >= maxItemRetries) return false;
-        const plan = { kind: STAGE_TEMPLATE_FAMILY[def.id], template: latest.template, params: latest.params || {}, ready: true };
+        // done 但 QC 判负 → 换一版 seed 再试（同一 seed 只会再出一张同样不达标的图）。
+        const qcRetry = latest.status === "done";
+        const params = { ...(latest.params || {}) };
+        if (qcRetry && def.id === "keyframe" && params.SEED !== undefined && Number.isFinite(Number(params.SEED))) {
+            params.SEED = (Number(params.SEED) + 104729) % 2147483647;
+        }
+        const plan = { kind: STAGE_TEMPLATE_FAMILY[def.id], template: latest.template, params, ready: true };
         if (!enqueueAttempt(run, def, item, plan)) return false;
         // 只在自动生成的候选上打标，作为下次「已重试几次」的唯一依据；旧候选一律保留。
         item.candidates.at(-1).autoRetry = true;
@@ -2288,7 +2447,11 @@ ${JSON.stringify(partials, null, 2)}
                 stage.finishedAt = nowIso();
             }
             // 分镜阶段产出即把「集」变成可分区事实键：归一 shots[].episodeId，并回填 project.episodes[].shotIds（幂等、不改 version）。
-            if (def.id === "storyboard") normalizeStoryboardEpisodes(run, stage);
+            if (def.id === "storyboard") {
+                normalizeStoryboardEpisodes(run, stage);
+                // D1：Σ段时长必须等于骨架，缺一段显式报出（写进 stage.warnings 与 stage.skeleton）。
+                validateSkeleton(run, stage);
+            }
             // 剧本阶段产出即回填 01 的设定建议，并把剧本事实（script + episodes/scenes）投影进 Project（都幂等；未绑项目时为空操作）。
             if (def.id === "script") {
                 backfillPlanSuggestion(run, stage.output);
@@ -2426,6 +2589,9 @@ ${JSON.stringify(partials, null, 2)}
     /** 轻量进度：只读 progress.json（几十字节），不返回内嵌整本小说的 run.json（可达数 MB）。 */
     const stageProgress = (runId) => readProgress(runId);
 
+    /** 分镜阶段的骨架对齐结果（D1）；未跑过分镜返回 null。 */
+    const skeletonOf = (runId) => get(runId)?.stages?.storyboard?.skeleton || null;
+
     /**
      * 启动收敛：把上次进程遗留的 running 阶段落成明确 error。
      * 必须做 —— beginStage 会拒绝在 running 阶段上重跑，不收敛的话重启一次就把那个阶段永久锁死。
@@ -2451,5 +2617,5 @@ ${JSON.stringify(partials, null, 2)}
         return fixed;
     }
 
-    return { stages, list, get, create, estimate: estimateFor, runStage, beginStage, executeStage, stageProgress, reconcileRunning, setStageInput, projectJob, bindJobs, cancelStage, beginAssemble, executeAssemble, assembleStage, beginRegenerate, executeRegenerate, stageGate, stageGates, patchStageShot };
+    return { stages, list, get, create, estimate: estimateFor, runStage, beginStage, executeStage, stageProgress, reconcileRunning, setStageInput, projectJob, bindJobs, cancelStage, beginAssemble, executeAssemble, assembleStage, beginRegenerate, executeRegenerate, stageGate, stageGates, patchStageShot, durationPolicy, skeletonOf };
 }

@@ -3,6 +3,8 @@ import { randomUUID } from "node:crypto";
 import { basename, extname, join } from "node:path";
 
 import { artifactUrl, ensureDir, saveBuffer } from "../files.js";
+// 时长档位（模型能力元数据）的唯一事实源：与「模型清单」同源挂到每个模板上，随 /api/providers 输出。
+import { durationMetaForTemplate } from "../durations.js";
 
 const TOKEN_RE = /\{\{([A-Z0-9_]+)\}\}/g;
 
@@ -144,7 +146,7 @@ function familyOf(name) {
     return "edit";
 }
 
-/** 扫描 workflows 目录，返回 TemplateInfo[]（name/family/title/tokens）。 */
+/** 扫描 workflows 目录，返回 TemplateInfo[]（name/family/title/tokens/durations）。 */
 export function listTemplates(workflowsDir) {
     if (!workflowsDir || !existsSync(workflowsDir)) return [];
     return readdirSync(workflowsDir)
@@ -152,7 +154,16 @@ export function listTemplates(workflowsDir) {
         .sort()
         .map((file) => {
             const name = file.slice(0, -5);
-            return { name, family: familyOf(name), title: TITLES[name] || name, tokens: extractTokens(join(workflowsDir, file)) };
+            // 档位随清单同源下发：D1「时长档位跟着模型走」，前端从该字段读，不硬编码。
+            const durationMeta = durationMetaForTemplate(name);
+            return {
+                name,
+                family: familyOf(name),
+                title: TITLES[name] || name,
+                tokens: extractTokens(join(workflowsDir, file)),
+                durations: durationMeta.durations,
+                durationMeta,
+            };
         });
 }
 

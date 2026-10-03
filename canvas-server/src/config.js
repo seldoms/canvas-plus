@@ -73,7 +73,9 @@ const DEFAULTS = {
         videoHeight: 1344,
         videoSeconds: 5,
         videoFps: 24,
-        maxKeyframesPerShot: 2,
+        // D3：单镜一次入队 ≥4 个关键帧候选（不达标由 retryFailedItem 自动重生成，预算见 maxItemRetries）。
+        // 同时也是 04-keyframes 提示词里的单镜帧数上限。
+        maxKeyframesPerShot: 4,
         // 「01 剧本」阶段填入小说后的完整 prompt 超过该字符数时，自动分块改编（map-reduce）；
         // 小于等于阈值维持单次调用。针对整本长篇超出模型上下文的场景（如 156 万 token 超 DeepSeek 104 万上限）。
         // 默认 16000：对齐剧本工作室 skill 的「每批 8000 字以内」注意力策略并放宽一倍兼顾吞吐；

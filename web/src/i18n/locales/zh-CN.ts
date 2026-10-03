@@ -438,6 +438,10 @@ export default {
             optional: "可留空",
             source: "原文",
             sourceHelp: "可选：上传 txt / md 或直接粘贴原著。",
+            videoModel: "视频模型（时长档位来源）",
+            durationTier: "单集时长（档位）",
+            durationTierHelp: "时长跟着视频模型走：只能从该模型的档位里选；先定骨架，再往槽位里填内容。",
+            durationTierPending: "该模型时长档位待查证，暂按经验值填写。",
         },
         detail: {
             back: "返回项目列表",

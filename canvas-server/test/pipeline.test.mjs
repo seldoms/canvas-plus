@@ -45,7 +45,7 @@ function makeEnv() {
     );
     const config = {
         dataDir: join(root, "data"),
-        pipeline: { imageTemplate: "img-test", editTemplate: "edit-test", videoTemplate: "video-test", videoSeconds: 5, videoFps: 24, maxKeyframesPerShot: 2 },
+        pipeline: { imageTemplate: "img-test", editTemplate: "edit-test", videoTemplate: "video-test", videoSeconds: 5, videoFps: 24, maxKeyframesPerShot: 1 },
     };
     mkdirSync(config.dataDir, { recursive: true });
     return { root, skillsDir, config };

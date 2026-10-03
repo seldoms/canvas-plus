@@ -1,5 +1,5 @@
 import { App, Form, Input, InputNumber, Modal, Select, Tag } from "antd";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import {
@@ -13,6 +13,7 @@ import {
     type DramaPresetOption,
 } from "@/constant/drama-presets";
 import type { ProjectCreateInput } from "@/services/api/projects";
+import { fetchGatewayProviders, probeGatewayBaseUrl, type GatewayTemplateInfo } from "@/services/api/gateway";
 
 import { EMPTY_SOURCE_DRAFT, SourceInput, type ProjectSourceDraft, type ProjectSourceSubmit } from "./source-input";
 
@@ -25,6 +26,8 @@ export type CreateProjectFormValues = {
     visualStyle?: string[];
     ratio?: string;
     episodeDurationSec?: number;
+    /** 视频模型（时长档位来源）：来自 /api/providers 的 video family 模板；D1「时长跟着模型走」。 */
+    videoModel?: string;
     dramaMode?: string[];
     audience?: string[];
     episodeCount?: number;
@@ -84,11 +87,50 @@ export function CreateProjectModal({
     const { message } = App.useApp();
     const [form] = Form.useForm<CreateProjectFormValues>();
     const [source, setSource] = useState<ProjectSourceDraft>(EMPTY_SOURCE_DRAFT);
+    // D1：视频模型清单来自后端 /api/providers —— 时长档位 `durations` 随之而来，前端不硬编码。
+    const [videoTemplates, setVideoTemplates] = useState<GatewayTemplateInfo[]>([]);
+    const videoModel = Form.useWatch("videoModel", form) as string | undefined;
+    const selectedVideoTemplate = useMemo(() => videoTemplates.find((template) => template.name === videoModel) || null, [videoTemplates, videoModel]);
+    // 选定视频模型 → 可选时长档位集合（空 = 该模型档位待查证 / 网关不可达）。
+    const durationTiers = useMemo(() => {
+        const tiers = selectedVideoTemplate?.durations;
+        return Array.isArray(tiers) && tiers.length ? tiers : null;
+    }, [selectedVideoTemplate]);
 
-    // 每次打开重置原文草稿，避免上次的文件内容带到下一次新建。
+    // 每次打开重置原文草稿，并拉取视频模型清单（含时长档位）；网关不可达时退化回自由输入，不阻塞建项目。
     useEffect(() => {
-        if (open) setSource(EMPTY_SOURCE_DRAFT);
-    }, [open]);
+        if (!open) return;
+        setSource(EMPTY_SOURCE_DRAFT);
+        let alive = true;
+        void probeGatewayBaseUrl()
+            .then((base) => fetchGatewayProviders(base))
+            .then((providers) => {
+                if (!alive) return;
+                const models = (providers.comfy?.templates || []).filter((template) => template.family === "video");
+                setVideoTemplates(models);
+                // 默认优先选一个「有档位」的视频模型（H3 系），让档位选择器一打开就可用。
+                const preferred = models.find((template) => Array.isArray(template.durations) && template.durations.length) || models[0];
+                if (!preferred) return;
+                const tiers = Array.isArray(preferred.durations) ? preferred.durations : null;
+                form.setFieldsValue({
+                    videoModel: preferred.name,
+                    ...(tiers?.length ? { episodeDurationSec: tiers.includes(15) ? 15 : tiers[0] } : {}),
+                });
+            })
+            .catch(() => {
+                if (alive) setVideoTemplates([]);
+            });
+        return () => {
+            alive = false;
+        };
+    }, [open, form]);
+
+    // 换模型 → 档位跟着变：当前时长不在新档位里就落到该模型第一个档位。
+    useEffect(() => {
+        if (!durationTiers) return;
+        const current = Number(form.getFieldValue("episodeDurationSec"));
+        if (!durationTiers.includes(current)) form.setFieldsValue({ episodeDurationSec: durationTiers[0] });
+    }, [durationTiers, form]);
 
     const genreOptions = GENRE_PRESET_GROUPS.map((group) => ({ label: t(`projects.form.${group.labelKey}`), options: presetOptions(group.options) }));
     const multiPlaceholder = t("projects.form.multiOrCustom");
@@ -121,7 +163,7 @@ export function CreateProjectModal({
             onOk={() => void form.submit()}
             destroyOnHidden
         >
-            <Form form={form} layout="vertical" requiredMark={false} initialValues={{ ratio: "9:16", episodeDurationSec: 60, dramaMode: ["短剧向"], episodeCount: 1 }} onFinish={handleFinish}>
+            <Form form={form} layout="vertical" requiredMark={false} initialValues={{ ratio: "9:16", episodeDurationSec: 15, dramaMode: ["短剧向"], episodeCount: 1 }} onFinish={handleFinish}>
                 <Form.Item name="title" label={t("projects.form.title")} rules={[{ required: true, message: t("projects.form.titleRequired") }]}>
                     <Input size="large" placeholder={t("projects.form.titlePlaceholder")} />
                 </Form.Item>
@@ -155,8 +197,23 @@ export function CreateProjectModal({
                     <Form.Item name="dramaMode" label={t("projects.form.dramaMode")}>
                         <Select mode="tags" optionLabelProp="value" allowClear maxCount={1} placeholder={multiPlaceholder} options={presetOptions(DRAMA_MODE_PRESETS)} />
                     </Form.Item>
-                    <Form.Item name="episodeDurationSec" label={t("projects.form.episodeDurationSec")}>
-                        <InputNumber min={1} max={3600} className="w-full" />
+                    <Form.Item name="videoModel" label={t("projects.form.videoModel")}>
+                        {/* 视频模型来自后端 /api/providers（video family）；换它 → 时长档位跟着变。 */}
+                        <Select
+                            options={videoTemplates.map((template) => ({ value: template.name, label: template.title || template.name }))}
+                            placeholder={t("projects.form.optional")}
+                            disabled={submitting || !videoTemplates.length}
+                            showSearch
+                            optionFilterProp="label"
+                        />
+                    </Form.Item>
+                    <Form.Item name="episodeDurationSec" label={durationTiers ? t("projects.form.durationTier") : t("projects.form.episodeDurationSec")} extra={selectedVideoTemplate?.durations ? t("projects.form.durationTierHelp") : t("projects.form.durationTierPending")}>
+                        {durationTiers ? (
+                            // D1：时长只能从「当前视频模型」的档位里选；换模型 → 档位跟着变。
+                            <Select options={durationTiers.map((sec) => ({ value: sec, label: `${sec} s` }))} disabled={submitting} />
+                        ) : (
+                            <InputNumber min={1} max={3600} className="w-full" disabled={submitting} />
+                        )}
                     </Form.Item>
                     <Form.Item name="episodeCount" label={t("projects.form.episodeCount")}>
                         <InputNumber min={1} max={999} className="w-full" />

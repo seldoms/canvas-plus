@@ -30,7 +30,11 @@
  * @typedef {Object} AudioBible 声音圣经（§13.2 / §11.5.1）
  */
 
+import { existsSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
 import { normalizeProjectBrief as normalizeBriefSpec } from "./production-contracts.js";
+import { ensureDir, safeJoin } from "./files.js";
 
 /* ------------------------------------------------------------------ *
  * 本地冻结枚举（contracts.js 冻结后不再追加，此处为本模块私有取值域）
@@ -523,4 +527,269 @@ export function mergeBiblePatch(bible, patch) {
     if (!changed) return { bible: base, requiresNewRevision: false, revision: currentRevision, changed: false };
     if (locked) return { bible: base, requiresNewRevision: true, revision: currentRevision + 1, changed: true };
     return { bible: merged, requiresNewRevision: false, revision: normalizeRevision(merged.revision, collector(), "revision"), changed: true };
+}
+
+/* ------------------------------------------------------------------ *
+ * 8. 接线（P0-f）：圣经实体的项目级持久化 + 门禁映射
+ * ------------------------------------------------------------------ *
+ * 本段为**新增**（不改上面既有导出/语义）：把已交付的纯函数圣经落成项目里的持久化实体，
+ * 供 index.js 路由与 gates.js 门禁消费，兑现验收句「下游只消费已批准版本；改已锁对象产生新 revision」。
+ *
+ * 存储布局（与 sources.js 同风格「一实体一目录」，但独立于 projects.js，不改其内核）：
+ *   data/projects/<pid>/bibles/<bibleId>.json          活动项目
+ *   data/projects-archive/<pid>/bibles/<bibleId>.json  归档项目
+ *
+ * revision 语义（比 mergeBiblePatch 更严的落地口径，验收要求）：
+ *   - draft / review 就地在当前 revision 上合并；
+ *   - **approved / locked（下游可消费版本）发生实际改动 → 派生新 revision**（status 回 draft），
+ *     旧版本快照进 `history[]`，绝不静默覆盖旧结果。
+ * - 幂等：patch 归一后与现状逐字相同则跳过（不写盘）。
+ * ------------------------------------------------------------------ */
+
+/** 圣经实体类别（domain-contract.md §10.9）。 */
+export const BIBLE_KIND = Object.freeze({
+    PROJECT_BRIEF: "project_brief",
+    SERIES: "series",
+    CHARACTER: "character",
+    WORLD: "world",
+    AUDIO: "audio",
+});
+
+/**
+ * 类别 → 门禁阶段：项目**存在**该类别实体时，对应阶段必须等实体 `approved`/`locked` 才 ready。
+ * 阶段 ID 取自 gates.js 的权威命名（plan / script / design / post）。
+ * ⚠️ 项目**没有**该实体时不产生任何约束（向后兼容：旧项目门禁行为逐字不变）。
+ */
+export const BIBLE_KIND_STAGE = Object.freeze({
+    [BIBLE_KIND.PROJECT_BRIEF]: "plan",
+    [BIBLE_KIND.SERIES]: "script",
+    [BIBLE_KIND.CHARACTER]: "design",
+    [BIBLE_KIND.WORLD]: "design",
+    [BIBLE_KIND.AUDIO]: "post",
+});
+
+/** 类别可读名（门禁原因 / 错误信息用）。 */
+export const BIBLE_KIND_LABEL = Object.freeze({
+    [BIBLE_KIND.PROJECT_BRIEF]: "立项规格（ProjectBrief）",
+    [BIBLE_KIND.SERIES]: "剧级主线（SeriesBible）",
+    [BIBLE_KIND.CHARACTER]: "角色圣经（CharacterBible）",
+    [BIBLE_KIND.WORLD]: "场景/世界圣经（WorldBible）",
+    [BIBLE_KIND.AUDIO]: "声音圣经（AudioBible）",
+});
+
+const BIBLE_NORMALIZERS = Object.freeze({
+    [BIBLE_KIND.PROJECT_BRIEF]: normalizeProjectBrief,
+    [BIBLE_KIND.SERIES]: normalizeSeriesBible,
+    [BIBLE_KIND.CHARACTER]: normalizeCharacterBible,
+    [BIBLE_KIND.WORLD]: normalizeWorldBible,
+    [BIBLE_KIND.AUDIO]: normalizeAudioBible,
+});
+
+/** 合法类别判定（路由层回 400 用）。 */
+export function isBibleKind(kind) {
+    return Object.prototype.hasOwnProperty.call(BIBLE_NORMALIZERS, String(kind ?? "").trim());
+}
+
+/**
+ * 按类别分派规整；`kind` 并入 value。未知类别返回 `{ value: null, warnings:[...] }`（不抛）。
+ * @returns {{ value: Object|null, warnings: Array }}
+ */
+export function normalizeBible(kind, input) {
+    const key = String(kind ?? "").trim();
+    const fn = BIBLE_NORMALIZERS[key];
+    if (!fn) return { value: null, warnings: [{ field: "kind", code: "rejected", got: kind, message: `未知圣经类别：${kind || "(空)"}` }] };
+    const { value, warnings } = fn(input);
+    return { value: { kind: key, ...value }, warnings };
+}
+
+/**
+ * 圣经实体项目级持久化内核（P0-f 接线）。
+ * 自带最小 IO（零外部依赖），不去碰 projects.js 内核 —— 路由在 index.js 层组合。
+ * @param {{ dataDir: string, ulid: () => string, nowIso?: () => string }} deps
+ * @returns {{ list, get, create, update, transition }}
+ */
+export function createBibleStore({ dataDir, ulid, nowIso = () => new Date().toISOString() } = {}) {
+    const activeProjects = join(String(dataDir ?? ""), "projects");
+    const archiveProjects = join(String(dataDir ?? ""), "projects-archive");
+    const ID_PATTERN = /^[A-Za-z0-9_-]+$/;
+
+    const httpError = (status, message) => Object.assign(new Error(message), { status });
+    const badRequest = (message) => httpError(400, message);
+
+    /** 活动目录优先、其次归档目录（与 projects.js `locate` 同语义）；都没有返回 null。 */
+    function locate(projectId) {
+        const id = String(projectId ?? "");
+        if (!id || !ID_PATTERN.test(id)) return null;
+        for (const base of [activeProjects, archiveProjects]) {
+            const dir = safeJoin(base, id);
+            if (dir && existsSync(join(dir, "project.json"))) return dir;
+        }
+        return null;
+    }
+
+    function requireDir(projectId) {
+        const dir = locate(projectId);
+        if (!dir) throw httpError(404, `项目不存在：${projectId}`);
+        return dir;
+    }
+
+    const bibleDir = (dir) => safeJoin(dir, "bibles");
+    const bibleFile = (dir, id) => (ID_PATTERN.test(String(id ?? "")) ? safeJoin(dir, "bibles", `${id}.json`) : null);
+
+    function readJson(file) {
+        if (!file || !existsSync(file)) return null;
+        try {
+            return JSON.parse(readFileSync(file, "utf8"));
+        } catch (error) {
+            // 与 projects.js 一致：坏文件按空处理并告警，不让服务崩。
+            console.warn(`[bible] 文件损坏，按空处理：${file}（${error.message}）`);
+            return null;
+        }
+    }
+
+    /** 临时文件 + 同目录 rename，避免读到写了一半的实体。 */
+    function writeJsonAtomic(file, value) {
+        ensureDir(join(file, ".."));
+        const temp = `${file}.${process.pid}${Math.random().toString(36).slice(2, 8)}.tmp`;
+        writeFileSync(temp, JSON.stringify(value, null, 2));
+        renameSync(temp, file);
+    }
+
+    /** 旧版本快照（去掉 history 自身，避免自嵌套）。 */
+    const snapshot = (record, at) => {
+        const { history, ...rest } = record;
+        return { ...rest, changedAt: at, changedBy: record.changedBy ?? "system" };
+    };
+
+    /** 归一当前内容：只保留该类别认可的字段 + id/status/revision，作为「变化」比较与落盘口径。 */
+    const contentOf = (record) => normalizeBible(record?.kind, record).value;
+
+    function list(projectId) {
+        const dir = requireDir(projectId);
+        const folder = bibleDir(dir);
+        if (!folder || !existsSync(folder)) return [];
+        return readdirSync(folder)
+            .filter((name) => name.endsWith(".json"))
+            .map((name) => readJson(join(folder, name)))
+            .filter(Boolean)
+            .sort((a, b) => String(a.createdAt ?? "").localeCompare(String(b.createdAt ?? "")) || String(a.id ?? "").localeCompare(String(b.id ?? "")));
+    }
+
+    function get(projectId, bibleId) {
+        const dir = requireDir(projectId);
+        return readJson(bibleFile(dir, bibleId));
+    }
+
+    function requireBible(projectId, bibleId) {
+        const dir = requireDir(projectId);
+        const record = readJson(bibleFile(dir, bibleId));
+        if (!record) throw httpError(404, `圣经实体不存在：${bibleId}`);
+        return { dir, record };
+    }
+
+    /** 创建：kind 必填；id 可省（自动 `bib_` + ULID）；状态一律从 `draft` / `revision=1` 起。 */
+    function create(projectId, input = {}) {
+        const dir = requireDir(projectId);
+        const body = input && typeof input === "object" && !Array.isArray(input) ? input : {};
+        const kind = String(body.kind ?? "").trim();
+        if (!isBibleKind(kind)) throw badRequest(`缺少或非法圣经类别 kind：${kind || "(空)"}（可选：${Object.values(BIBLE_KIND).join(" / ")}）`);
+        const explicit = String(body.id ?? "").trim();
+        const id = explicit && ID_PATTERN.test(explicit) ? explicit : `bib_${ulid()}`;
+        const file = bibleFile(dir, id);
+        if (!file) throw badRequest(`圣经实体 id 非法：${id}`);
+        if (existsSync(file)) throw httpError(409, `圣经实体已存在：${id}`);
+
+        const { value, warnings } = normalizeBible(kind, body);
+        const now = nowIso();
+        const record = {
+            ...value,
+            id,
+            projectId: String(projectId),
+            kind,
+            revision: 1,
+            status: BIBLE_STATE.DRAFT,
+            createdAt: now,
+            updatedAt: now,
+            previousRevision: null,
+            changedBy: "system",
+            history: [],
+        };
+        writeJsonAtomic(file, record);
+        // 自动生成 id 时，抹掉规整函数对缺省 id 的 required 告警（不是用户输入的缺失）。
+        return { bible: record, warnings: warnings.filter((item) => !(item.field === "id" && item.code === "required")) };
+    }
+
+    /**
+     * 更新（幂等）。已 approved / locked（可消费）发生实际改动 → 派生新 revision，旧版本进 history[]。
+     * @returns {{ bible: Object, changed: boolean, requiresNewRevision: boolean }}
+     */
+    function update(projectId, bibleId, patch = {}, { actor } = {}) {
+        const { dir, record } = requireBible(projectId, bibleId);
+        const body = { ...(patch && typeof patch === "object" && !Array.isArray(patch) ? patch : {}) };
+        // 身份与账面字段不可经 patch 覆盖（status 只能走 transition）。
+        for (const key of ["id", "kind", "projectId", "status", "revision", "history", "createdAt", "updatedAt", "previousRevision", "changedBy", "actor"]) delete body[key];
+
+        // 变化检测：始终按「非锁定」探针做深合并，否则 mergeBiblePatch 对已锁对象会短路（返回原对象）。
+        const current = contentOf(record);
+        const { bible: merged } = mergeBiblePatch({ ...record, status: BIBLE_STATE.DRAFT }, body);
+        const candidate = normalizeBible(record.kind, merged).value;
+        // status/revision 由本层决定，不参与「内容是否变化」比较（否则 review→draft 会被误判为有变化）。
+        const stripState = ({ status, revision, ...rest }) => rest;
+        if (JSON.stringify(stripState(candidate)) === JSON.stringify(stripState(current))) return { bible: record, changed: false, requiresNewRevision: false };
+
+        const now = nowIso();
+        const consumable = isConsumable(record.status);
+        const priorRevision = normalizeRevision(record.revision, collector(), "revision");
+        const history = Array.isArray(record.history) ? record.history.slice() : [];
+        if (consumable) history.push(snapshot(record, now));
+        const next = {
+            ...candidate,
+            id: record.id,
+            projectId: record.projectId,
+            kind: record.kind,
+            revision: consumable ? priorRevision + 1 : priorRevision,
+            status: BIBLE_STATE.DRAFT, // 任何改动都需重新审批
+            createdAt: record.createdAt ?? now,
+            updatedAt: now,
+            previousRevision: consumable ? priorRevision : record.previousRevision ?? null,
+            changedBy: asTrimmedString(actor) || "system",
+            history,
+        };
+        writeJsonAtomic(bibleFile(dir, bibleId), next);
+        return { bible: next, changed: true, requiresNewRevision: consumable };
+    }
+
+    /**
+     * 推进确认锁状态机（submit_review / approve / reject / lock / reopen / revise）。
+     * 非法迁移 → 抛 400 且原因可读（直接取自纯函数 transition 的 reason）。
+     * 回退型迁移（approved.reopen / locked.revise）产生新 revision，旧版本进 history[]。
+     */
+    function transitionState(projectId, bibleId, action, actor) {
+        const { dir, record } = requireBible(projectId, bibleId);
+        const outcome = transition(record, action, actor);
+        if (!outcome.ok) throw badRequest(outcome.reason);
+        const now = nowIso();
+        const from = record.status;
+        if (outcome.revisionBump) {
+            const priorRevision = normalizeRevision(record.revision, collector(), "revision");
+            const history = Array.isArray(record.history) ? record.history.slice() : [];
+            history.push(snapshot(record, now));
+            const next = {
+                ...record,
+                status: outcome.next,
+                revision: priorRevision + 1,
+                previousRevision: priorRevision,
+                changedBy: outcome.actor,
+                updatedAt: now,
+                history,
+            };
+            writeJsonAtomic(bibleFile(dir, bibleId), next);
+            return { bible: next, action, from, to: outcome.next, bumped: true };
+        }
+        const next = { ...record, status: outcome.next, changedBy: outcome.actor, updatedAt: now };
+        writeJsonAtomic(bibleFile(dir, bibleId), next);
+        return { bible: next, action, from, to: outcome.next, bumped: false };
+    }
+
+    return { list, get, create, update, transition: transitionState };
 }
