@@ -38,7 +38,11 @@ description: |
       "hair": "发型：长度、分缝、束法、发色",
       "props": ["戒指", "旧皮包"],
       "palette": "主色 #RRGGBB + 辅色 #RRGGBB + 点缀 #RRGGBB",
-      "prompt": "英文造型提示词，可直接接在人物外观描述后面"
+      "prompt": "英文造型提示词，可直接接在人物外观描述后面",
+      "turnaroundArtifactIds": ["art_c1_turnaround"],
+      "referenceArtifactIds": ["art_c1_closeup"],
+      "views": ["front", "three_quarter", "side", "back"],
+      "confirmed": false
     }
   ],
   "locations": [
@@ -48,7 +52,10 @@ description: |
       "setDressing": "陈设：家具、墙面、地面、时代物件",
       "lighting": "光源方向、色温、明暗比",
       "palette": "主色 + 辅色 + 点缀",
-      "prompt": "英文场景提示词"
+      "prompt": "英文场景提示词",
+      "sceneMasterArtifactId": "art_loc1_master",
+      "views": ["master", "key_angle_1"],
+      "confirmed": false
     }
   ]
 }
@@ -56,6 +63,12 @@ description: |
 
 - `characters[].id` 必须沿用剧本里的人物 id，不允许新建。
 - `locations[].name` 必须覆盖剧本用到的每个地点。
+- `characters[].turnaroundArtifactIds`：角色三视图产物（Artifact）id 数组，对应 `views` 里的正 / 三分之四（`three_quarter`）/ 侧 / 背视角；`characters[].referenceArtifactIds`：角色正脸特写与其它可复用参考图（Artifact）id 数组。
+- `characters[].views`：三视图覆盖的视角，默认 `["front", "three_quarter", "side", "back"]`；缺哪个视角就是风险，不得默认「已覆盖」。
+- `locations[].sceneMasterArtifactId`：场景**空场母版**（无人、含固定光源方向）的 Artifact id；`locations[].views` 记录空场母版与关键视角。
+- `confirmed`：角色 / 场景的**项目级确认状态**，初始一律 `false`（文字设定刚产出、图还没生成或没被用户确认）。只有用户确认过资产，才能置 `true`。
+- **确认门禁（硬规则）**：`characters[].confirmed !== true` 或 `locations[].confirmed !== true` 时，**不得直接生成整集关键帧**；未确认的资产只能产出候选图并等待人工确认，确认后才允许进入「整集关键帧」。
+- Artifact id 在只有文字、图还没生成时允许为空数组 / 空字符串，但 `views` 与 `confirmed` 键必须存在；不得用文字字段冒充已生成的资产。
 
 ## 提示词模板
 
@@ -82,7 +95,7 @@ description: |
 
 ### 三、字段落位（库的资产卡如何折进本阶段契约）
 
-库里的角色资产卡 / 场景资产卡字段很细，但本阶段 JSON 契约固定，**不得新增字段**。按下列落位把方法论写进去：
+库里的角色资产卡 / 场景资产卡字段很细。除本次新增的结构化资产字段（`turnaroundArtifactIds` / `referenceArtifactIds` / `sceneMasterArtifactId` / `views` / `confirmed`，见「六」）外，本阶段 JSON 契约固定，**不得再新增其它字段**。按下列落位把方法论写进去：
 
 1. `outfit`：服装——形制、颜色、材质、磨损程度；服务人物处境（时代、职业、经济状况、当下情绪都要能从材质与磨损看出来）。
 2. `makeup`：妆容——底妆、眉眼、唇色、特殊妆效（伤痕、狼狈、伪装态也算）。
@@ -94,6 +107,10 @@ description: |
 8. `lighting`（场景）：可执行布光——光源来源、方向、色温、明暗比、亮区 / 暗区（如「西窗侧逆光，色温 4300K，脸部明暗比约 1:3」）；不要写「氛围感」这类空话。
 9. `palette`（场景）：主色＋辅色＋点缀，与场景调性一致。
 10. `prompt`（场景）：英文，写空场环境——空间＋材质＋固定物件＋光线＋风格质感，可直接拼进生图提示词。
+11. `turnaroundArtifactIds` / `referenceArtifactIds`（角色）：三视图与正脸特写 / 参考图的产物 id 数组，图未生成时为空数组。
+12. `views` / `confirmed`（角色）：三视图视角覆盖（默认 `["front","three_quarter","side","back"]`）与项目级确认状态（初始 `false`）。
+13. `sceneMasterArtifactId`（场景）：空场母版产物 id，图未生成时为空字符串。
+14. `views` / `confirmed`（场景）：空场母版与关键视角列表、项目级确认状态（初始 `false`）。
 
 ### 四、风格（写进 prompt，不写内部编号）
 
@@ -107,12 +124,21 @@ description: |
 2. 若关键道具同时属于角色造型与场景陈设，两边描述必须指向同一件（用同样的可识别名称），供下游做单实例锁。
 3. 手机、照片、证件、信封等小道具若需要特写，在 `prompt` 里写清哪一面朝镜头 / 背向镜头，避免下游把背面生成成屏幕或界面。
 
-### 六、输出
+### 六、预制资产（三视图 / 特写 / 空场母版）与确认门禁
 
-1. `characters[].id` 与 `name` 沿用剧本；`props` 为字符串数组；`locations[].name` 覆盖剧本全部地点的去重取值。
+除文字字段外，本阶段要为下游资产链留出结构化出口（对齐 §11.5.2 / §13.3 的资产链：角色文字设定 → 角色三视图 / 特写 → 用户确认 → Character AssetRef；场景文字设定 → 空场母版 / 关键视角图 → 用户确认 → Scene AssetRef）：
+
+1. 角色要覆盖**正脸特写**与**正 / 侧 / 背三视图**：`turnaroundArtifactIds` 放三视图产物 id，`referenceArtifactIds` 放正脸特写与其它参考图 id，`views` 固定写 `["front", "three_quarter", "side", "back"]`（缺哪个视角就在对应位置说明风险，不得默认已覆盖）。
+2. 场景要覆盖**空场母版**（无人、含固定光源方向）与**关键视角**：`sceneMasterArtifactId` 放空场母版 id，`views` 记录母版与关键视角；固定光源方向必须同时写进 `lighting`（可执行布光，写清光源来源、方向、色温、明暗比）。
+3. `turnaroundArtifactIds` / `referenceArtifactIds` / `sceneMasterArtifactId` 在只有文字、图还没生成时允许为空数组 / 空字符串；**不得用文字字段冒充已生成资产**。
+4. `confirmed` 是本阶段产出的**项目级确认状态**，初始一律 `false`；只有用户确认过角色 / 场景资产后才能置 `true`。**确认门禁（硬规则）**：`confirmed !== true` 时**不得直接生成整集关键帧**——未确认资产只能产出候选图等待人工确认，不能用「文字已足够」绕过。
+
+### 七、输出
+
+1. `characters[].id` 与 `name` 沿用剧本；`props` 为字符串数组；`locations[].name` 覆盖剧本全部地点的去重取值；结构化资产字段按「六」输出。
 2. 只输出下面结构的 JSON 本体，字段名不得改动，不要 Markdown 代码块、不要解释文字：
 
-{"characters":[{"id":"c1","name":"","outfit":"","makeup":"","hair":"","props":[],"palette":"","prompt":""}],"locations":[{"id":"loc1","name":"","setDressing":"","lighting":"","palette":"","prompt":""}]}
+{"characters":[{"id":"c1","name":"","outfit":"","makeup":"","hair":"","props":[],"palette":"","prompt":"","turnaroundArtifactIds":[],"referenceArtifactIds":[],"views":["front","three_quarter","side","back"],"confirmed":false}],"locations":[{"id":"loc1","name":"","setDressing":"","lighting":"","palette":"","prompt":"","sceneMasterArtifactId":"","views":[],"confirmed":false}]}
 
 ## 校验规则
 
@@ -121,6 +147,10 @@ description: |
 - `characters[].props` 必须是字符串数组，没有道具时给空数组。
 - `locations[].name` 必须覆盖 `script.scenes[].location` 去重后的全部取值。
 - `outfit`、`makeup`、`hair`、`setDressing`、`lighting` 非空；`palette` 至少含一个 `#RRGGBB`。
+- `characters[]` 必须含 `turnaroundArtifactIds` / `referenceArtifactIds`（数组）、`views`（数组）、`confirmed`（布尔）；`locations[]` 必须含 `sceneMasterArtifactId`（字符串）、`views`（数组）、`confirmed`（布尔）。图未生成时 Artifact 字段允许为空，但键必须存在。
+- 角色 `views` 应覆盖 `front` / `three_quarter` / `side` / `back`；缺失视角**不阻断本阶段产出，但必须产生 QC warning**，不得默认「已覆盖」。
+- `confirmed` 初始必须为 `false`；未经用户确认不得置 `true`。
+- **确认门禁**：`confirmed !== true` 的角色 / 场景不得直接进入「整集关键帧」生成；下游编排器应据此拦截并提示风险。结构化资产字段缺失或不完整**不阻断本阶段产出，但必须产生 QC warning，不得静默丢失**。
 - 只输出 JSON 本体。解析失败由编排器重试一次，再失败整步标记 `error`。
 
 ## 工具
@@ -140,5 +170,5 @@ description: |
 
 - 编排器（`canvas-server/src/pipeline.js` 的 `readPromptTemplate` → `extractSection`）只把本文的 **`## 提示词模板`** 一节发给模型；其余章节是给人 / Agent 看的，不会进模型上下文。所以**新方法论必须写进「提示词模板」**（用 `###` 子标题，不会被 `^##\s` 截断），写在外面的章节约等于没写。
 - 本阶段由 `pipeline.js` 的 `composeWithLlm` **单次调用**（不分块）；`## 内容创作红线（硬约束）` 目前仅 01 剧本阶段的分块路径会抽取注入，本阶段该节主要供人 / Agent 阅读，硬约束同时逐条写进了「提示词模板 → 一、创作底线」。
-- 产出契约（`characters[]` / `locations[]` 的字段）与校验规则由 `pipeline.js` 与 `registry.json`（`produces: "design"`）共同执行，**字段名与结构不得改动**；下游 `04-keyframes` 读 `design.characters[]` / `design.locations[]`，改动会连挂。
+- 产出契约（`characters[]` / `locations[]` 的字段，含本次新增的 `turnaroundArtifactIds` / `referenceArtifactIds` / `sceneMasterArtifactId` / `views` / `confirmed`）与校验规则由 `pipeline.js` 与 `registry.json`（`produces: "design"`）共同执行。**既有文字字段名与结构不得改动**（下游 `04-keyframes` 读 `design.characters[]` / `design.locations[]`，改动会连挂）；新增的结构化资产字段服务端尚未解析 / 校验，在映射完成前缺失只能产生 QC warning，不得静默丢失；`confirmed` 确认门禁由编排器在进入关键帧阶段前执行。
 - 本阶段方法论只影响内容与结构；`prompt` 已按本地 ComfyUI 文生图模板的 `PROMPT` token 形态书写，不引入 Midjourney 尾参（含 `--no`）、Seedance 参数或任何云端平台专属格式；尺寸由模板参数（`WIDTH/HEIGHT`，H3 宽高为 32 的倍数）统一决定，不写进 prompt。

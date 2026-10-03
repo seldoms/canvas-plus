@@ -39,6 +39,15 @@ description: |
       "durationSec": 4,
       "shotSize": "中景",
       "camera": "固定机位，平视，人物居中偏左",
+      "cameraSpec": {
+        "position": "subject-front-right",
+        "height": "chest",
+        "angle": "15deg-up",
+        "lens": "50mm",
+        "aperture": "f2.8",
+        "focus": { "from": "door", "to": "face", "atSec": 2.2 },
+        "movement": { "type": "dolly", "direction": "forward", "speed": "slow", "stabilization": "steady" }
+      },
       "action": "人物推门进屋，停在桌边",
       "dialogue": "台词或空字符串",
       "audio": "环境音与配乐说明",
@@ -52,6 +61,9 @@ description: |
 - `sceneId` 必须引用剧本里已存在的场次 id。
 - `prompt` / `negativePrompt` 用英文，供生图与生视频模板的 `PROMPT` token 直接使用。
 - 单镜时长默认 3~6 秒；超过 8 秒的镜头要拆成两条。
+- `camera`（字符串，**旧字段，继续可读**）：给人工阅读与旧下游兼容的机位长描述，保留不变。
+- `cameraSpec`（对象，**新写入目标**）：结构化机位，字段固定为 `position / height / angle / lens / aperture / focus{from,to,atSec} / movement{type,direction,speed,stabilization}`；字段语义与取值风格见「七、结构化摄影机」。
+- **硬规则**：`cameraSpec` 缺失或不完整时，**不得宣称机位已被工具可靠执行**，只能作为风险提示（QC warning）上报；结构化字段不得静默丢失。旧 `camera` 字符串与 `cameraSpec` 冲突时以 `cameraSpec` 为准。
 
 ## 提示词模板
 
@@ -81,10 +93,11 @@ description: |
 
 ### 三、字段落位（库的分镜字段如何折进本阶段契约）
 
-库里的分镜强调「机位 / 运镜 / 景深 / 光影 / 限制 / 衔接」等要素，但本阶段 JSON 契约固定为 11 个字段，**不得新增字段**。按下列落位把方法论写进去：
+库里的分镜强调「机位 / 运镜 / 景深 / 光影 / 限制 / 衔接」等要素，但本阶段 JSON 契约固定，**除本次新增的结构化对象 `cameraSpec` 外不得再新增字段**。按下列落位把方法论写进去：
 
 1. `shotSize`：景别（远景 / 全景 / 中景 / 近景 / 特写 / 超特写）。
-2. `camera`：写「机位 + 运镜行为锁 + 焦段 / 光圈 / 景深焦点」。机位禁止只写「仰拍近景」这类抽象术语，必须写清摄影机在哪、离谁多远、高度在哪、拍谁（如「摄影机位于女主正前方偏右 15°，胸口高度，向上仰拍她抬头的脸，近景」）。运镜写清方向、速度、稳定度与起止状态，固定镜头也写「固定在哪里、看向哪里、禁止推拉摇移」。同字段内一并写清焦段（长焦 / 标准 / 广角 / 微距）、光圈与景深、焦点起点与落点。
+2. `camera`：**旧字段，继续可读**，给人工阅读的机位长描述。写「机位 + 运镜行为锁 + 焦段 / 光圈 / 景深焦点」。机位禁止只写「仰拍近景」这类抽象术语，必须写清摄影机在哪、离谁多远、高度在哪、拍谁（如「摄影机位于女主正前方偏右 15°，胸口高度，向上仰拍她抬头的脸，近景」）。运镜写清方向、速度、稳定度与起止状态，固定镜头也写「固定在哪里、看向哪里、禁止推拉摇移」。同字段内一并写清焦段（长焦 / 标准 / 广角 / 微距）、光圈与景深、焦点起点与落点。
+2b. `cameraSpec`：**新写入目标**，把 `camera` 里的同一台机位拆成可校验的结构化字段（见「七、结构化摄影机」）；`camera` 与 `cameraSpec` 必须描述同一台机位，冲突时以 `cameraSpec` 为准。
 3. `action`：主体动作 / 表情，写可见的表演过程（眼神、眨眼、嘴部、呼吸、肩颈、手部、身体重心的变化），不写情绪标签；情绪要有阶梯，强情绪不能第一帧直接满格，除非剧本明确爆发；动作戏写「起手 → 接触点 → 受力结果 → 反应 → 段末状态」。
 4. `dialogue`：只放本镜头实际说出的台词，并带语气 / 音量 / 语速线索；没有就留空字符串。
 5. `audio`：只写本镜的环境音与关键同步音效（不写 BGM 编排，BGM 交给后期）。
@@ -108,12 +121,30 @@ description: |
 2. 相邻镜头要连续：轴线、视线、动作、物件、景别跳跃不要错乱；同一场次内人物位置、道具状态、光线方向要能对上上一镜。
 3. 每个镜头在 `action` 收尾写一句「段末可见状态」（本镜结束时角色姿态 / 视线 / 道具 / 镜头方向），供下一镜承接；跨场次要能看出场景与时间的变化。
 
-### 七、输出
+### 七、结构化摄影机（cameraSpec，新写入目标）
+
+除保留给人工阅读的 `camera` 字符串外，每个镜头都要同时输出结构化机位对象 `cameraSpec`，把「机位 / 高度 / 角度 / 焦段 / 光圈 / 焦点 / 运镜」翻译成可校验的独立字段，供视频 Tool 逐项映射；取值风格为小写英文 token，角度带 `deg` 后缀（对齐 §11.5.2 的 `shotCamera` 示例）：
+
+1. `position`：摄影机相对主体的方位（如 `subject-front-right`、`behind-left`、`over-shoulder-right`），禁止抽象术语。
+2. `height`：摄影机高度（`ground` / `waist` / `chest` / `eye` / `overhead`）。
+3. `angle`：俯仰角（平视写 `level`，其余如 `15deg-up` / `30deg-down`）。
+4. `lens`：焦段（`24mm` 广角 / `50mm` 标准 / `85mm` 长焦 / `macro`）。
+5. `aperture`：光圈（如 `f1.8` / `f2.8` / `f8`）。
+6. `focus`：焦点对象，含起点 `from`、落点 `to`、切换时间 `atSec`（秒）；不需要跟焦时 `from` = `to`。
+7. `movement`：运镜对象，含 `type`（固定 `static` / `dolly` / `pan` / `tilt` / `crane` / `handheld`）、`direction`（`forward` / `backward` / `left` / `right` / `none`）、`speed`（`slow` / `medium` / `fast`）、`stabilization`（`steady` / `subtle` / `handheld`）；固定镜头写 `type: "static"` 且 `direction: "none"`。
+
+硬约束：
+
+1. `cameraSpec` 与 `camera` 必须描述同一台机位，不得互相矛盾；有冲突时以 `cameraSpec` 为准。
+2. **结构化字段缺失时，不得宣称机位已被工具可靠执行**：只能作为风险提示（项目层 `reviewNotes[]` / QC warning）上报，不得静默丢失，也不得用「已按机位生成」一类措辞掩盖。
+3. 服务端目前尚未把这些字段拆分、校验并映射到视频 Tool 的独立参数；在其完成映射或明确「不支持」之前，任何「机位已生效」的结论都只能标记为风险，不得当作已验证事实。
+
+### 八、输出
 
 1. 按场次顺序输出，`index` 全局递增，`id` 只允许 `[A-Za-z0-9_-]`。
 2. 只输出下面结构的 JSON 本体，字段名不得改动，不要 Markdown 代码块、不要解释文字：
 
-{"shots":[{"id":"sh1","sceneId":"sc1","index":1,"durationSec":4,"shotSize":"中景","camera":"","action":"","dialogue":"","audio":"","prompt":"","negativePrompt":""}]}
+{"shots":[{"id":"sh1","sceneId":"sc1","index":1,"durationSec":4,"shotSize":"中景","camera":"","cameraSpec":{"position":"","height":"","angle":"","lens":"","aperture":"","focus":{"from":"","to":"","atSec":0},"movement":{"type":"","direction":"","speed":"","stabilization":""}},"action":"","dialogue":"","audio":"","prompt":"","negativePrompt":""}]}
 
 ## 校验规则
 
@@ -121,6 +152,8 @@ description: |
 - `shots[].id` 唯一且只允许 `[A-Za-z0-9_-]`；`sceneId` 必须存在于上游 `script.scenes`。
 - `index` 为正整数且严格递增，不允许跳号导致排序歧义。
 - `durationSec` 为 1~8 的数字；`shotSize`、`camera`、`action` 非空。
+- `camera`（旧字符串）保留可读且非空；`cameraSpec`（新写入目标）应含 `position` / `height` / `angle` / `lens` / `aperture` / `focus` / `movement` 七项，`focus` 至少含 `from` / `to`，`movement` 至少含 `type`。
+- `cameraSpec` 缺失或不完整**不阻断本阶段产出，但必须产生 QC warning**：不得宣称机位已被工具可靠执行，不得静默丢失。
 - `prompt` 非空且为英文；`negativePrompt` 允许为空但建议填写。
 - 只输出 JSON 本体。解析失败由编排器重试一次，再失败整步标记 `error`。
 
@@ -140,5 +173,5 @@ description: |
 
 - 编排器（`canvas-server/src/pipeline.js` 的 `readPromptTemplate` → `extractSection`）只把本文的 **`## 提示词模板`** 一节发给模型；其余章节是给人 / Agent 看的，不会进模型上下文。所以**新方法论必须写进「提示词模板」**（用 `###` 子标题，不会被 `^##\s` 截断），写在外面的章节约等于没写。
 - 本阶段由 `pipeline.js` 的 `composeWithLlm` **单次调用**（不分块）；`## 内容创作红线（硬约束）` 目前仅 01 剧本阶段的分块路径会抽取注入，本阶段该节主要供人 / Agent 阅读，硬约束同时逐条写进了「提示词模板 → 一、创作底线」。
-- 产出契约（`shots[]` 的 11 个字段）与校验规则由 `pipeline.js` 与 `registry.json`（`produces: "storyboard"`）共同执行，**字段名与结构不得改动**；下游 `04-keyframes` 读 `storyboard.shots[]`，`05-clip-assembly` 也依赖 `shots[].prompt` / `shots[].action`，改动会连挂。
+- 产出契约（`shots[]` 的 11 个文字 / 结构字段 + 新增结构化对象 `cameraSpec`）与校验规则由 `pipeline.js` 与 `registry.json`（`produces: "storyboard"`）共同执行。**旧 `camera` 字符串继续保留可读，`shots[]` 的既有字段名与结构不得改动**（下游 `04-keyframes` 读 `storyboard.shots[]`，`05-clip-assembly` 也依赖 `shots[].prompt` / `shots[].action`，改动会连挂）；`cameraSpec` 为本次新增的结构化写入目标，服务端尚未拆分、校验或映射到视频 Tool 的独立参数——在映射完成或明确「不支持」之前，缺失字段只能产生 QC warning，不得宣称机位已被可靠执行、不得静默丢失。
 - 本阶段方法论只影响内容与结构；`prompt` / `negativePrompt` 已按本地 ComfyUI 文生图 / 文生视频模板的 `PROMPT` token 形态书写，不引入 Midjourney 尾参、Seedance 参数或任何云端平台专属格式；尺寸与帧数由模板参数（`WIDTH/HEIGHT/LENGTH`，H3 宽高为 32 的倍数）统一决定，不写进 prompt。
