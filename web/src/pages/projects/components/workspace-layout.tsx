@@ -15,6 +15,7 @@ import { WorkspaceInputPanel } from "./workspace-input-panel";
 import { WorkspaceResources } from "./workspace-resources";
 import { WorkspaceRunPanel } from "./workspace-run-panel";
 import { ProcessTimeline } from "./process-timeline";
+import { AssemblyExportPanel } from "./assembly-export-panel";
 
 /**
  * run id 截断成短标签用于选择器（完整 id 走 option 的 title 悬浮提示）。
@@ -181,6 +182,9 @@ export function WorkspaceLayout({
                                 onRun={() => void run.start()}
                                 onCancel={() => void run.cancel()}
                             />
+                            {workspace.stage === "assembly" ? (
+                                <AssemblyExportPanel projectId={projectId} runId={activeRunId} gate={gate} stageStatus={stageStatus} refresh={refresh} />
+                            ) : null}
                             <ProcessTimeline
                                 projectId={projectId}
                                 runId={activeRunId}

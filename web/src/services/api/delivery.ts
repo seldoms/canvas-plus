@@ -72,3 +72,70 @@ function formatBytes(bytes: number) {
     if (bytes >= 1024) return `${Math.round(bytes / 1024)}KB`;
     return `${bytes}B`;
 }
+
+/**
+ * 成片合成结果：与后端 `executeAssemble` 回写进 `stages.assembly.output.assembly` 的字段一一对应。
+ * 状态机：`assembling`（ffmpeg 在跑）→ `done`（有 url）/ `error`（有可读 error）。`reused` 是 200 复用。
+ */
+export type GatewayAssembly = {
+    status: "assembling" | "done" | "error" | string;
+    /** 成片产物地址（`/api/artifacts/...`）；仅 `done` 有。 */
+    url?: string;
+    coverUrl?: string | null;
+    manifestUrl?: string | null;
+    logUrl?: string | null;
+    deliverableId?: string;
+    bytes?: number;
+    /** 成片信息；`durationSec` 是成片总时长。 */
+    info?: { durationSec?: number } | null;
+    order?: unknown;
+    transition?: string;
+    attempt?: number;
+    startedAt?: string;
+    finishedAt?: string;
+    error?: string;
+};
+
+/** 从 run 详情读成片信息（assembly 阶段 output.assembly）；没有返回 null。服务端回写、前端只读。 */
+export function readRunAssembly(run: GatewayPipelineRun | null | undefined): GatewayAssembly | null {
+    const output = run?.stages?.assembly?.output as { assembly?: GatewayAssembly } | undefined;
+    return output?.assembly ?? null;
+}
+
+export type AssembleResult = {
+    run: GatewayPipelineRun;
+    /** 后端是否后台执行（202）。 */
+    inflight: boolean;
+    /** 已有成片被直接复用（200），未重复调 ffmpeg。 */
+    reused: boolean;
+    assembly: GatewayAssembly | null;
+};
+
+/**
+ * 触发「合成成片」：POST /api/pipeline/runs/:id/steps/assembly/assemble。
+ * 后端同步部分做门禁（片段未全部成功 → 400 带可读原因）；通过后 202 后台跑 ffmpeg，
+ * 已有成片且未带 `force` 时 200 `reused` 直接回原结果。400/网络错误转成可读 Error。
+ */
+export async function assemblePipelineRun(runId: string, body: Record<string, unknown> = {}, baseUrl?: string): Promise<AssembleResult> {
+    let response: Response;
+    try {
+        response = await fetch(resolveGatewayUrl(`/api/pipeline/runs/${encodeURIComponent(runId)}/steps/assembly/assemble`, baseUrl), {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(body),
+        });
+    } catch {
+        throw new Error(i18n.t("gateway.unreachable"));
+    }
+    const payload = (await response.json().catch(() => null)) as
+        | { run?: GatewayPipelineRun; inflight?: boolean; reused?: boolean; assembly?: GatewayAssembly; error?: { message?: string } }
+        | null;
+    if (!response.ok) throw new Error(payload?.error?.message || i18n.t("gateway.httpFailed", { status: response.status }));
+    if (!payload?.run) throw new Error(i18n.t("gateway.unreachable"));
+    return {
+        run: payload.run,
+        inflight: Boolean(payload.inflight),
+        reused: Boolean(payload.reused),
+        assembly: readRunAssembly(payload.run) ?? payload.assembly ?? null,
+    };
+}
