@@ -1,0 +1,8 @@
+{
+  "title": "User Guide",
+  "root": true,
+  "defaultOpen": true,
+  "pages": [
+    "user-manual"
+  ]
+}
