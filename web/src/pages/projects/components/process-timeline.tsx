@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 
 import { cn } from "@/lib/utils";
+import { displayProgressLabel } from "@/lib/progress-label";
 import { resolveGatewayUrl, type GatewayStageProgress, type GatewayStageStatus } from "@/services/api/gateway";
 import type { ProjectGate } from "@/services/api/projects";
 import type { AssetRef } from "@/types/domain";
@@ -175,7 +176,7 @@ function StageRow({
             {progress ? (
                 <div className="mt-1 flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs text-stone-600 dark:text-stone-300">
                     <span className="font-medium">{t(`pipeline.progress.${progress.phase}`)}</span>
-                    {progress.label ? <span className="text-stone-500 dark:text-stone-400">{progress.label}</span> : null}
+                    {progress.label ? <span className="text-stone-500 dark:text-stone-400">{displayProgressLabel(progress.label)}</span> : null}
                     {total > 1 ? (
                         <span>
                             {t("pipeline.progress.chunks", { done, total })}

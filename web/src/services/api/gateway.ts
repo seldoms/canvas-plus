@@ -70,9 +70,20 @@ export type GatewayGenerationItem = {
 };
 
 export type GatewayHealth = {
+    /** 存活语义：网关进程能应答就是 true（不代表依赖可用，依赖状态分别看 llm / comfy / runninghub）。 */
     ok: boolean;
-    llm: { ok: boolean; baseUrl: string; error?: string };
+    service?: { ok: boolean; name: string; version: string; uptimeSec: number };
+    llm: {
+        ok: boolean;
+        baseUrl: string;
+        error?: string;
+        /** false = 清单只读模型注册表，网关没有探测上游；此时 ok 只表示「已登记启用的文本模型」。 */
+        probed?: boolean;
+        source?: string;
+        models?: string[];
+    };
     comfy: { ok: boolean; baseUrl: string; error?: string };
+    runninghub?: { ok: boolean; baseUrl?: string; error?: string };
     queue: { running: number; pending: number };
 };
 
@@ -294,6 +305,25 @@ export async function createPipelineRun(input: { novel: string; title?: string; 
 export async function getPipelineRun(id: string, baseUrl?: string) {
     const data = await gatewayRequest<{ run: GatewayPipelineRun }>({ method: "get", url: `/api/pipeline/runs/${encodeURIComponent(id)}` }, baseUrl);
     return data.run;
+}
+
+/** 以当前 run 的真实产物推导阶段门禁；工作区运行按钮必须与此接口同源。 */
+export type GatewayPipelineGate = { stageId: string; title: string; ready: boolean; reason: string; blockedBy: string[] };
+
+export async function listPipelineGates(runId: string, baseUrl?: string): Promise<GatewayPipelineGate[]> {
+    const data = await gatewayRequest<{ gates: Array<{ stageId?: unknown; title?: unknown; ready?: unknown; reason?: unknown; blockedBy?: unknown[] }> }>({
+        method: "get",
+        url: `/api/pipeline/runs/${encodeURIComponent(runId)}/gates`,
+    }, baseUrl);
+    return (Array.isArray(data?.gates) ? data.gates : []).map((gate) => ({
+        stageId: String(gate.stageId ?? ""),
+        title: String(gate.title ?? gate.stageId ?? ""),
+        ready: Boolean(gate.ready),
+        reason: String(gate.reason ?? ""),
+        blockedBy: Array.isArray(gate.blockedBy)
+            ? gate.blockedBy.map((item) => (typeof item === "string" ? item : String((item as { stageId?: unknown })?.stageId ?? ""))).filter(Boolean)
+            : [],
+    }));
 }
 
 /** 历史列表里每个阶段的摘要，够渲染「标题 + 状态」即可，不拖阶段产物。 */

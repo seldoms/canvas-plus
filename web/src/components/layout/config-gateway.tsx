@@ -94,7 +94,14 @@ export function ConfigGateway() {
                 </div>
                 {health ? (
                     <div className="mt-3 space-y-1 text-xs">
-                        <GatewayStatusRow label="LLM" ok={health.llm.ok} address={health.llm.baseUrl} error={health.llm.error} t={t} />
+                        {/* LLM 那行不再报「连通」：模型清单只读注册表，网关不探测上游，ok 只代表已登记模型。 */}
+                        <div className="flex flex-wrap items-center gap-2">
+                            <span className="font-medium text-stone-700 dark:text-stone-200">LLM</span>
+                            <span className={health.llm.ok ? "text-stone-600 dark:text-stone-300" : "text-amber-600 dark:text-amber-400"}>
+                                {health.llm.ok ? t("config.gateway.llmStatic", { total: health.llm.models?.length ?? 0 }) : t("config.gateway.llmEmpty")}
+                            </span>
+                            <span className="min-w-0 truncate text-stone-500">{health.llm.error || health.llm.baseUrl}</span>
+                        </div>
                         <GatewayStatusRow label="ComfyUI" ok={health.comfy.ok} address={health.comfy.baseUrl} error={health.comfy.error} t={t} />
                         <div className="text-stone-500">{t("config.gateway.queue", { running: health.queue.running, pending: health.queue.pending })}</div>
                     </div>

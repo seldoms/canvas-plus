@@ -1,4 +1,4 @@
-import { Clapperboard, FileText, FolderKanban, ImagePlus, Images, Maximize2, Settings2, Video } from "lucide-react";
+import { Clapperboard, FileText, FolderKanban, ImagePlus, Images, ListChecks, Maximize2, Settings2, Video } from "lucide-react";
 
 export const navigationTools = [
     {
@@ -28,6 +28,10 @@ export const navigationTools = [
     {
         slug: "assets",
         icon: Images,
+    },
+    {
+        slug: "tasks",
+        icon: ListChecks,
     },
     {
         slug: "config",

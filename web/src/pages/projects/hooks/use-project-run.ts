@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import i18n from "@/i18n";
-import { attachProjectRun, cancelPipelineStage, createPipelineRun, fetchPipelineProgress, resolveProjectSourceText, runPipelineStage, type GatewayStageProgress } from "@/services/api/gateway";
+import { attachProjectRun, cancelPipelineStage, createPipelineRun, fetchPipelineProgress, listPipelineGates, resolveProjectSourceText, runPipelineStage, type GatewayStageProgress } from "@/services/api/gateway";
 import type { ProjectContext } from "@/services/api/projects";
 
 import type { StageStatusMap } from "../workspace-gates";
@@ -21,12 +21,15 @@ export function useProjectRun({
     projectId,
     stage,
     context,
+    activeRunId,
     stageStatus,
     refresh,
 }: {
     projectId: string;
     stage: string | null;
     context: ProjectContext | null;
+    /** 工作区当前选择的 run；运行请求必须与展示的 /gates 使用同一个 run。 */
+    activeRunId: string;
     stageStatus: StageStatusMap;
     refresh: () => void | Promise<void>;
 }) {
@@ -37,7 +40,7 @@ export function useProjectRun({
     const [progress, setProgress] = useState<GatewayStageProgress | null>(null);
     const [error, setError] = useState("");
     const [notice, setNotice] = useState("");
-    const runId = createdRunId || context?.runIds?.[0] || "";
+    const runId = createdRunId || activeRunId || "";
 
     // 刷新恢复：项目里该阶段已在跑时接回进度轮询（stageStatus 由关联 run 合并而来）。
     useEffect(() => {
@@ -51,7 +54,7 @@ export function useProjectRun({
         setProgress(null);
         setError("");
         setNotice("");
-    }, [projectId, stage]);
+    }, [projectId, stage, activeRunId]);
 
     // 阶段跑完/中止后拉一次完整 run（页面据此刷新上下文与门禁）。
     useEffect(() => {
@@ -110,6 +113,11 @@ export function useProjectRun({
                 await refresh();
             }
             setStarting(false);
+            // 运行前重新读取同一个 run 的服务端门禁，避免页面首次加载时的阶段摘要过期。
+            // POST /steps/:stage/run 仍是最终权威校验；这里仅让 UI 在点击前与它使用同一口径。
+            const currentGate = (await listPipelineGates(id)).find((item) => item.stageId === stage);
+            if (!currentGate) throw new Error("当前阶段门禁不可用，请刷新后重试");
+            if (!currentGate.ready) throw new Error(currentGate.reason || "当前阶段尚未满足运行条件");
             await runPipelineStage(id, stage);
             setProgress(null);
             setRunning(true);
@@ -118,7 +126,7 @@ export function useProjectRun({
         } finally {
             setStarting(false);
         }
-    }, [stage, starting, running, runId, context, projectId, refresh]);
+    }, [stage, starting, running, runId, context, activeRunId, projectId, refresh]);
 
     /** 取消正在跑的阶段；终态由进度轮询接回。 */
     const cancel = useCallback(async () => {

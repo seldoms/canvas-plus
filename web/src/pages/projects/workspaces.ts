@@ -5,8 +5,7 @@ import type { ComponentType, SVGProps } from "react";
  * 项目内工作区定义（P0-a M4）。
  *
  * `stage` 是该工作区在流水线里产出的阶段；`requires` 是进入该工作区前必须先 `done` 的上游阶段。
- * 门禁优先取服务端 `GET /api/projects/:id/gates` 中本工作区阶段的判定，服务端不可用时回退
- * 前端根据关联 run 的阶段状态推导（见 workspace-gates.ts）。
+ * 门禁取服务端 `/api/pipeline/runs/:id/gates`（无 run 时取项目 `/gates`）；服务端不可用时保持未知，不能由本地摘要放行。
  */
 export type WorkspaceKey = "plan" | "storyboard" | "assets" | "keyframes" | "video" | "canvas";
 

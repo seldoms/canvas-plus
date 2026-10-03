@@ -19,6 +19,7 @@ import ProjectPlanWorkspacePage from "@/pages/projects/plan";
 import ProjectStoryboardWorkspacePage from "@/pages/projects/storyboard";
 import ProjectVideoWorkspacePage from "@/pages/projects/video";
 import PromptsPage from "@/pages/prompts";
+import TasksPage from "@/pages/tasks";
 import VideoPage from "@/pages/video";
 
 export const router = createBrowserRouter([
@@ -42,6 +43,7 @@ export const router = createBrowserRouter([
             { path: "/image", element: <ImagePage /> },
             { path: "/video", element: <VideoPage /> },
             { path: "/assets", element: <AssetsPage /> },
+            { path: "/tasks", element: <TasksPage /> },
             { path: "/prompts", element: <PromptsPage /> },
             { path: "/canvas", element: <CanvasPage /> },
             { path: "/canvas/:id", element: <CanvasProjectPage /> },

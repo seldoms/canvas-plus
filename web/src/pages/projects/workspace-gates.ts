@@ -8,9 +8,8 @@ import { WORKSPACES } from "./workspaces";
  * 工作区阶段门禁推导（P0-a M4）。
  *
  * 优先级：服务端 `GET /api/projects/:id/gates` 里本工作区阶段的判定（`resolveWorkspaceGate`）；
- * 服务端不可用（未就绪 / 404 / 网关不可达）时回退到**前端根据关联 run 的阶段状态**推导：
- * 拿 `listPipelineRuns()` 的摘要，按**当前选中的 run**（多 run 时由工作区选择器切换，默认第一个）
- * 过滤后合并成「阶段 → 状态」—— 不再固定取 `runIds[0]`。
+ * 服务端不可用（未就绪 / 404 / 网关不可达）时保持 unknown，禁止用过期的前端阶段摘要放行：
+ * 阶段摘要仍用于时间线与状态提示，但不能在门禁接口失败时替代服务端结论。
  *
  * 不造假：读不到阶段状态时返回 `unknown`（不拦截），绝不臆造完成度。
  */
@@ -86,7 +85,11 @@ export function resolveWorkspaceGate(
     hasRunInfo: boolean,
     blockingNoteCount: number,
     serverGates: ProjectGate[],
+    serverGatesAvailable = true,
 ): WorkspaceGate {
+    if (workspace.stage && !serverGatesAvailable) {
+        return { state: "unknown", blockedStages: workspace.requires, blockedByNotes: false, reason: "门禁状态暂时不可用", source: "fallback" };
+    }
     const server = workspace.stage ? serverGates.find((gate) => gate.stageId === workspace.stage) : undefined;
     if (server) {
         return {
@@ -96,6 +99,9 @@ export function resolveWorkspaceGate(
             reason: server.reason,
             source: "server",
         };
+    }
+    if (workspace.stage) {
+        return { state: "unknown", blockedStages: workspace.requires, blockedByNotes: false, reason: "服务端未返回当前阶段门禁", source: "fallback" };
     }
     return evaluateGate(workspace.requires, stageStatus, hasRunInfo, blockingNoteCount);
 }

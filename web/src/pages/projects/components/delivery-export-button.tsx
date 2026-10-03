@@ -2,6 +2,7 @@ import { Download } from "lucide-react";
 import { Alert, Button, Progress } from "antd";
 import { useTranslation } from "react-i18next";
 
+import { displayProgressLabel } from "@/lib/progress-label";
 import { useProjectDelivery } from "../hooks/use-project-delivery";
 
 /**
@@ -21,7 +22,7 @@ export function DeliveryExportButton({ projectId }: { projectId: string }) {
             {exporting && progress ? (
                 <div className="w-64">
                     <Progress percent={percent} size="small" status="active" />
-                    <span className="text-xs text-stone-500 dark:text-stone-400">{progress.label}</span>
+                    <span className="text-xs text-stone-500 dark:text-stone-400">{displayProgressLabel(progress.label)}</span>
                 </div>
             ) : null}
             {error ? <Alert type="error" showIcon className="max-w-md" message={t("projects.delivery.failed", { message: error })} /> : null}

@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { cn } from "@/lib/utils";
+import { displayProgressLabel } from "@/lib/progress-label";
 import { resolveGatewayUrl, type GatewayArtifact, type GatewayStageProgress, type GatewayStageStatus, type GatewayTemplateInfo } from "@/services/api/gateway";
 import { isGenerativeStage, isVideoArtifact, orphanArtifacts, stageItems, stageMediaKind, templatesForStage } from "../pipeline-utils";
 import type { PipelineStageView } from "../use-pipeline-run";
@@ -41,7 +42,7 @@ function StageProgress({ progress }: { progress: GatewayStageProgress }) {
             <div className="flex flex-wrap items-baseline gap-x-2 text-xs text-stone-600 dark:text-stone-300">
                 <span className="font-medium">{t(`pipeline.progress.${progress.phase}`)}</span>
                 {total > 1 ? <span>{t("pipeline.progress.chunks", { done, total })}</span> : null}
-                {progress.label ? <span className="text-stone-500 dark:text-stone-400">{progress.label}</span> : null}
+                {progress.label ? <span className="text-stone-500 dark:text-stone-400">{displayProgressLabel(progress.label)}</span> : null}
                 {Number(progress.reused) > 0 ? <span className="text-emerald-600 dark:text-emerald-400">{t("pipeline.progress.reused", { count: progress.reused })}</span> : null}
                 {Number(progress.etaMs) > 0 ? <span className="text-stone-500 dark:text-stone-400">{t("pipeline.progress.eta", { time: formatDuration(Number(progress.etaMs)) })}</span> : null}
                 {Number(progress.avgMsPerChunk) > 0 ? <span className="text-stone-400 dark:text-stone-500">{t("pipeline.progress.speed", { seconds: (Number(progress.avgMsPerChunk) / 1000).toFixed(1) })}</span> : null}

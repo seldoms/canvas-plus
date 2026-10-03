@@ -43,6 +43,7 @@ export function WorkspaceLayout({
     runsError,
     gates,
     gatesLoading,
+    gatesAvailable,
     runIds,
     activeRunId,
     selectRun,
@@ -61,6 +62,8 @@ export function WorkspaceLayout({
     runsError: string;
     gates: ProjectGate[];
     gatesLoading: boolean;
+    /** 当前 active run/project 的 /gates 是否成功返回；失败时不能用旧摘要放行。 */
+    gatesAvailable: boolean;
     /** 项目关联 run 清单（多 run 时供选择器列出）。 */
     runIds: string[];
     /** 当前选中的 run（默认第一个）；门禁、过程时间线、资源面板都跟随它。 */
@@ -72,8 +75,8 @@ export function WorkspaceLayout({
     const { t } = useTranslation();
     const navigate = useNavigate();
     const project = context?.project;
-    const gate = resolveWorkspaceGate(workspace, stageStatus, hasRunInfo, blockingNotes.length, gates);
-    const run = useProjectRun({ projectId, stage: workspace.stage, context, stageStatus, refresh });
+    const gate = resolveWorkspaceGate(workspace, stageStatus, hasRunInfo, blockingNotes.length, gates, gatesAvailable);
+    const run = useProjectRun({ projectId, stage: workspace.stage, context, activeRunId, stageStatus, refresh });
 
     return (
         <div className="flex h-full flex-col overflow-hidden bg-background text-stone-900 dark:text-stone-100">
