@@ -1,4 +1,4 @@
-import { App, Button, Empty, Image, Input, Modal, Select, Spin, Tag } from "antd";
+import { App, Button, Empty, Image, Input, Modal, Segmented, Select, Spin, Tag } from "antd";
 import { RefreshCw, Search } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -10,6 +10,7 @@ import { resolveGatewayUrl } from "@/services/api/gateway";
 import { listAssetRefsOverview, type AssetOverview, type AssetOverviewRef } from "@/services/api/projects";
 
 import { artifactFileName, filterAssetRefs, roleFilterOptions } from "./asset-overview-model";
+import { ArtifactManager } from "./components/artifact-manager";
 import { AssetRefCard } from "./components/asset-ref-card";
 
 /**
@@ -28,6 +29,8 @@ export default function AssetsPage() {
     const [roleFilter, setRoleFilter] = useState("all");
     const [projectFilter, setProjectFilter] = useState("all");
     const [videoRef, setVideoRef] = useState<AssetOverviewRef | null>(null);
+    /** 视图切换：资产引用（跨项目 AssetRef）↔ 全部产物（归档 / 彻底删除）。 */
+    const [view, setView] = useState<"refs" | "artifacts">("refs");
 
     const load = useCallback(async () => {
         setLoading(true);
@@ -70,25 +73,38 @@ export default function AssetsPage() {
         <div className="h-full overflow-y-auto bg-background text-stone-900 dark:text-stone-100">
             <div className="w-full px-6 py-6">
                 <div className="flex flex-wrap items-center justify-between gap-4">
-                    <div className="flex items-baseline gap-3">
+                    <div className="flex flex-wrap items-center gap-3">
                         <h1 className="text-2xl font-semibold tracking-tight text-stone-950 dark:text-stone-100">{t("assets.title")}</h1>
                         <span className="text-sm text-stone-500 dark:text-stone-400">{t("assets.overview.total", { count: total })}</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                        <Input
-                            allowClear
-                            className="w-full max-w-sm"
-                            prefix={<Search className="size-4 text-stone-400" />}
-                            value={keyword}
-                            placeholder={t("assets.overview.search")}
-                            onChange={(event) => setKeyword(event.target.value)}
+                        <Segmented
+                            size="small"
+                            value={view}
+                            onChange={(value) => setView(value as "refs" | "artifacts")}
+                            options={[
+                                { value: "refs", label: t("artifacts.view.refs") },
+                                { value: "artifacts", label: t("artifacts.view.artifacts") },
+                            ]}
                         />
-                        <Button icon={<RefreshCw className={cn("size-4", loading && "animate-spin")} />} onClick={() => void load()} disabled={loading}>
-                            {t("assets.overview.refresh")}
-                        </Button>
                     </div>
+                    {view === "refs" ? (
+                        <div className="flex items-center gap-2">
+                            <Input
+                                allowClear
+                                className="w-full max-w-sm"
+                                prefix={<Search className="size-4 text-stone-400" />}
+                                value={keyword}
+                                placeholder={t("assets.overview.search")}
+                                onChange={(event) => setKeyword(event.target.value)}
+                            />
+                            <Button icon={<RefreshCw className={cn("size-4", loading && "animate-spin")} />} onClick={() => void load()} disabled={loading}>
+                                {t("assets.overview.refresh")}
+                            </Button>
+                        </div>
+                    ) : null}
                 </div>
 
+                {view === "refs" ? (
+                    <>
                 <div className="mt-4 flex flex-wrap items-center gap-x-6 gap-y-3">
                     <div className="flex flex-wrap items-center gap-2">
                         <Tag.CheckableTag checked={roleFilter === "all"} className={cn("prompt-filter-tag", roleFilter === "all" && "is-active")} onChange={() => setRoleFilter("all")}>
@@ -132,6 +148,10 @@ export default function AssetsPage() {
                         <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} className="py-24" description={total ? t("assets.overview.emptyFiltered") : t("assets.overview.empty")} />
                     )}
                 </div>
+                    </>
+                ) : (
+                    <ArtifactManager />
+                )}
             </div>
 
             <Modal open={Boolean(videoRef)} title={videoRef?.name || undefined} footer={null} width={960} destroyOnHidden onCancel={() => setVideoRef(null)}>

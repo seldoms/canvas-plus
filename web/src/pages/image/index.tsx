@@ -6,6 +6,7 @@ import { saveAs } from "file-saver";
 import { useTranslation } from "react-i18next";
 
 import { ImageSettingsPanel } from "@/components/image-settings-panel";
+import { ArtifactActions } from "@/components/artifact-actions";
 import { ModelPicker } from "@/components/model-picker";
 import { PromptSelectDialog } from "@/components/prompts/prompt-select-dialog";
 import { AssetPickerModal, type InsertAssetPayload } from "@/components/canvas/asset-picker-modal";
@@ -876,6 +877,8 @@ function ResultImageCard({
                         </Button>
                     </Tooltip>
                 </div>
+                {/* 生产动线只给「归档」（可逆）；彻底删除只在「我的资产」页。非网关产物（本地历史图）自动不渲染。 */}
+                <ArtifactActions targets={[{ url: image.dataUrl }]} />
             </div>
         </div>
     );
@@ -1033,7 +1036,7 @@ function LogPanel({
                     {allSelected ? t("common.cancel") : t("workbench.selectAll")}
                 </Button>
                 <Button size="small" danger icon={<Trash2 className="size-3.5" />} disabled={!selectedLogIds.length} onClick={onDeleteSelected}>
-                    {t("common.delete")}
+                    {t("workbench.deleteLogs")}
                 </Button>
             </div>
             <div className="space-y-3">

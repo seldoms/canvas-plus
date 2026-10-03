@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 
 import { cn } from "@/lib/utils";
 import { resolveGatewayUrl, type GatewayGenerationStatus } from "@/services/api/gateway";
+import { ArtifactActions } from "@/components/artifact-actions";
 
 import type { KeyframeShot } from "../keyframes-model";
 
@@ -78,7 +79,7 @@ export function KeyframeBoard({
             <Image.PreviewGroup preview={{ closeIcon: false }}>
                 <div className="space-y-3">
                     {shots.map((shot) => (
-                        <ShotGroup key={shot.id} shot={shot} />
+                        <ShotGroup key={shot.id} shot={shot} onChanged={onRetry} />
                     ))}
                 </div>
             </Image.PreviewGroup>
@@ -86,7 +87,7 @@ export function KeyframeBoard({
     );
 }
 
-function ShotGroup({ shot }: { shot: KeyframeShot }) {
+function ShotGroup({ shot, onChanged }: { shot: KeyframeShot; onChanged: () => void }) {
     const { t } = useTranslation();
     const none = t("projects.keyframes.none");
 
@@ -156,6 +157,15 @@ function ShotGroup({ shot }: { shot: KeyframeShot }) {
                             />
                         </span>
                     ))}
+                </div>
+            ) : null}
+
+            {shot.images.length ? (
+                <div className="mt-1">
+                    <ArtifactActions
+                        targets={shot.images.map((candidate) => ({ url: candidate.artifactUrl || "" }))}
+                        onChanged={onChanged}
+                    />
                 </div>
             ) : null}
 

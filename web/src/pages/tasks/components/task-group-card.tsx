@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 
 import { resolveGatewayUrl } from "@/services/api/gateway";
 import type { TaskJob, TaskJobStatus } from "@/services/api/tasks";
+import { ArtifactActions } from "@/components/artifact-actions";
 import { cn } from "@/lib/utils";
 
 import { isActiveStatus, jobDurationMs, groupProgress, type TaskGroup, type TaskGroupStatus } from "../task-utils";
@@ -153,6 +154,7 @@ export function TaskGroupCard({ group, runLabel, now, onCancelQueued, onCancelJo
                                         <span className="text-[11px] text-stone-400 dark:text-stone-500">{t("tasks.noOutputs")}</span>
                                     )}
                                 </div>
+                                {(job.outputs || []).length ? <ArtifactActions targets={(job.outputs || []).map((output) => ({ url: output.url }))} /> : null}
                                 {isActiveStatus(job.status) ? (
                                     <Button type="text" size="small" danger icon={<X className="size-3.5" />} onClick={() => onCancelJob(job)}>
                                         {t("tasks.cancelJob")}
