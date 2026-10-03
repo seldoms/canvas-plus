@@ -1525,6 +1525,33 @@ ${JSON.stringify(partials, null, 2)}
     };
 
     /**
+     * 为 ShotBinding 组装 scenes 上下文。分镜 shot 只有 sceneId、没有 locationId，locationId 必须靠
+     * sceneId → scene → design.locations 名称锚点推；而分镜产物常常只含 shots（无 scenes），此时
+     * reference-lock 的 collectScenes 拿不到任何 scene，locationId 永远推不出来 → 场景母版进不了 REF_IMAGE。
+     * 这里按 storyboard → 剧本阶段顺序补齐 scenes（按 id 去重，storyboard 优先），让 shot.sceneId 能命中
+     * 剧本场景、再由 scene.location 名称映射到 design 地点锚点。推不出时交回 reference-lock 判缺（不编造）。
+     */
+    function sceneContextForBinding(run, storyboard) {
+        const scenes = [];
+        const seen = new Set();
+        const push = (list) => {
+            for (const scene of Array.isArray(list) ? list : []) {
+                if (!scene || typeof scene !== "object") continue;
+                const id = String(scene.id ?? "").trim();
+                if (id && seen.has(id)) continue;
+                if (id) seen.add(id);
+                scenes.push(scene);
+            }
+        };
+        push(storyboard?.scenes);
+        push(storyboard?.output?.scenes);
+        for (const episode of Array.isArray(storyboard?.episodes) ? storyboard.episodes : []) push(episode?.scenes);
+        // 分镜缺 scenes 时回落剧本阶段：剧本 scenes 带 location 名称，可映射到 design.locations 锚点。
+        push(run?.stages?.script?.output?.scenes);
+        return scenes;
+    }
+
+    /**
      * 按 ShotBinding 解析该镜的角色/场景/道具参考图（§11.5.4）。返回原始 binding、需要的绑定数、
      * reference-lock 的缺参考图报告，以及可注入的 REF_IMAGE URL（角色在前、场景/道具在后）。
      */
@@ -1540,7 +1567,9 @@ ${JSON.stringify(partials, null, 2)}
             id: String(shot?.id ?? item?.shotId ?? ""),
             prompt: [shot?.prompt, item?.prompt].filter(Boolean).join("\n"),
         };
-        const shotBinding = buildShotBinding({ shot: shotForBinding, storyboard, design, assetRefs });
+        // 补齐 scenes 上下文（分镜常无 scenes），否则 shot→locationId 推导断链、场景母版丢失。
+        const scenes = sceneContextForBinding(run, storyboard);
+        const shotBinding = buildShotBinding({ shot: shotForBinding, storyboard: { ...storyboard, scenes }, design, assetRefs });
         const resolved = resolveSelectedArtifacts({ shotBinding, assetRefs });
         const report = missingRefsReport({ shotBinding, assetRefs });
         const needCount = shotBinding.characterIds.length + (shotBinding.locationId ? 1 : 0) + shotBinding.propIds.length;
@@ -1580,6 +1609,17 @@ ${JSON.stringify(partials, null, 2)}
         return { ok: false, template: imageTemplate, reason: blockedDecision.reason };
     }
 
+    /**
+     * 模板是否要求必填的主输入底图 INPUT_IMAGE。由 tool-adapter 扫真实节点/占位符得出（不硬编码模板名）：
+     * slots.INPUT_IMAGE 来自真实 LoadImage 节点；tokens 兜底覆盖占位符存在但非 LoadImage 的少见写法。
+     * generate.js 里只有 REF_IMAGE_* 是 optional，INPUT_IMAGE 缺一个就会在参数校验阶段被拒。
+     */
+    function templateRequiresInputImage(template) {
+        const info = templateCatalog[String(template ?? "").trim()];
+        if (!info) return false;
+        return Boolean(info.slots?.INPUT_IMAGE) || (Array.isArray(info.tokens) && info.tokens.includes("INPUT_IMAGE"));
+    }
+
     /** 单个条目的生成参数与就绪判定：模板要求的 token 必须全给，尺寸取 config.pipeline 默认值。 */
     function generativePlan(run, def, item, frames, shots) {
         const extraParams = (def.id === "keyframe" ? run.options?.image : run.options?.video) || {};
@@ -1616,11 +1656,26 @@ ${JSON.stringify(partials, null, 2)}
                 ...extraParams,
             };
             // 参考图 URL 角色在前、场景/道具在后；最多 REF_IMAGE_1..9（generate.js ASSET_TOKENS 上限）。
-            if (!blocked) {
-                refContext.urls.slice(0, 9).forEach((url, index) => {
-                    params[`REF_IMAGE_${index + 1}`] = url;
-                });
+            let refUrls = blocked ? [] : refContext.urls.slice(0, 9);
+            // start 帧语义是「生成该镜第一帧」，没有前一帧可作底图；而 img_qwen21_edit 一类模板的
+            // INPUT_IMAGE 是必填槽（generate.js 只有 REF_IMAGE_* 是 optional）。若模板要求底图，就从
+            // 本镜解析出的参考图里取**第一张**充当 INPUT_IMAGE（让模型真正「看见」角色，锁身份），
+            // 其余参考图再顺序填 REF_IMAGE_1..N —— 已用作 INPUT_IMAGE 的那张不重复占 REF 槽。
+            // 连参考图也没有 → 显式 blocked（不静默失败、不假装锁了角色）。
+            if (!blocked && item.role !== "end" && params.INPUT_IMAGE === undefined && templateRequiresInputImage(decision.template)) {
+                if (refUrls.length) {
+                    params.INPUT_IMAGE = refUrls[0];
+                    refUrls = refUrls.slice(1);
+                } else {
+                    blocked = {
+                        reason: `模板 ${decision.template} 要求必填底图 INPUT_IMAGE，但镜头没有可回退的角色/场景参考图`,
+                        missing: refContext.report.blocked,
+                    };
+                }
             }
+            refUrls.forEach((url, index) => {
+                params[`REF_IMAGE_${index + 1}`] = url;
+            });
             // 稳定 seed + 按 run+条目隔离的 OUTPUT_PREFIX（同项目/同镜/同资产 revision → 同 seed，换台设备也不换脸）。
             if (projectId) {
                 if (params.SEED === undefined) params.SEED = stableSeed(projectId, item.shotId, refContext.shotBinding?.assetRevision ?? null);

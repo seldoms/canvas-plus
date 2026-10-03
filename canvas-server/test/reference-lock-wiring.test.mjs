@@ -246,7 +246,7 @@ test("① design 参考图登记幂等：重复投递终态 / 重启重放只登
 
 // ——— ② 关键帧按 ShotBinding 注入 REF_IMAGE_* + 稳定 SEED ———
 
-test("② 关键帧 start 注入 REF_IMAGE_*（角色在前、场景在后）+ 稳定 SEED，并改用参考图模板", async (t) => {
+test("② 关键帧 start 无前一帧：从参考图回退取第一张作 INPUT_IMAGE（角色），其余进 REF_IMAGE_*（场景）+ 稳定 SEED，并改用参考图模板", async (t) => {
     const root = mkdtempSync(join(tmpdir(), "canvas-reflock-keyframe-"));
     t.after(() => rmSync(root, { recursive: true, force: true }));
     const { project, jobs, pipeline, run } = await runToDesignBound(root);
@@ -256,9 +256,11 @@ test("② 关键帧 start 注入 REF_IMAGE_*（角色在前、场景在后）+ �
     const startJob = jobs.get(`${run.id}-sh1-start`);
     assert.ok(startJob, "start 帧已入队");
     assert.equal(startJob.template, "img_qwen21_edit", "默认 img_qwen21_t2i 零 LoadImage → 需要锁角色时换参考图模板");
-    assert.equal(startJob.params.REF_IMAGE_1, `/api/artifacts/${run.id}-c1-closeup/${run.id}-c1-closeup.png`, "REF_IMAGE_1 = 角色 c1 正脸特写");
-    assert.equal(startJob.params.REF_IMAGE_2, `/api/artifacts/${run.id}-loc1-master/${run.id}-loc1-master.png`, "REF_IMAGE_2 = 场景 loc1 空场母版");
-    assert.equal(startJob.params.REF_IMAGE_3, undefined);
+    // img_qwen21_edit 的 INPUT_IMAGE 是必填槽；start 无前一帧 → 取参考图第一张（角色 c1 正脸特写）当底图。
+    assert.equal(startJob.params.INPUT_IMAGE, `/api/artifacts/${run.id}-c1-closeup/${run.id}-c1-closeup.png`, "INPUT_IMAGE = 回退取的角色 c1 正脸特写");
+    assert.equal(startJob.params.REF_IMAGE_1, `/api/artifacts/${run.id}-loc1-master/${run.id}-loc1-master.png`, "REF_IMAGE_1 = 场景 loc1 空场母版（角色那张已占 INPUT_IMAGE，不重复占槽）");
+    assert.equal(startJob.params.REF_IMAGE_2, undefined);
+    assert.notEqual(startJob.params.INPUT_IMAGE, startJob.params.REF_IMAGE_1, "同一张图不重复占 INPUT_IMAGE 与 REF_IMAGE_* 两个槽");
     assert.equal(startJob.params.SEED, stableSeed(project.project.id, "sh1", { c1: 0, loc1: 0 }), "SEED = stableSeed(projectId, shotId, assetRevision)");
     assert.equal(startJob.params.OUTPUT_PREFIX, `canvas/${run.id}_sh1-start`, "OUTPUT_PREFIX 按 run+条目隔离（#40）");
 });
