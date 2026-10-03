@@ -136,7 +136,7 @@ export function usePipelineRun() {
             void fetchGatewayProviders(base)
                 .then((available) => setTemplates(available.comfy?.templates || []))
                 .catch(() => setTemplates([]));
-            // 把浏览器渠道（OpenAI 兼容且含文本模型）同步进网关 LLM 注册表，之后运行只传模型名、网关按「渠道名::模型」路由
+            // 把浏览器渠道（OpenAI 兼容且含文本模型）**增量 upsert** 进网关 LLM 注册表（按 name 合并，不覆盖服务端已注册渠道），之后运行只传模型名、网关按「渠道名::模型」路由
             const providers = store.config.channels
                 .filter((channel) => (!channel.apiFormat || channel.apiFormat === "openai") && channel.baseUrl && !channel.name.includes("::") && channel.models.some((model) => model.capability === "text"))
                 .map((channel) => ({ name: channel.name, baseUrl: channel.baseUrl, apiKey: channel.apiKey }));

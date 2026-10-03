@@ -141,6 +141,10 @@ const pipeline = createPipeline({
     getProject: (projectId) => projects.get(projectId),
     // 剧本阶段完成后把 01 的 planSuggestion 回填到项目 plan（只填未填写字段、幂等）。
     applyPlanSuggestion: (projectId, suggestion) => projects.applyPlanSuggestion(projectId, suggestion),
+    // 剧本阶段完成后把 logline/synopsis/characters/scenes/episodes 投影进 Project.script（幂等、不改 version）。
+    applyScriptProjection: (projectId, output) => projects.applyScriptProjection(projectId, output),
+    // 建 run 时按 options.projectId 幂等把 runId 追加进项目 runIds（覆盖「从流水线页建的 run」）。
+    attachProjectRun: (projectId, runId) => projects.attachRun(projectId, runId),
     // 生成型阶段（关键帧/片段合成）产物自动登记为项目 AssetRef：幂等、解耦、失败不拖垮阶段。
     registerAssetRef: (projectId, input) => projects.assets.create(projectId, input),
 });
@@ -246,31 +250,69 @@ router.get("/api/llm/models", async (req, res) => {
     sendJson(res, 200, { models: await listLlmModels(config).catch(() => []) });
 });
 
-// 外部 LLM 渠道注册表：GET 返回脱敏清单（不吐 SK），PUT 全量替换并热更新 config。
+// 外部 LLM 渠道注册表：GET 返回脱敏清单（不吐 SK）。
+// 写路径按 name **增量 upsert**：不再整车替换，双方（服务端恢复的渠道 / 浏览器自带的渠道）不再互相冲掉对方。
+const serializeProviders = () => externalProviders(config).map(({ name, baseUrl, apiKey }) => ({ name, baseUrl, hasKey: Boolean(apiKey) }));
+
+/** 落盘 + 热更新内存里的渠道表（服务端是注册表的唯一写者）。 */
+function persistProviders(providers) {
+    writeFileSync(llmProvidersFile, JSON.stringify({ providers }, null, 2), { mode: 0o600 });
+    lockProvidersFile();
+    config.llm.providers = providers;
+}
+
 router.get("/api/llm/providers", (req, res) => {
-    sendJson(res, 200, { providers: externalProviders(config).map(({ name, baseUrl, apiKey }) => ({ name, baseUrl, hasKey: Boolean(apiKey) })) });
+    sendJson(res, 200, { providers: serializeProviders() });
 });
 
+/**
+ * 按 name upsert 合并（绝不整车替换）：
+ * - 请求里出现的 name → 更新其 baseUrl；apiKey 为空/未提供则**保留原 key**（脱敏回传不会清空 key）；
+ * - 不在请求里的渠道一律原样保留（绝不删除）；
+ * - 返回合并后的完整（脱敏）列表。
+ */
 router.post("/api/llm/providers", async (req, res) => {
     try {
         const body = await readJson(req);
         const list = Array.isArray(body?.providers) ? body.providers : [];
-        const providers = [];
+        const existing = Array.isArray(config.llm.providers) ? config.llm.providers : [];
+        // Map 保留既有渠道的插入顺序：老渠道在前，新渠道追加在后。
+        const byName = new Map(existing.map((item) => [String(item?.name || "").trim(), { ...item }]));
         for (const item of list) {
             const name = String(item?.name || "").trim();
-            const baseUrl = String(item?.baseUrl || "").trim().replace(/\/+$/, "");
             if (!name) continue;
-            if (!/^https?:\/\//i.test(baseUrl)) throw new Error(`渠道 ${name} 的 baseUrl 必须是 http(s) 地址`);
             if (name.includes("::")) throw new Error(`渠道名不能包含「::」：${name}`);
-            providers.push({ name, baseUrl, apiKey: String(item?.apiKey || "") });
+            const incomingBase = String(item?.baseUrl || "").trim().replace(/\/+$/, "");
+            const prev = byName.get(name);
+            if (incomingBase && !/^https?:\/\//i.test(incomingBase)) throw new Error(`渠道 ${name} 的 baseUrl 必须是 http(s) 地址`);
+            if (!incomingBase && !prev) throw new Error(`渠道 ${name} 的 baseUrl 必须是 http(s) 地址`);
+            const incomingKey = String(item?.apiKey || "").trim();
+            byName.set(name, {
+                ...(prev || {}),
+                name,
+                baseUrl: incomingBase || (prev?.baseUrl || ""),
+                apiKey: incomingKey || (prev?.apiKey || ""),
+            });
         }
-        writeFileSync(llmProvidersFile, JSON.stringify({ providers }, null, 2), { mode: 0o600 });
-        lockProvidersFile();
-        config.llm.providers = providers;
-        sendJson(res, 200, { providers: externalProviders(config).map(({ name, baseUrl, apiKey }) => ({ name, baseUrl, hasKey: Boolean(apiKey) })) });
+        persistProviders([...byName.values()]);
+        sendJson(res, 200, { providers: serializeProviders() });
     } catch (error) {
         sendError(res, 400, error.message);
     }
+});
+
+/**
+ * 显式删除某个渠道：仅在明确要求时删除（POST 的 upsert 语义永远不会删渠道）。
+ * createRouter 只支持 get/post/any，没有 delete 方法 —— 用 any 承接 DELETE，其它方法 405。
+ */
+router.any("/api/llm/providers/:name", (req, res, { params }) => {
+    if (req.method !== "DELETE") return sendError(res, 405, `不支持的方法：${req.method}`);
+    const name = String(params.name || "").trim();
+    const existing = Array.isArray(config.llm.providers) ? config.llm.providers : [];
+    const next = existing.filter((item) => String(item?.name || "").trim() !== name);
+    if (next.length === existing.length) return sendError(res, 404, `渠道不存在：${name}`);
+    persistProviders(next);
+    sendJson(res, 200, { providers: serializeProviders(), removed: name });
 });
 
 /**
@@ -419,7 +461,32 @@ router.post("/api/pipeline/runs/:id/steps/:stage/run", async (req, res, { params
             .finally(() => inflightStages.delete(key));
         sendJson(res, 202, { run: begun.run, inflight: true });
     } catch (error) {
-        sendError(res, 400, error.message);
+        // 门禁失败带状态码（如上游正在运行/部分完成 → 409）；其余参数错误仍是 400。
+        sendError(res, error.status || 400, error.message);
+    }
+});
+
+/**
+ * 阶段门禁视图：基于真实产物推导每个阶段能否进入（缺源 / 上游未产出 / error / partial 都有可读原因）。
+ * 项目工作区据此不再只靠 runIds[0] 猜某一版 run 的阶段状态。
+ */
+router.get("/api/pipeline/runs/:id/gates", (req, res, { params }) => {
+    const run = pipeline.get(params.id);
+    if (!run) return sendError(res, 404, "流水线不存在");
+    sendJson(res, 200, { gates: pipeline.stageGates(params.id) });
+});
+
+/**
+ * 分镜定点编辑：按 shotId 局部更新 storyboard 阶段产物里的单个 shot，不必整段 setStageInput 替换 JSON。
+ * 承接 PATCH/POST（createRouter 无 put/patch，用 any 承接 PATCH）；其它方法 405。
+ */
+router.any("/api/pipeline/runs/:id/steps/:stage/shots/:shotId", async (req, res, { params }) => {
+    if (req.method !== "PATCH" && req.method !== "POST") return sendError(res, 405, `不支持的方法：${req.method}`);
+    try {
+        const { run, shot } = pipeline.patchStageShot(params.id, params.stage, params.shotId, await readJson(req).catch(() => ({})));
+        sendJson(res, 200, { run, shot });
+    } catch (error) {
+        sendError(res, error.status || 400, error.message);
     }
 });
 

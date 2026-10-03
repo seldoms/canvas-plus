@@ -335,7 +335,10 @@ export async function fetchGatewayLlmModels(baseUrl?: string) {
     return data.models.map((m) => (typeof m === "string" ? m : m.id || m.name || "")).filter(Boolean);
 }
 
-/** 把浏览器渠道（OpenAI 兼容）全量同步为网关侧外部 LLM 注册表，之后流水线运行只传模型名、由网关路由。 */
+/**
+ * 把浏览器渠道（OpenAI 兼容）**增量 upsert** 进网关侧外部 LLM 注册表（按 name 合并），
+ * 不再整车覆盖/删除他人渠道；之后流水线运行只传模型名、由网关路由。
+ */
 export async function syncGatewayLlmProviders(providers: Array<{ name: string; baseUrl: string; apiKey: string }>, baseUrl?: string) {
     const data = await gatewayRequest<{ providers: Array<{ name: string; baseUrl: string; hasKey: boolean }> }>({ method: "post", url: "/api/llm/providers", data: { providers } }, baseUrl);
     return data.providers;
