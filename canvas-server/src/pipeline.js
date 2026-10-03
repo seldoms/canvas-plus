@@ -6,7 +6,9 @@ import { ASSET_ROLE } from "./contracts.js";
 import { assembleEpisode } from "./delivery.js";
 import { artifactUrl, ensureDir, safeJoin } from "./files.js";
 import { listTemplates } from "./providers/comfy.js";
+import { buildShotBinding, missingRefsReport, resolveSelectedArtifacts, stableSeed } from "./reference-lock.js";
 import { loadRegistry, readSkill } from "./skills.js";
+import { listReferenceCapableTemplates, resolveToolForShot, scanTemplateDir } from "./tool-adapter.js";
 
 /** 生成型阶段：只构造生成任务参数并交给任务队列，不等真实产物。 */
 const GENERATIVE_STAGES = new Set(["keyframe", "assembly"]);
@@ -105,6 +107,92 @@ function nowIso() {
     return new Date().toISOString();
 }
 
+/**
+ * textOverlays 的 kind → 画面里该类文字的语义前缀。
+ * 只描述「这是什么文字」，文字内容（text）逐字照抄不改写、不翻译（04-keyframes「图上文字必须逐字指定」）。
+ * kind 取值见 04-keyframes 契约：sign | ticket | screen | logo | subtitle | none。
+ */
+const TEXT_OVERLAY_KIND_LABEL = Object.freeze({
+    sign: "sign reading",
+    ticket: "ticket text",
+    screen: "screen text",
+    logo: "logo text",
+    subtitle: "subtitle text",
+});
+
+/**
+ * 把本帧的 textOverlays 逐字拼成一段英文画面描述子句，供关键帧 PROMPT 使用（修 #39：不写文字 → 出伪文字）。
+ * - 只取 text 非空且 kind !== "none" 的条目；全为 none / 缺字段时返回空串（绝不拼空串、绝不报错）；
+ * - 文字内容原样照抄（中文不翻译）；
+ * - 契约缺字段（kind 非法 / 缺 position / 缺 style）只由调用方记 QC warning，这里只负责拼。
+ */
+function textOverlayClause(overlays) {
+    if (!Array.isArray(overlays)) return "";
+    const parts = [];
+    for (const raw of overlays) {
+        if (!raw || typeof raw !== "object") continue;
+        const text = raw.text === undefined || raw.text === null ? "" : String(raw.text);
+        if (!text.trim()) continue;
+        const kind = String(raw.kind ?? "").trim().toLowerCase();
+        if (!kind || kind === "none") continue;
+        const label = TEXT_OVERLAY_KIND_LABEL[kind] || "text";
+        const position = String(raw.position ?? "").trim();
+        const style = String(raw.style ?? "").trim();
+        parts.push(`${label} "${text}"${position ? ` at ${position}` : ""}${style ? ` in ${style}` : ""}`);
+    }
+    if (!parts.length) return "";
+    return `on-screen text rendered verbatim: ${parts.join(", ")}`;
+}
+
+/** /api/artifacts/<jobId>/<filename> → 磁盘路径（逐段解码，保证与写入时的文件名一致）。非本网关产物地址返回 null。 */
+function artifactFilePath(config, url) {
+    const text = String(url ?? "");
+    const marker = "/api/artifacts/";
+    const at = text.indexOf(marker);
+    if (at < 0) return null;
+    const segments = text.slice(at + marker.length).split("/").filter(Boolean);
+    if (segments.length < 2) return null;
+    let decoded;
+    try {
+        decoded = segments.map((segment) => decodeURIComponent(segment));
+    } catch {
+        return null;
+    }
+    return safeJoin(config?.dataDir || "data", "artifacts", ...decoded);
+}
+
+/** 该产物 URL 在本网关磁盘上是否真的存在（回写时断言，杜绝 #40 那样「索引指向不存在的文件」）。 */
+function artifactUrlResolves(config, url) {
+    const file = artifactFilePath(config, url);
+    return Boolean(file && existsSync(file));
+}
+
+/**
+ * 回写时选一个「真的存在」的产物 URL：优先 ComfyUI 回报的首个产物，其次本 job 自己的其它产物。
+ * 只在本 job 声明的 outputs 里挑，绝不反向「扫描目录取最新」——保证写进索引的 URL 指向本 job 写下的文件。
+ */
+function resolvingOutputUrl(config, job) {
+    const urls = (Array.isArray(job?.outputs) ? job.outputs : []).map((output) => output?.url).filter((url) => typeof url === "string" && url);
+    if (!urls.length) return null;
+    return urls.find((url) => artifactUrlResolves(config, url)) || urls[0];
+}
+
+/**
+ * ComfyUI 的 OUTPUT_PREFIX：按「run + 条目」生成，让文件名序号只在同一条目内递增。
+ * 根因（#40）：此前 OUTPUT_PREFIX 缺省由 job.name（条目 id，跨 run 复用）派生，序号是 ComfyUI 输出目录里的
+ * 全局计数器 → 不同 run 的同一 item 共用前缀，索引里的文件名不受本 run 掌控。按 run+条目隔离后，
+ * 该 job 产出/下载的文件名确定且唯一，写入索引的 URL 必然指向本 job 写下的文件。
+ */
+function outputPrefixFor(runId, itemId) {
+    const clean = (value) => String(value ?? "").replace(/[^A-Za-z0-9_.-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 80);
+    return `canvas/${clean(runId) || "run"}_${clean(itemId) || "item"}`;
+}
+
+/** 阶段产物条目：关键帧用 frames、片段合成用 clips、服化道参考图用 references（顺序即优先级）。 */
+function stageOutputItems(stage) {
+    return stage?.output?.frames || stage?.output?.clips || stage?.output?.references || [];
+}
+
 /** 从模型输出里抠出 JSON 对象，容忍 Markdown 代码块与前后解释文字。 */
 function parseJsonLoose(text) {
     let value = String(text ?? "").trim();
@@ -164,6 +252,8 @@ export function createPipeline({ config, skillsDir, jobs, comfy, llm, runJob, as
     const stageDefs = new Map(registry.stages.map((item) => [item.id, item]));
     // 模板名 → family（image/video/edit/upscale）。regenerate 用它校验「换的模型属于该阶段该出图还是出视频」。
     const templateFamilies = new Map(listTemplates(config?.workflowsDir).map((template) => [template.name, template.family]));
+    // 模板 → 真实输入能力（有无 LoadImage / 最多几张参考图）。tool-adapter 只看节点，不认文件名，换模板也自动识别。
+    const templateCatalog = scanTemplateDir(config?.workflowsDir);
 
     const runFile = (runId) => safeJoin(runsDir, String(runId), "run.json");
     const stageFile = (runId, stageId) => safeJoin(runsDir, String(runId), `${stageId}.json`);
@@ -962,7 +1052,9 @@ ${JSON.stringify(partials, null, 2)}
     /** 幂等 upsert 一个候选：同一个 jobId 只更新状态与产物，不重复追加。 */
     function upsertCandidate(item, job) {
         item.candidates = Array.isArray(item.candidates) ? item.candidates : [];
-        const artifactUrl = job.status === "done" ? job.outputs?.[0]?.url ?? null : null;
+        // 回写即断言：只落「磁盘上真的存在」的产物 URL（#40：索引指向不存在文件 → 按 URL 取图 404）。
+        // 选择范围限定在本 job 自己的 outputs 内，绝不「扫描目录取最新」。
+        const artifactUrl = job.status === "done" ? resolvingOutputUrl(config, job) : null;
         const existing = item.candidates.find((candidate) => candidate.jobId === job.id);
         if (existing) {
             existing.status = job.status;
@@ -988,19 +1080,31 @@ ${JSON.stringify(partials, null, 2)}
 
     /**
      * 阶段状态以任务终态为准：必需 Job 全部成功才 done；
-     * 全部进行中 running、部分成功 partial、全失败 error、有取消 canceled。重算 artifacts。
-     * artifacts 会重建为「片段条目 + 成片条目」，成片信息由 filmArtifacts 从 assembly 派生，天然幂等。
+     * 全部进行中 running、部分成功 partial、全失败 error、有取消 canceled、参考图能力/素材缺失 blocked。重算 artifacts。
+     * artifacts 会重建为「条目产物 + 成片条目」，成片信息由 filmArtifacts 从 assembly 派生，天然幂等。
+     * blocked：条目被 tool-adapter/reference-lock 判定无法锁定角色（无参考图能力或参考图缺失）时显式标记，
+     * 不静默降级、也不假装已锁定。
      */
     function recomputeStage(stage, run) {
-        const items = stage.output?.frames || stage.output?.clips || [];
+        const items = stageOutputItems(stage);
+        const blockedItems = items.filter((item) => item.status === "blocked" && !(item.candidates || []).length);
         const latest = items.map((item) => (item.candidates || []).at(-1)).filter(Boolean);
         stage.artifacts = [...items.filter((item) => item.artifactUrl).map((item) => ({ jobId: item.jobId, url: item.artifactUrl })), ...filmArtifacts(stage)];
         registerArtifacts(run, stage);
-        if (!latest.length) return;
+        if (blockedItems.length) stage.blocked = blockedItems.map((item) => ({ itemId: item.id, reason: item.blockedReason || "缺少参考图" }));
+        else delete stage.blocked;
+        if (!latest.length) {
+            if (blockedItems.length) {
+                stage.status = "blocked";
+                stage.error = blockedItems.map((item) => `${item.id}：${item.blockedReason || "缺少参考图"}`).join("；");
+            }
+            return;
+        }
         const statuses = latest.map((candidate) => candidate.status);
         // 只要有任务还在排队/运行就是 running —— 部分已完成既不代表阶段可审阅、也不代表可续跑；
         // 前端也靠 stage.status === "running" 决定要不要继续轮询阶段进度。
         if (statuses.some((status) => status === "queued" || status === "running")) stage.status = "running";
+        else if (blockedItems.length) stage.status = "partial";
         else if (statuses.every((status) => status === "done")) stage.status = "done";
         else if (statuses.some((status) => status === "done")) stage.status = "partial";
         else if (statuses.includes("canceled")) stage.status = "canceled";
@@ -1099,10 +1203,165 @@ ${JSON.stringify(partials, null, 2)}
     }
 
     /**
+     * 参考图条目按 kind 的优先级：角色优先正脸特写（锁面部识别点），其次三视图；场景母版独立一眼。
+     * 决定 `selectedArtifactId` 取哪张、以及注入关键帧时的 REF_IMAGE 顺序。
+     */
+    const REFERENCE_KIND_RANK = Object.freeze({ closeup: 0, master: 0, turnaround: 1 });
+    const referenceKindRank = (kind) => (REFERENCE_KIND_RANK[String(kind ?? "").trim()] ?? 5);
+
+    /** 生成执行是否已接线（没接 runJob / jobs.enqueue 时参考图不会真产出，必须回落旧行为）。 */
+    const generationWired = () => typeof runJob === "function" && typeof jobs?.enqueue === "function";
+
+    /**
+     * 从 03 服化道产物里抽出「参考图生成规格」：角色的正脸特写 / 三视图、场景的空场母版。
+     * 只认技能契约里新增的独立生图提示词字段（closeupPrompt / turnaroundPrompt / sceneMasterPrompt）；
+     * 缺字段（旧产物）→ 不产条目、不报错（旧行为逐字不变）。
+     */
+    function designReferenceSpecs(output) {
+        const specs = [];
+        for (const character of Array.isArray(output?.characters) ? output.characters : []) {
+            const id = String(character?.id ?? "").trim();
+            if (!id) continue;
+            const name = String(character?.name ?? "");
+            const closeup = String(character?.closeupPrompt ?? "").trim();
+            const turnaround = String(character?.turnaroundPrompt ?? "").trim();
+            if (closeup) specs.push({ id: `${id}-closeup`, bindingId: id, role: ASSET_ROLE.CHARACTER, kind: "closeup", name, prompt: closeup });
+            if (turnaround) specs.push({ id: `${id}-turnaround`, bindingId: id, role: ASSET_ROLE.CHARACTER, kind: "turnaround", name, prompt: turnaround });
+        }
+        for (const location of Array.isArray(output?.locations) ? output.locations : []) {
+            const id = String(location?.id ?? "").trim();
+            if (!id) continue;
+            const master = String(location?.sceneMasterPrompt ?? "").trim();
+            if (master) specs.push({ id: `${id}-master`, bindingId: id, role: ASSET_ROLE.SCENE, kind: "master", name: String(location?.name ?? ""), prompt: master });
+        }
+        return specs;
+    }
+
+    /** 单条参考图条目的生图计划（纯文生图；参考图本身不需要参考图输入）。 */
+    function designReferencePlan(run, item) {
+        const style = productionDefaults(run);
+        const imageDims = dimensionsForRatio(style.ratio, Math.min(Number(pipelineConfig.imageWidth) || 768, Number(pipelineConfig.imageHeight) || 1344));
+        const projectId = run?.options?.projectId;
+        const params = {
+            WIDTH: imageDims ? imageDims.WIDTH : Number(pipelineConfig.imageWidth) || 768,
+            HEIGHT: imageDims ? imageDims.HEIGHT : Number(pipelineConfig.imageHeight) || 1344,
+            BATCH: Number(pipelineConfig.imageBatch) || 1,
+            PROMPT: withPromptHead(style, item.prompt),
+        };
+        // 绑项目时给稳定 seed + 按 run+条目隔离的 OUTPUT_PREFIX（参考图可复现、文件名不与其它 run 串号）。
+        if (projectId) {
+            params.SEED = stableSeed(projectId, item.id, 0);
+            params.OUTPUT_PREFIX = outputPrefixFor(run.id, item.id);
+        }
+        return { kind: "image", template: pipelineConfig.imageTemplate, ready: true, params };
+    }
+
+    /**
+     * design 阶段真正产出参考图（§12 第 2 优先级「角色/场景参考锁」）：把 closeupPrompt / turnaroundPrompt /
+     * sceneMasterPrompt 变成生图任务入队，产物登记进 stage.artifacts，并在全部终态后绑定到 AssetRef.selectedArtifactId。
+     * 幂等：继承 prev 的候选与产物，已有候选的条目不再重复入队；重复跑不重复登记（binding 侧有 (runId,stageId,bindingId) 去重）。
+     * 返回是否仍有未终态的参考图任务（决定阶段停在 running 还是 done）。
+     */
+    function attachDesignReferences(run, def, stage, prev) {
+        const output = stage.output && typeof stage.output === "object" ? (stage.output) : (stage.output = {});
+        const specs = designReferenceSpecs(output);
+        const prevById = new Map((Array.isArray(prev?.references) ? prev.references : []).map((item) => [item.id, item]));
+        const items = specs.map((spec) => {
+            const old = prevById.get(spec.id);
+            return {
+                id: spec.id,
+                bindingId: spec.bindingId,
+                role: spec.role,
+                kind: spec.kind,
+                name: spec.name,
+                prompt: spec.prompt,
+                template: old?.template ?? null,
+                jobId: null,
+                artifactUrl: old?.artifactUrl ?? null,
+                status: "queued",
+                candidates: old?.candidates ? old.candidates.map((candidate) => ({ ...candidate })) : [],
+                selected: old?.selected ?? null,
+            };
+        });
+        output.references = items;
+        for (const item of items) {
+            const plan = designReferencePlan(run, item);
+            item.template = plan.template;
+            if ((item.candidates || []).length || !plan.ready) continue;
+            enqueueAttempt(run, def, item, plan);
+        }
+        for (const item of items) syncItem(item);
+        return items.some((item) => {
+            const latest = (item.candidates || []).at(-1);
+            return latest && (latest.status === "queued" || latest.status === "running");
+        });
+    }
+
+    /**
+     * 参考图条目落地后把产物绑定到对应 AssetRef：artifactIds 收全部已产出参考图、selectedArtifactId 取最高优先级那张
+     * （角色优先正脸特写、场景取空场母版）。等同一绑定的参考图全部终态才登记——一次写入即最终结果，不需要二次 update
+     * （registerAssetRef 只 create；assets.update 未接线）。幂等：同 (runId,stageId,bindingId) 已有引用即跳过。
+     */
+    function bindDesignReferenceArtifacts(run, stage) {
+        if (typeof registerAssetRef !== "function") return;
+        const projectId = run?.options?.projectId;
+        if (!projectId || stage?.id !== "design") return;
+        const project = projectOf(run);
+        if (!project) return;
+        const items = Array.isArray(stage.output?.references) ? stage.output.references : [];
+        if (!items.length) return;
+        const refs = Array.isArray(project.assetRefs) ? project.assetRefs : [];
+        const existing = new Set(
+            refs.filter((ref) => ref?.metadata?.runId === run.id && ref?.metadata?.stageId === "design").map((ref) => ref.bindingId),
+        );
+        const byBinding = new Map();
+        for (const item of items) {
+            const key = String(item?.bindingId ?? "").trim();
+            if (!key) continue;
+            if (!byBinding.has(key)) byBinding.set(key, []);
+            byBinding.get(key).push(item);
+        }
+        for (const [bindingId, group] of byBinding) {
+            if (existing.has(bindingId)) continue;
+            const terminal = group.every((item) => item.status === "done" || item.status === "error" || item.status === "canceled");
+            if (!terminal) continue;
+            const role = String(group[0]?.role ?? "").trim();
+            if (role !== ASSET_ROLE.CHARACTER && role !== ASSET_ROLE.SCENE) continue;
+            const ordered = group.slice().sort((a, b) => referenceKindRank(a.kind) - referenceKindRank(b.kind));
+            const artifactIds = ordered.map((item) => item.artifactUrl).filter(Boolean);
+            const preferred = ordered.find((item) => item.artifactUrl);
+            try {
+                registerAssetRef(projectId, {
+                    role,
+                    bindingId,
+                    artifactIds,
+                    selectedArtifactId: preferred?.artifactUrl ?? null,
+                    metadata: {
+                        source: "pipeline",
+                        runId: run.id,
+                        stageId: stage.id,
+                        kind: "reference",
+                        name: String(group[0]?.name ?? ""),
+                        artifactUrl: preferred?.artifactUrl ?? null,
+                        jobId: preferred?.jobId ?? null,
+                        views: Array.isArray(group[0]?.views) ? group[0].views : [],
+                        confirmed: false,
+                    },
+                });
+                existing.add(bindingId);
+            } catch (error) {
+                console.warn(`[pipeline] 参考图资产绑定失败（不影响阶段）：${error.message}`);
+            }
+        }
+    }
+
+    /**
      * 服化道（design）阶段产物自动登记为项目 AssetRef，补上「design 无产物 → 项目门禁永远判不出 done」的缺口。
      * 角色 → role=character、场景 → role=scene，bindingId 取剧本里的角色/场景 id（契约 §3.8：一致性锚点）。
      * 走 registerArtifacts 同一套注入的 registerAssetRef + 幂等去重：按 (runId, stageId, bindingId) 命中即跳过，
      * 重启重放读到旧引用同样不重复；登记失败只告警，绝不拖垮阶段。
+     * 若某绑定将由参考图生成（有 closeupPrompt 等且生成已接线），这里**不**预建空引用——改由
+     * bindDesignReferenceArtifacts 在参考图落地后带 artifactIds/selectedArtifactId 一次登记（避免空引用先占位、后无法 update）。
      * 不直接 import assets.js：真正写盘走注入的 registerAssetRef（index.js 接 projects.assets.create），保持解耦。
      */
     function registerDesignAssets(run, stage) {
@@ -1121,10 +1380,14 @@ ${JSON.stringify(partials, null, 2)}
             ["characters", ASSET_ROLE.CHARACTER],
             ["locations", ASSET_ROLE.SCENE],
         ];
+        // 由参考图生成负责的绑定（有 closeupPrompt 等且生成已接线）延后到 bindDesignReferenceArtifacts 登记，不预建空引用。
+        const deferred = generationWired()
+            ? new Set((Array.isArray(output.references) ? output.references : []).map((item) => String(item?.bindingId ?? "").trim()).filter(Boolean))
+            : new Set();
         for (const [key, role] of groups) {
             for (const item of Array.isArray(output[key]) ? output[key] : []) {
                 const bindingId = String(item?.id ?? "").trim();
-                if (!bindingId || seen.has(bindingId)) continue;
+                if (!bindingId || seen.has(bindingId) || deferred.has(bindingId)) continue;
                 try {
                     registerAssetRef(projectId, {
                         role,
@@ -1208,6 +1471,95 @@ ${JSON.stringify(partials, null, 2)}
         };
     }
 
+    /**
+     * 把项目 assetRefs 归并成「每个 (role, bindingId) 一条」的视图后再交给 reference-lock。
+     * 同一绑定可能出现多条引用（如服化道空引用 + 参考图绑定 / 多次登记），合并后取并集 artifactIds、
+     * 选第一个非空 selectedArtifactId，保证 resolveSelectedArtifacts / missingRefsReport 命中真正锁定的那张。
+     */
+    function mergedAssetRefs(assetRefs) {
+        const order = [];
+        const merged = new Map();
+        for (const ref of Array.isArray(assetRefs) ? assetRefs : []) {
+            if (!ref || typeof ref !== "object") continue;
+            const bindingId = String(ref.bindingId ?? "").trim();
+            if (!bindingId) continue;
+            const key = `${String(ref.role ?? "").trim()}::${bindingId}`;
+            if (!merged.has(key)) {
+                order.push(key);
+                merged.set(key, { ...ref, artifactIds: [], selectedArtifactId: null });
+            }
+            const target = merged.get(key);
+            const artifacts = Array.isArray(ref.artifactIds) ? ref.artifactIds : [];
+            for (const artifact of artifacts) if (artifact && !target.artifactIds.includes(artifact)) target.artifactIds.push(artifact);
+            if (!target.selectedArtifactId && ref.selectedArtifactId) target.selectedArtifactId = String(ref.selectedArtifactId);
+        }
+        return order.map((key) => merged.get(key));
+    }
+
+    /** 产物 URL 兜底：selectedArtifactId 在本项目里就是产物 URL；兼容 reference-lock 返回 url 或 artifactId。 */
+    const referenceUrlOf = (entry) => {
+        const url = String(entry?.url ?? "").trim();
+        if (url) return url;
+        const artifactId = String(entry?.artifactId ?? "").trim();
+        return /^(https?:|\/)/.test(artifactId) ? artifactId : "";
+    };
+
+    /**
+     * 按 ShotBinding 解析该镜的角色/场景/道具参考图（§11.5.4）。返回原始 binding、需要的绑定数、
+     * reference-lock 的缺参考图报告，以及可注入的 REF_IMAGE URL（角色在前、场景/道具在后）。
+     */
+    function shotReferenceContext(run, item, shots) {
+        const storyboard = run.stages?.storyboard?.output && typeof run.stages.storyboard.output === "object" ? run.stages.storyboard.output : {};
+        const design = run.stages?.design?.output && typeof run.stages.design.output === "object" ? run.stages.design.output : {};
+        const project = projectOf(run);
+        const assetRefs = mergedAssetRefs(project?.assetRefs);
+        const shot = shots.find((entry) => String(entry?.id) === String(item?.shotId)) || {};
+        // 关键帧条目自身没有 sceneId，用分镜 shot 提供 sceneId/action；并把本帧 prompt 一并纳入名字匹配。
+        const shotForBinding = {
+            ...shot,
+            id: String(shot?.id ?? item?.shotId ?? ""),
+            prompt: [shot?.prompt, item?.prompt].filter(Boolean).join("\n"),
+        };
+        const shotBinding = buildShotBinding({ shot: shotForBinding, storyboard, design, assetRefs });
+        const resolved = resolveSelectedArtifacts({ shotBinding, assetRefs });
+        const report = missingRefsReport({ shotBinding, assetRefs });
+        const needCount = shotBinding.characterIds.length + (shotBinding.locationId ? 1 : 0) + shotBinding.propIds.length;
+        const urls = [...resolved.character, ...resolved.scene, ...resolved.prop].map(referenceUrlOf).filter(Boolean);
+        return { shotBinding, report, needCount, urls };
+    }
+
+    /** 优先参考图模板：显式 configured 优先，否则含 edit 的参考图模板，最后字典序第一个。 */
+    function preferredReferenceTemplate() {
+        const configured = String(pipelineConfig.referenceImageTemplate ?? "").trim();
+        if (configured && templateCatalog[configured]?.supportsReference) return configured;
+        const capable = listReferenceCapableTemplates(templateCatalog, "image");
+        return capable.find((name) => /edit/i.test(name)) || capable[0] || "";
+    }
+
+    /**
+     * 为需要锁角色的镜头选模板（按 tool-adapter 的真实能力判定，不硬编码名单）：
+     * - 不需要参考图 → 沿用 config.imageTemplate（纯文生图即可）；
+     * - 需要参考图且当前模板吃得下 → 用它；
+     * - 否则改用参考图模板（同为 Qwen-Image 2.1 血统、带 REF_IMAGE 槽的 img_qwen21_edit 一类）。
+     * - 没有任何能吃参考图的模板 / 参考图数超上限 → ok:false，附可解释原因（调用方据此标 blocked，绝不假装已锁角色）。
+     */
+    function decideKeyframeTemplate(needCount, refCount) {
+        const imageTemplate = String(pipelineConfig.imageTemplate ?? "").trim();
+        if (needCount <= 0) return { ok: true, template: imageTemplate, reason: "" };
+        const need = Math.max(1, refCount);
+        const primary = templateCatalog[imageTemplate];
+        if (primary?.supportsReference && primary.maxReferenceImages >= need) {
+            return { ok: true, template: imageTemplate, reason: `模板 ${imageTemplate} 支持 ${primary.maxReferenceImages} 张参考图，可锁定角色` };
+        }
+        const referenceTemplate = preferredReferenceTemplate();
+        if (referenceTemplate) {
+            const decision = resolveToolForShot({ template: referenceTemplate, needReferenceImages: need, catalog: templateCatalog });
+            if (decision.ok) return { ok: true, template: referenceTemplate, reason: decision.reason };
+        }
+        const blockedDecision = resolveToolForShot({ template: imageTemplate, needReferenceImages: need, catalog: templateCatalog });
+        return { ok: false, template: imageTemplate, reason: blockedDecision.reason };
+    }
+
     /** 单个条目的生成参数与就绪判定：模板要求的 token 必须全给，尺寸取 config.pipeline 默认值。 */
     function generativePlan(run, def, item, frames, shots) {
         const extraParams = (def.id === "keyframe" ? run.options?.image : run.options?.video) || {};
@@ -1216,19 +1568,51 @@ ${JSON.stringify(partials, null, 2)}
         if (def.id === "keyframe") {
             // ratio 有值时按项目画幅推导尺寸（32 倍数），无值时沿用 config 默认宽高。
             const imageDims = dimensionsForRatio(style.ratio, Math.min(Number(pipelineConfig.imageWidth) || 768, Number(pipelineConfig.imageHeight) || 1344));
-            // start / key / end 都用同一个文生图模板；end 帧要等同镜 start 帧产出后才能带参考图入队。
+            const projectId = run?.options?.projectId;
+            // ③ 图上文字逐字拼进 PROMPT（修 #39）：textOverlays 原样照抄，确无文字（kind 全 none / 缺字段）不拼空串。
+            const overlayClause = textOverlayClause(item.textOverlays);
+            const promptBody = [String(item.prompt ?? "").trim(), overlayClause].filter(Boolean).join("。");
+            // ② 按 ShotBinding 注入参考图 + 稳定 seed（§11.5.4）：先解析本镜该锁哪些角色/场景，再判模板能力。
+            const refContext = shotReferenceContext(run, item, shots);
+            const decision = refContext.needCount > 0 ? decideKeyframeTemplate(refContext.needCount, refContext.urls.length) : { ok: true, template: pipelineConfig.imageTemplate, reason: "" };
+            let blocked = null;
+            if (refContext.needCount > 0 && !decision.ok) {
+                blocked = { reason: decision.reason, missing: refContext.report.blocked };
+            } else if (refContext.needCount > 0 && refContext.report.blocked.length) {
+                const detail = refContext.report.blocked.map((entry) => `${entry.role}:${entry.bindingId}（${entry.reason}）`).join("、");
+                blocked = { reason: `缺少角色/场景参考图，无法锁定身份：${detail}`, missing: refContext.report.blocked };
+            }
+            const warning = !Array.isArray(item.textOverlays)
+                ? { reason: "缺少 textOverlays 契约字段（画面若有文字将无法逐字渲染）" }
+                : refContext.report.warning.length
+                  ? { reason: `参考图已生成但未选定：${refContext.report.warning.map((entry) => `${entry.role}:${entry.bindingId}`).join("、")}` }
+                  : null;
+            const params = {
+                WIDTH: imageDims ? imageDims.WIDTH : Number(pipelineConfig.imageWidth) || 768,
+                HEIGHT: imageDims ? imageDims.HEIGHT : Number(pipelineConfig.imageHeight) || 1344,
+                BATCH: Number(pipelineConfig.imageBatch) || 1,
+                PROMPT: withPromptHead(style, promptBody),
+                ...(item.role === "end" ? { INPUT_IMAGE: start?.artifactUrl } : {}),
+                ...extraParams,
+            };
+            // 参考图 URL 角色在前、场景/道具在后；最多 REF_IMAGE_1..9（generate.js ASSET_TOKENS 上限）。
+            if (!blocked) {
+                refContext.urls.slice(0, 9).forEach((url, index) => {
+                    params[`REF_IMAGE_${index + 1}`] = url;
+                });
+            }
+            // 稳定 seed + 按 run+条目隔离的 OUTPUT_PREFIX（同项目/同镜/同资产 revision → 同 seed，换台设备也不换脸）。
+            if (projectId) {
+                if (params.SEED === undefined) params.SEED = stableSeed(projectId, item.shotId, refContext.shotBinding?.assetRevision ?? null);
+                if (params.OUTPUT_PREFIX === undefined) params.OUTPUT_PREFIX = outputPrefixFor(run.id, item.id);
+            }
             return {
                 kind: "image",
-                template: pipelineConfig.imageTemplate,
+                template: decision.template,
                 ready: item.role !== "end" || Boolean(start?.artifactUrl),
-                params: {
-                    WIDTH: imageDims ? imageDims.WIDTH : Number(pipelineConfig.imageWidth) || 768,
-                    HEIGHT: imageDims ? imageDims.HEIGHT : Number(pipelineConfig.imageHeight) || 1344,
-                    BATCH: Number(pipelineConfig.imageBatch) || 1,
-                    PROMPT: withPromptHead(style, item.prompt),
-                    ...(item.role === "end" ? { INPUT_IMAGE: start?.artifactUrl } : {}),
-                    ...extraParams,
-                },
+                params,
+                ...(blocked ? { blocked } : {}),
+                ...(warning ? { warning } : {}),
             };
         }
         // 单集时长作片段默认时长：条目自带 durationSec 时优先用它，否则用 plan.episodeDurationSec，再回落 config.videoSeconds。
@@ -1268,11 +1652,23 @@ ${JSON.stringify(partials, null, 2)}
         return job.id;
     }
 
-    /** 让尚未入队且前置已就绪的条目补入队；幂等：已有本次 jobId 的跳过。首次编排与回写后都走这里。 */
+    /**
+     * 让尚未入队且前置已就绪的条目补入队；幂等：已有本次 jobId 的跳过。
+     * 首次编排与回写后都走这里；被门禁判 blocked（参考图能力不足 / 参考图缺失）的条目不入队，
+     * 而是显式标 status=blocked + blockedReason，避免静默降级、也避免假装已锁定角色。
+     */
     function enqueueReady(run, def, stage, items, frames, shots) {
         for (const item of items) {
             const plan = generativePlan(run, def, item, frames, shots);
             item.template = plan.template;
+            if (plan.blocked) {
+                item.status = "blocked";
+                item.blockedReason = plan.blocked.reason;
+                item.blockedMissing = plan.blocked.missing || [];
+                continue;
+            }
+            if (plan.warning) item.warning = plan.warning.reason;
+            else if (item.warning) delete item.warning;
             if (item.jobId || !plan.ready) continue;
             enqueueAttempt(run, def, item, plan);
         }
@@ -1397,7 +1793,7 @@ ${JSON.stringify(partials, null, 2)}
         const run = get(runId);
         const def = stageDefs.get(String(stageId));
         const stage = run?.stages?.[stageId];
-        const items = stage?.output?.frames || stage?.output?.clips;
+        const items = stageOutputItems(stage);
         const item = Array.isArray(items) ? items.find((entry) => entry.id === itemId) : null;
         if (!def || !item) return null;
         upsertCandidate(item, job);
@@ -1405,6 +1801,8 @@ ${JSON.stringify(partials, null, 2)}
         const shots = run.stages?.storyboard?.output?.shots || [];
         if (def.id === "keyframe") enqueueReady(run, def, stage, items, items, shots);
         else if (def.id === "assembly") enqueueReady(run, def, stage, items, run.stages?.keyframe?.output?.frames || [], shots);
+        // 服化道参考图落地 → 绑定到 AssetRef.selectedArtifactId（幂等）。
+        else if (def.id === "design") bindDesignReferenceArtifacts(run, stage);
         // 回写后若该条目最新候选落为 error，按预算自动重试（canceled 不在此列；未注入 getProject 时为空操作）。
         retryFailedItem(run, def, item);
         recomputeStage(stage, run);
@@ -1491,7 +1889,8 @@ ${JSON.stringify(partials, null, 2)}
         const estSecondsPerChunk = Number(pipelineConfig.estSecondsPerChunk) > 0 ? Number(pipelineConfig.estSecondsPerChunk) : 31;
         try {
             // 生成型阶段重排前的产物，用于继承旧候选（重跑只追加候选，不清空旧 jobId/artifactUrl）。
-            const prevOutput = GENERATIVE_STAGES.has(def.id) ? stage.output : null;
+            // design 也保留 prev：它现在会真正产出参考图（与基类生成型阶段相同的候选继承语义）。
+            const prevOutput = GENERATIVE_STAGES.has(def.id) || def.id === "design" ? stage.output : null;
             // 五个阶段都先由 LLM 按「输出契约」产出 JSON；生成型阶段再回填生成参数并入队。
             await composeWithLlm(run, def, stage, provider, { signal: runOptions.signal, resume: Boolean(runOptions.resume), estSecondsPerChunk });
             if (GENERATIVE_STAGES.has(def.id)) {
@@ -1502,6 +1901,16 @@ ${JSON.stringify(partials, null, 2)}
                     stage.status = "done";
                     stage.finishedAt = nowIso();
                 }
+                // 重算一次把 blocked（参考图能力不足/参考图缺失）摊到阶段层，让门禁与前端都看得到，不静默当 done。
+                recomputeStage(stage, run);
+            } else if (def.id === "design") {
+                // ① design 真正产出参考图（角色正脸特写/三视图、场景空场母版）：入队后阶段停在 running 等任务终态。
+                const pending = attachDesignReferences(run, def, stage, prevOutput);
+                if (!pending) {
+                    stage.status = "done";
+                    stage.finishedAt = nowIso();
+                }
+                recomputeStage(stage, run);
             } else {
                 stage.status = "done";
                 stage.finishedAt = nowIso();

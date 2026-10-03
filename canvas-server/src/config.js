@@ -58,6 +58,10 @@ const DEFAULTS = {
     pipeline: {
         llmModel: "",
         imageTemplate: "img_zimage_artistic",
+        // 需要锁角色的镜头（按 ShotBinding 注入 REF_IMAGE_*）改用的参考图模板。
+        // 必须是同血统、带 LoadImage/REF_IMAGE 槽的模板；tool-adapter 会按真实节点能力复核，
+        // 不满足则镜头显式 blocked（绝不假装已锁定角色）。留空则自动选一个能力达标的参考图模板。
+        referenceImageTemplate: "img_qwen21_edit",
         editTemplate: "img_boogu_outfit_edit",
         videoTemplate: "video_h3_i2v",
         upscaleTemplate: "upscale_4x",
