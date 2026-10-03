@@ -6,7 +6,7 @@ import { splitNovelIntoChunks } from "./chunk-novel.js";
 import { ASSET_ROLE } from "./contracts.js";
 import { assembleEpisode } from "./delivery.js";
 // D1：模型时长档位（与「模型清单」同源）。骨架对齐、plan 时长校验都从这里取口径。
-import { durationsForTemplate, durationMetaForTemplate, isDurationAllowed, skeletonAlignment } from "./durations.js";
+import { durationsForTemplate, durationMetaForTemplate, frameCountForDuration, isDurationAllowed, skeletonAlignment } from "./durations.js";
 import { artifactUrl, ensureDir, safeJoin } from "./files.js";
 import { listTemplates } from "./providers/comfy.js";
 import { buildShotBinding, missingRefsReport, resolveSelectedArtifacts, stableSeed } from "./reference-lock.js";
@@ -43,16 +43,6 @@ function gateError(message, status = 400) {
     const error = new Error(message);
     error.status = status;
     return error;
-}
-
-/**
- * H3 系列模板的 LENGTH 走 17n+5 帧网格（5s≈123 帧、10s≈243 帧）。
- * 取不小于目标时长的最小网格点，避免把非网格帧数喂给模型。
- */
-function frameCountFor(seconds, fps) {
-    const desired = Math.max(1, Math.round(Number(seconds) * Number(fps)));
-    const steps = Math.max(0, Math.round((desired - 5) / 17));
-    return 17 * steps + 5;
 }
 
 /** 把像素值吸附到最近的 32 倍数：H3 节点硬性要求宽高可被 32 整除（与 generate.js 的兜底吸附同一口径）。 */
@@ -2387,7 +2377,7 @@ ${JSON.stringify(partials, null, 2)}
         const videoParams = {
             WIDTH: videoDims ? videoDims.WIDTH : Number(pipelineConfig.videoWidth) || 768,
             HEIGHT: videoDims ? videoDims.HEIGHT : Number(pipelineConfig.videoHeight) || 1344,
-            LENGTH: frameCountFor(item.durationSec, Number(pipelineConfig.videoFps) || 24),
+            LENGTH: frameCountForDuration(item.durationSec, Number(pipelineConfig.videoFps) || 24),
         };
         if (start?.artifactUrl) {
             if (videoTokens.includes("FIRST_FRAME")) videoParams.FIRST_FRAME = start.artifactUrl;

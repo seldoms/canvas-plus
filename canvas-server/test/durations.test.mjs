@@ -33,10 +33,18 @@ const H3_TEMPLATES = [
 
 // ————————————————————— durations.js 纯函数 —————————————————————
 
-test("D1 档位帧数 = 24×秒+3（H3 原生口径，非法输入返回 null）", () => {
-    assert.equal(frameCountForDuration(5), 123);
+test("D1 档位帧数 = 向上吸附到 17k+5 网格（官方工作流 Math Expression 口径；非法输入返回 null）", () => {
+    // 权威：research/win147-comfyui/workflows/minimax-h3-*-official.json
+    //   "snapping up to the model's 17-frame-per-block (17k+5) grid at 24fps"
+    assert.equal(frameCountForDuration(5), 124);
     assert.equal(frameCountForDuration(10), 243);
-    assert.equal(frameCountForDuration(15), 363);
+    assert.equal(frameCountForDuration(15), 362);
+    // 网格自洽：结果恒 ≥ 目标帧数（向上吸附，不会给模型少于请求时长的帧）
+    for (const sec of [5, 10, 15, 6, 7.3, 12]) {
+        const frames = frameCountForDuration(sec);
+        assert.ok(frames >= Math.round(sec * 24), `${sec}s → ${frames} 帧不应少于目标`);
+        assert.equal((frames - 5) % 17, 0, `${sec}s → ${frames} 应落在 17k+5 网格上`);
+    }
     assert.equal(frameCountForDuration(0), null);
     assert.equal(frameCountForDuration(-3), null);
     assert.equal(frameCountForDuration("不是数字"), null);
@@ -63,9 +71,9 @@ test("D1 档位随模板清单同源下发（前端只读，不硬编码）", ()
     const templates = listTemplates(workflowsDir);
     const h3 = templates.find((template) => template.name === "video_h3_i2v");
     assert.deepEqual(h3.durations, [5, 10, 15]);
-    assert.equal(h3.durationMeta.frameCounts["5"], 123);
-    assert.equal(h3.durationMeta.frameCounts["15"], 363);
-    assert.equal(h3.durationMeta.formula, "24*sec+3");
+    assert.equal(h3.durationMeta.frameCounts["5"], 124);
+    assert.equal(h3.durationMeta.frameCounts["15"], 362);
+    assert.equal(h3.durationMeta.formula, "17k+5 @24fps（向上吸附）");
     assert.equal(templates.find((template) => template.name === "video_wan_animate").durations, null);
     assert.equal(templates.find((template) => template.name === "img_qwen21_t2i").durations, null);
     // 每个模板都带 durations 字段（前端统一读取，不必判模板类型）。
@@ -281,7 +289,7 @@ test("D1 后端校验：durationPolicy 给出「可选档位集合」并判所�
     assert.deepEqual(policy.durations, [5, 10, 15]);
     assert.equal(policy.selectedEpisodeDurationSec, 15);
     assert.equal(policy.allowed, true);
-    assert.equal(policy.frameCounts["15"], 363);
+    assert.equal(policy.frameCounts["15"], 362);
 });
 
 test("D3：关键帧单镜一次入队 ≥4 个候选（假队列干跑，不触发真实生成）", async (t) => {

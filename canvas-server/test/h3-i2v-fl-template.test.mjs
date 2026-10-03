@@ -5,7 +5,7 @@
  *   1. 模板层：scanTemplateDir / analyzeTemplate 能靠真实节点识别它（video + 参考图槽 1..9）；
  *   2. 参数层：占位符与 generate.js 的槽位声明一致（ASSET_TOKENS，首尾帧都是素材槽）；
  *   3. 行为层：首帧必填；尾帧与参考图可选——未给时**摘除节点而非报错**（走 disableEmptyImageRefs），
- *      并登记了中文标题与 D1 时长档位（[5,10,15] / frameCounts 123/243/363）。
+ *      并登记了中文标题与 D1 时长档位（[5,10,15] / frameCounts 124/243/362）。
  */
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -50,7 +50,7 @@ const baseParams = (extra) => ({
     PROMPT: "女孩走进老屋，最后停在桌边",
     WIDTH: 480,
     HEIGHT: 832,
-    LENGTH: 123,
+    LENGTH: 124,
     SEED: 7,
     OUTPUT_PREFIX: "canvas/h3-fl-test",
     ...extra,
@@ -249,7 +249,7 @@ test("video_h3_i2v_fl：已登记中文标题，且档位随模板清单同源�
     assert.deepEqual(durationsForTemplate(TEMPLATE), [5, 10, 15]);
     const meta = durationMetaForTemplate(TEMPLATE);
     assert.equal(meta.verified, true);
-    assert.deepEqual(meta.frameCounts, { 5: 123, 10: 243, 15: 363 });
-    assert.equal(meta.formula, "24*sec+3");
+    assert.deepEqual(meta.frameCounts, { 5: 124, 10: 243, 15: 362 });
+    assert.equal(meta.formula, "17k+5 @24fps（向上吸附）");
     assert.equal(template.durationMeta.frameCounts["10"], 243);
 });

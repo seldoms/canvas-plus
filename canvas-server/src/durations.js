@@ -9,9 +9,13 @@
  * 于是 `GET /api/providers` 的 `comfy.templates[].durations` 就是档位的接口出口 —— 前端只读，
  * 绝不硬编码。
  *
- * 帧数口径：H3 原生 24fps，`帧数 = 24 × 秒 + 3`（5s→123、10s→243、15s→363）。
- * 注意：本模块的 frameCountForDuration 描述的是**模型声明的档位帧数**；实际提交 ComfyUI 的
- * `LENGTH` 仍由编排器按可接受的帧网格吸附（见 pipeline.js frameCountFor），两者口径不同、不可混用。
+ * 帧数口径（**权威 = 官方工作流自述** `research/win147-comfyui/workflows/minimax-h3-*-official.json`：
+ *   "duration (seconds): converted to a valid frame `length` by the Math Expression node,
+ *    **snapping up to the model's 17-frame-per-block (17k+5) grid at 24fps**"）：
+ *   帧数 = **不小于** `24 × 秒` 的最小 `17k+5` 网格点 → 5s→124、10s→243、15s→362。
+ * ⚠️ 本模块是**帧数口径的唯一事实源**。编排器提交 ComfyUI 的 `LENGTH` 直接调它
+ *   （pipeline.js 不再自带第二份实现 —— 历史上两份分别算出 123/243/363 与 124/243/362，
+ *    导致 `GET /api/durations` 对外宣称的帧数**是模型永远收不到的数字**）。
  */
 
 /** H3 原生帧率。 */
@@ -21,7 +25,8 @@ export const MODEL_FRAME_RATE = 24;
 export const H3_DURATIONS = Object.freeze([5, 10, 15]);
 
 /**
- * 档位帧数公式：`24 × 秒 + 3`。秒非法（非正数 / 非有限数）返回 null，调用方据此不展示帧数。
+ * 档位帧数公式：把秒换算成帧后**向上吸附**到 H3 的 `17k+5` 帧网格（官方工作流 Math Expression 的口径）。
+ * 秒非法（非正数 / 非有限数）返回 null，调用方据此不展示帧数。
  * @param {number} seconds 时长（秒）
  * @param {number} [frameRate] 帧率，默认 24
  * @returns {number|null}
@@ -30,7 +35,10 @@ export function frameCountForDuration(seconds, frameRate = MODEL_FRAME_RATE) {
     const sec = Number(seconds);
     const fps = Number(frameRate) > 0 ? Number(frameRate) : MODEL_FRAME_RATE;
     if (!Number.isFinite(sec) || sec <= 0) return null;
-    return Math.round(sec * fps) + 3;
+    // 「向上吸附」= 取不小于目标帧数的最小网格点，保证给模型的帧数不少于请求时长。
+    const desired = Math.max(1, Math.round(sec * fps));
+    const steps = Math.max(0, Math.ceil((desired - 5) / 17));
+    return 17 * steps + 5;
 }
 
 /**
@@ -68,7 +76,7 @@ export function durationMetaForTemplate(name) {
         durations,
         verified: Boolean(entry?.verified),
         frameRate: MODEL_FRAME_RATE,
-        formula: "24*sec+3",
+        formula: "17k+5 @24fps（向上吸附）",
         frameCounts: durations ? Object.fromEntries(durations.map((sec) => [String(sec), frameCountForDuration(sec)])) : null,
         note: entry?.note || (isVideoTemplate(key) ? "该视频模型未登记时长档位，待查证" : "非视频模板，无时长档位"),
     };
