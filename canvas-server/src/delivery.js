@@ -84,6 +84,8 @@ export function buildAssemblyPlan({
     quality = "standard",
     audio = [],
     subtitles = null,
+    subtitleStyle = null,
+    includeClipAudio = false,
     cover = true,
     now,
 } = {}) {
@@ -136,6 +138,8 @@ export function buildAssemblyPlan({
         clips: ordered,
         audio: Array.isArray(audio) ? audio : [],
         subtitles: subtitles || null,
+        subtitleStyle: subtitleStyle || null,
+        includeClipAudio: includeClipAudio === true,
         cover: cover !== false,
     };
 }
@@ -158,10 +162,22 @@ export function buildConcatArgs(plan, { inputPaths, audioPaths = [], outputPath 
 
     const parts = inputPaths.map((_, index) => normalize(index));
     const n = inputPaths.length;
+    const wantClipAudio = plan.includeClipAudio === true;
+
+    // 片段自带音轨（H3 是音画联合模型）：先统一采样率/声道再随视频一起 concat/xfade，成片不丢原声。
+    const clipAudio = (index) => {
+        parts.push(`[${index}:a]aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo[ca${index}]`);
+        return `ca${index}`;
+    };
 
     if (plan.transition === "cut" || n === 1) {
-        const inputs = inputPaths.map((_, index) => `[v${index}]`).join("");
-        parts.push(`${inputs}concat=n=${n}:v=1:a=0[vcat]`);
+        if (wantClipAudio) {
+            const pairs = inputPaths.map((_, index) => `[v${index}][${clipAudio(index)}]`).join("");
+            parts.push(`${pairs}concat=n=${n}:v=1:a=1[vcat][acat]`);
+        } else {
+            const inputs = inputPaths.map((_, index) => `[v${index}]`).join("");
+            parts.push(`${inputs}concat=n=${n}:v=1:a=0[vcat]`);
+        }
     } else {
         const xfade = TRANSITION_MAP[plan.transition];
         const D = plan.transitionDurationSec;
@@ -174,11 +190,21 @@ export function buildConcatArgs(plan, { inputPaths, audioPaths = [], outputPath 
             parts.push(`[${current}][v${index}]xfade=transition=${xfade}:duration=${D}:offset=${offset.toFixed(3)}[${out}]`);
             current = out;
         }
+        // 音轨用 acrossfade 与 xfade 同步（同样的重叠时长），避免声画错位。
+        if (wantClipAudio) {
+            let currentAudio = clipAudio(0);
+            for (let index = 1; index < n; index++) {
+                const out = index === n - 1 ? "acat" : `af${index}`;
+                parts.push(`[${currentAudio}][${clipAudio(index)}]acrossfade=d=${D}:c1=tri:c2=tri[${out}]`);
+                currentAudio = out;
+            }
+        }
     }
 
     let videoLabel = "vcat";
     if (plan.subtitles) {
-        parts.push(`[vcat]subtitles=filename='${escapeFilterPath(plan.subtitles)}'[vsub]`);
+        const style = plan.subtitleStyle ? `:force_style='${String(plan.subtitleStyle).replace(/'/g, "\\'")}'` : "";
+        parts.push(`[vcat]subtitles=filename='${escapeFilterPath(plan.subtitles)}'${style}[vsub]`);
         videoLabel = "vsub";
     }
 
@@ -187,22 +213,27 @@ export function buildConcatArgs(plan, { inputPaths, audioPaths = [], outputPath 
     for (const path of audioPaths) args.push("-i", path);
 
     const maps = [`-map`, `[${videoLabel}]`];
+    const audioLabels = [];
+    if (wantClipAudio) audioLabels.push("[acat]");
     if (audioPaths.length) {
         const base = inputPaths.length;
-        const audioLabels = [];
         audioPaths.forEach((_, index) => {
             const label = `a${index}`;
             parts.push(`[${base + index}:a]aresample=44100[${label}]`);
             audioLabels.push(`[${label}]`);
         });
-        if (audioLabels.length === 1) parts.push(`${audioLabels[0]}anull[aout]`);
-        else parts.push(`${audioLabels.join("")}amix=inputs=${audioLabels.length}:duration=longest:normalize=0[aout]`);
+    }
+    if (audioLabels.length === 1) {
+        parts.push(`${audioLabels[0]}anull[aout]`);
+        maps.push("-map", "[aout]", "-shortest");
+    } else if (audioLabels.length > 1) {
+        parts.push(`${audioLabels.join("")}amix=inputs=${audioLabels.length}:duration=longest:normalize=0[aout]`);
         maps.push("-map", "[aout]", "-shortest");
     }
 
     args.push("-filter_complex", parts.join(";"));
     args.push(...maps, "-c:v", "libx264", "-preset", preset, "-crf", String(crf), "-pix_fmt", "yuv420p", "-movflags", "+faststart");
-    if (audioPaths.length) args.push("-c:a", "aac", "-b:a", "192k");
+    if (audioLabels.length) args.push("-c:a", "aac", "-b:a", "192k");
     args.push(outputPath);
     return args;
 }
@@ -236,6 +267,8 @@ export async function probeMedia(filePath, ffprobePath = "ffprobe") {
         height: video ? Number(video.height) : null,
         hasVideo: Boolean(video),
         hasAudio: Boolean(audio),
+        sampleRate: audio ? Number(audio.sample_rate) || null : null,
+        channels: audio ? Number(audio.channels) || null : null,
     };
 }
 
@@ -277,6 +310,8 @@ export async function assembleEpisode({
         quality: options.quality,
         audio: options.audio,
         subtitles: options.subtitles,
+        subtitleStyle: options.subtitleStyle,
+        includeClipAudio: options.includeClipAudio,
         cover: options.cover,
         now,
     });
