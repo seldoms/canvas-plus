@@ -1,6 +1,6 @@
 import { Alert, App, Button, Empty, Spin, Tag, Typography } from "antd";
 import { ChevronDown, ChevronUp, Pencil } from "lucide-react";
-import { useState } from "react";
+import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
 
 import type { SceneWithShots, ShotPatchInput } from "@/services/api/projects";
@@ -13,6 +13,9 @@ import { ShotEditorDrawer } from "./shot-editor-drawer";
 /**
  * 分镜工作区看板：左列选「集」，右列按「场 → 镜」铺开；镜行可就地编辑与调序。
  * 数据与写回动作来自 useStoryboard，本组件只做编排与渲染。
+ *
+ * 选中态（selectedShotId）与详情态（detailShotId）由上层（storyboard.tsx）持有，
+ * 与上方「节奏条」共享：点节奏条某格 / 点镜行都会让对应镜高亮并打开同一个镜头抽屉。
  */
 export function StoryboardBoard({
     episodes,
@@ -27,6 +30,11 @@ export function StoryboardBoard({
     onMoveShot,
     reordering,
     assets,
+    selectedShotId,
+    onSelectShot,
+    detailShotId,
+    onOpenShotDetail,
+    onCloseShotDetail,
 }: {
     episodes: Episode[];
     episodeId: string;
@@ -40,10 +48,22 @@ export function StoryboardBoard({
     onMoveShot: (shots: Shot[], shotId: string, delta: -1 | 1) => Promise<void>;
     reordering: boolean;
     assets: AssetRef[];
+    selectedShotId: string;
+    onSelectShot: (shotId: string) => void;
+    detailShotId: string;
+    onOpenShotDetail: (shotId: string) => void;
+    onCloseShotDetail: () => void;
 }) {
     const { t } = useTranslation();
     const { message } = App.useApp();
-    const [editing, setEditing] = useState<{ shot: Shot; scene: Scene } | null>(null);
+
+    const detail = useMemo(() => {
+        for (const scene of scenes) {
+            const shot = scene.shots.find((item) => item.id === detailShotId);
+            if (shot) return { shot, scene };
+        }
+        return null;
+    }, [scenes, detailShotId]);
 
     const move = async (shots: Shot[], shot: Shot, delta: -1 | 1) => {
         try {
@@ -117,9 +137,10 @@ export function StoryboardBoard({
                                                 total={scene.shots.length}
                                                 scene={scene}
                                                 assets={assets}
-                                                saving={savingShotId === shot.id}
                                                 reordering={reordering}
-                                                onEdit={() => setEditing({ shot, scene })}
+                                                selected={selectedShotId === shot.id}
+                                                onSelect={() => onSelectShot(shot.id)}
+                                                onOpenDetail={() => onOpenShotDetail(shot.id)}
                                                 onMove={(delta) => void move(scene.shots, shot, delta)}
                                             />
                                         ))}
@@ -136,28 +157,29 @@ export function StoryboardBoard({
             </div>
 
             <ShotEditorDrawer
-                open={Boolean(editing)}
-                shot={editing?.shot ?? null}
-                scene={editing?.scene ?? null}
+                open={Boolean(detail)}
+                shot={detail?.shot ?? null}
+                scene={detail?.scene ?? null}
                 assets={assets}
-                saving={Boolean(editing && savingShotId === editing.shot.id)}
-                onClose={() => setEditing(null)}
-                onSave={(patch) => (editing ? onSaveShot(editing.shot.id, patch) : Promise.resolve())}
+                saving={Boolean(detail && savingShotId === detail.shot.id)}
+                onClose={onCloseShotDetail}
+                onSave={(patch) => (detail ? onSaveShot(detail.shot.id, patch) : Promise.resolve())}
             />
         </>
     );
 }
 
-/** 单镜行：镜号 + 时长/景别/动作 + 关系摘要 + 调序/编辑。 */
+/** 单镜行：镜号 + 时长/景别/动作 + 关系摘要 + 调序/编辑；selected 与节奏条对应格互高亮。 */
 function ShotRow({
     shot,
     position,
     total,
     scene,
     assets,
-    saving,
     reordering,
-    onEdit,
+    selected,
+    onSelect,
+    onOpenDetail,
     onMove,
 }: {
     shot: Shot;
@@ -165,9 +187,10 @@ function ShotRow({
     total: number;
     scene: Scene;
     assets: AssetRef[];
-    saving: boolean;
     reordering: boolean;
-    onEdit: () => void;
+    selected: boolean;
+    onSelect: () => void;
+    onOpenDetail: () => void;
     onMove: (delta: -1 | 1) => void;
 }) {
     const { t } = useTranslation();
@@ -177,8 +200,21 @@ function ShotRow({
     const sceneText = sceneLabel(scene) || t("projects.storyboardView.sceneUnnamed");
 
     return (
-        <div className="flex items-start gap-3 rounded-lg border border-transparent px-2 py-2 transition hover:border-stone-200 hover:bg-black/[0.02] dark:hover:border-stone-700 dark:hover:bg-white/[0.03]">
-            <span className="mt-0.5 inline-flex size-6 shrink-0 items-center justify-center rounded-md bg-black/5 text-xs tabular-nums text-stone-500 dark:bg-white/10 dark:text-stone-400">
+        <div
+            onClick={onSelect}
+            className={cn(
+                "flex cursor-pointer items-start gap-3 rounded-lg border px-2 py-2 transition",
+                selected
+                    ? "border-stone-300 bg-black/[0.04] dark:border-stone-600 dark:bg-white/[0.06]"
+                    : "border-transparent hover:border-stone-200 hover:bg-black/[0.02] dark:hover:border-stone-700 dark:hover:bg-white/[0.03]",
+            )}
+        >
+            <span
+                className={cn(
+                    "mt-0.5 inline-flex size-6 shrink-0 items-center justify-center rounded-md text-xs tabular-nums",
+                    selected ? "bg-stone-900 text-white dark:bg-white dark:text-stone-900" : "bg-black/5 text-stone-500 dark:bg-white/10 dark:text-stone-400",
+                )}
+            >
                 {shot.index}
             </span>
             <div className="min-w-0 flex-1">
@@ -195,9 +231,40 @@ function ShotRow({
                 </div>
             </div>
             <div className="flex shrink-0 items-center gap-0.5">
-                <Button type="text" size="small" className="!px-1.5" icon={<ChevronUp className="size-3.5" />} disabled={position === 0 || reordering} onClick={() => onMove(-1)} title={t("projects.storyboardView.moveUp")} />
-                <Button type="text" size="small" className="!px-1.5" icon={<ChevronDown className="size-3.5" />} disabled={position === total - 1 || reordering} onClick={() => onMove(1)} title={t("projects.storyboardView.moveDown")} />
-                <Button type="text" size="small" className="!px-1.5" icon={<Pencil className="size-3.5" />} loading={saving} onClick={onEdit}>
+                <Button
+                    type="text"
+                    size="small"
+                    className="!px-1.5"
+                    icon={<ChevronUp className="size-3.5" />}
+                    disabled={position === 0 || reordering}
+                    onClick={(event) => {
+                        event.stopPropagation();
+                        onMove(-1);
+                    }}
+                    title={t("projects.storyboardView.moveUp")}
+                />
+                <Button
+                    type="text"
+                    size="small"
+                    className="!px-1.5"
+                    icon={<ChevronDown className="size-3.5" />}
+                    disabled={position === total - 1 || reordering}
+                    onClick={(event) => {
+                        event.stopPropagation();
+                        onMove(1);
+                    }}
+                    title={t("projects.storyboardView.moveDown")}
+                />
+                <Button
+                    type="text"
+                    size="small"
+                    className="!px-1.5"
+                    icon={<Pencil className="size-3.5" />}
+                    onClick={(event) => {
+                        event.stopPropagation();
+                        onOpenDetail();
+                    }}
+                >
                     {t("projects.storyboardView.editShot")}
                 </Button>
             </div>

@@ -154,3 +154,81 @@ export function shotRelation(shot: Shot, scene: Scene | undefined, refs: AssetRe
         clipSlots,
     };
 }
+
+/* ------------------------------------------------------------------ *
+ * 节奏条 / 详情只读读取（cameraSpec / textOverlays / 景别族）
+ * 02 契约里 cameraSpec、textOverlays 不属可编辑字段，这里只读展示，缺失留空、不臆造。
+ * ------------------------------------------------------------------ */
+
+const asText = (value: unknown) => (typeof value === "string" ? value : typeof value === "number" ? String(value) : "");
+
+/** 把 `Shot.storyboard`(unknown) 与镜顶层同名字段并成一份只读记录（顶层被嵌套覆盖）。 */
+export function readStoryboardRaw(shot: Shot): Record<string, unknown> {
+    const nested = shot.storyboard && typeof shot.storyboard === "object" ? (shot.storyboard as Record<string, unknown>) : {};
+    return { ...(shot as unknown as Record<string, unknown>), ...nested };
+}
+
+/** 结构化机位（02 契约 cameraSpec）的只读展示形态；字段缺失留空，非对象返回 null。 */
+export type ShotCameraSpecView = {
+    position: string;
+    height: string;
+    angle: string;
+    lens: string;
+    aperture: string;
+    movement: string;
+    focus: string;
+};
+
+export function readCameraSpec(shot: Shot): ShotCameraSpecView | null {
+    const raw = readStoryboardRaw(shot).cameraSpec;
+    if (!raw || typeof raw !== "object") return null;
+    const spec = raw as Record<string, unknown>;
+    const focus = spec.focus && typeof spec.focus === "object" ? (spec.focus as Record<string, unknown>) : null;
+    const movement = spec.movement && typeof spec.movement === "object" ? (spec.movement as Record<string, unknown>) : null;
+    const focusText = focus
+        ? [`${asText(focus.from)} → ${asText(focus.to)}`.replace(/^\s*→\s*/, "").trim(), focus.atSec !== undefined ? `@${asText(focus.atSec)}s` : ""].filter(Boolean).join(" ")
+        : "";
+    return {
+        position: asText(spec.position),
+        height: asText(spec.height),
+        angle: asText(spec.angle),
+        lens: asText(spec.lens),
+        aperture: asText(spec.aperture),
+        movement: movement ? [asText(movement.type), asText(movement.direction), asText(movement.speed), asText(movement.stabilization)].filter(Boolean).join(" · ") : "",
+        focus: focusText,
+    };
+}
+
+/** 画上文字清单（02 契约 textOverlays）；只保留确有文字且 kind≠none 的条目。 */
+export type ShotTextOverlay = { text: string; kind: string; position: string; style: string };
+
+export function readTextOverlays(shot: Shot): ShotTextOverlay[] {
+    const raw = readStoryboardRaw(shot).textOverlays;
+    if (!Array.isArray(raw)) return [];
+    return raw
+        .filter((item) => item && typeof item === "object")
+        .map((item) => {
+            const row = item as Record<string, unknown>;
+            return { text: asText(row.text), kind: asText(row.kind), position: asText(row.position), style: asText(row.style) };
+        })
+        .filter((row) => row.text.trim() !== "" && row.kind !== "none");
+}
+
+/** 截断长文本用于摘要（默认 48 字），不改语义、不补字。 */
+export function truncateText(text: string, max = 48) {
+    const trimmed = text.trim();
+    return trimmed.length > max ? `${trimmed.slice(0, max)}…` : trimmed;
+}
+
+/** 景别族：暖（近景/特写/细节）· 中性（中景系）· 冷（全景系）· 未知。节奏条据此着色。 */
+export type ShotSizeFamily = "warm" | "neutral" | "cool" | "unknown";
+
+export function shotSizeFamily(shotSize: string): ShotSizeFamily {
+    const value = shotSize.trim();
+    if (!value) return "unknown";
+    // 中性先判：中近景/中全景含「近景/全景」字样，必须先归中性，避免被暖/冷抢先命中。
+    if (/中近景|中全景|中远景|中景/.test(value)) return "neutral";
+    if (/特写|近景|细节|微距/.test(value)) return "warm";
+    if (/远景|全景/.test(value)) return "cool";
+    return "unknown";
+}

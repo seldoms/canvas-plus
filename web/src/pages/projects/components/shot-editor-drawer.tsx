@@ -6,7 +6,7 @@ import type { AssetRef, Scene, Shot } from "@/types/domain";
 
 import type { ShotPatchInput } from "@/services/api/projects";
 
-import { buildShotPatch, readShotFields, sceneLabel, SHOT_DURATION_MAX, SHOT_DURATION_MIN, SHOT_SIZES, shotRelation, type ShotFields } from "../storyboard-model";
+import { buildShotPatch, readCameraSpec, readShotFields, readTextOverlays, sceneLabel, SHOT_DURATION_MAX, SHOT_DURATION_MIN, SHOT_SIZES, shotRelation, type ShotFields } from "../storyboard-model";
 
 const EMPTY_FIELDS: ShotFields = { durationSec: 0, shotSize: "", camera: "", action: "", dialogue: "", audio: "", prompt: "", negativePrompt: "" };
 
@@ -43,6 +43,9 @@ export function ShotEditorDrawer({
     }, [open, shotId]);
 
     const relation = useMemo(() => (shot ? shotRelation(shot, scene ?? undefined, assets) : null), [shot, scene, assets]);
+    // 只读详情：结构化机位与画上文字（不属可编辑字段，缺失留空）。
+    const cameraSpec = useMemo(() => (shot ? readCameraSpec(shot) : null), [shot]);
+    const textOverlays = useMemo(() => (shot ? readTextOverlays(shot) : []), [shot]);
     const shotSizeOptions = useMemo(() => {
         const base = SHOT_SIZES.map((size) => ({ value: size, label: size }));
         return fields.shotSize && !SHOT_SIZES.includes(fields.shotSize) ? [...base, { value: fields.shotSize, label: fields.shotSize }] : base;
@@ -122,6 +125,54 @@ export function ShotEditorDrawer({
                         <dt className="text-stone-400">{t("projects.storyboardView.relationClip")}</dt>
                         <dd>{relation?.clipSlots ? relation.clipSlots : none}</dd>
                     </dl>
+                </div>
+
+                <div className="rounded-lg border border-stone-200 p-3 dark:border-stone-700">
+                    <Typography.Text type="secondary" className="!text-xs">
+                        {t("projects.rhythmBar.cameraSpecTitle")}
+                    </Typography.Text>
+                    {cameraSpec ? (
+                        <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+                            <dt className="text-stone-400">{t("projects.rhythmBar.cameraSpecPosition")}</dt>
+                            <dd className="min-w-0 break-words">{cameraSpec.position || none}</dd>
+                            <dt className="text-stone-400">{t("projects.rhythmBar.cameraSpecHeight")}</dt>
+                            <dd className="min-w-0 break-words">{cameraSpec.height || none}</dd>
+                            <dt className="text-stone-400">{t("projects.rhythmBar.cameraSpecAngle")}</dt>
+                            <dd className="min-w-0 break-words">{cameraSpec.angle || none}</dd>
+                            <dt className="text-stone-400">{t("projects.rhythmBar.cameraSpecLens")}</dt>
+                            <dd className="min-w-0 break-words">{cameraSpec.lens || none}</dd>
+                            <dt className="text-stone-400">{t("projects.rhythmBar.cameraSpecAperture")}</dt>
+                            <dd className="min-w-0 break-words">{cameraSpec.aperture || none}</dd>
+                            <dt className="text-stone-400">{t("projects.rhythmBar.cameraSpecMovement")}</dt>
+                            <dd className="min-w-0 break-words">{cameraSpec.movement || none}</dd>
+                            <dt className="text-stone-400">{t("projects.rhythmBar.cameraSpecFocus")}</dt>
+                            <dd className="min-w-0 break-words">{cameraSpec.focus || none}</dd>
+                        </dl>
+                    ) : (
+                        <div className="mt-1 text-xs text-stone-500 dark:text-stone-400">{none}</div>
+                    )}
+                </div>
+
+                <div className="rounded-lg border border-stone-200 p-3 dark:border-stone-700">
+                    <Typography.Text type="secondary" className="!text-xs">
+                        {t("projects.rhythmBar.textOverlaysTitle")}
+                    </Typography.Text>
+                    {textOverlays.length ? (
+                        <ul className="mt-2 space-y-1.5 text-xs">
+                            {textOverlays.map((overlay, index) => (
+                                <li key={`${overlay.text}-${index}`} className="space-y-0.5">
+                                    <div className="flex flex-wrap items-baseline gap-x-2">
+                                        <span className="font-medium text-stone-900 dark:text-stone-100">{overlay.text}</span>
+                                        <span className="text-stone-400">{t(`projects.rhythmBar.textOverlaysKind.${overlay.kind}`, { defaultValue: overlay.kind })}</span>
+                                    </div>
+                                    {overlay.position ? <div className="text-stone-500 dark:text-stone-400">{overlay.position}</div> : null}
+                                    {overlay.style ? <div className="text-stone-400">{overlay.style}</div> : null}
+                                </li>
+                            ))}
+                        </ul>
+                    ) : (
+                        <div className="mt-1 text-xs text-stone-500 dark:text-stone-400">{t("projects.rhythmBar.noText")}</div>
+                    )}
                 </div>
             </Space>
         </Drawer>

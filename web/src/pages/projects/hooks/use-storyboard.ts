@@ -51,10 +51,26 @@ export function useStoryboard(projectId: string, episodes: Episode[]) {
     }, [episodeId, loadEpisode]);
 
     const sortedEpisodes = useMemo(() => sortByIndex(episodes), [episodes]);
-    const scenes = useMemo<SceneWithShots[]>(
-        () => (detail?.scenes ?? []).map((scene) => ({ ...scene, shots: sortByIndex(scene.shots ?? []) })).sort((a, b) => a.index - b.index),
-        [detail],
-    );
+    // 集详情里镜头既可能内嵌在 scene.shots（旧/内嵌形状），也可能是集级 shots[]（后端 episodes.js 现行形状，按 sceneId 关联）；
+    // 两种都接：优先内嵌，缺失时按 sceneId 把集级镜头归位到对应场，保证分镜看板/节奏条两条视图都拿得到「场 → 镜」。
+    const scenes = useMemo<SceneWithShots[]>(() => {
+        const rows = detail?.scenes ?? [];
+        const flatShots = (detail as unknown as { shots?: Shot[] } | null)?.shots ?? [];
+        const byScene = new Map<string, Shot[]>();
+        for (const shot of flatShots) {
+            const key = String(shot.sceneId ?? "");
+            const list = byScene.get(key);
+            if (list) list.push(shot);
+            else byScene.set(key, [shot]);
+        }
+        return rows
+            .map((scene) => {
+                const nested = scene.shots ?? [];
+                const shots = nested.length ? nested : byScene.get(String(scene.id)) ?? [];
+                return { ...scene, shots: sortByIndex(shots) };
+            })
+            .sort((a, b) => a.index - b.index);
+    }, [detail]);
 
     /** 保存单镜：成功把服务端返回的镜写回本地；失败原样抛出，调用方提示且不回退已输入内容。 */
     const saveShot = useCallback(
