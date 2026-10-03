@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { splitNovelIntoChunks } from "./chunk-novel.js";
@@ -7,6 +7,7 @@ import { assembleEpisode } from "./delivery.js";
 import { artifactUrl, ensureDir, safeJoin } from "./files.js";
 import { listTemplates } from "./providers/comfy.js";
 import { buildShotBinding, missingRefsReport, resolveSelectedArtifacts, stableSeed } from "./reference-lock.js";
+import { normalizeShotEpisodeIds } from "./production-contracts.js";
 import { loadRegistry, readSkill } from "./skills.js";
 import { listReferenceCapableTemplates, resolveToolForShot, scanTemplateDir } from "./tool-adapter.js";
 
@@ -1203,6 +1204,95 @@ ${JSON.stringify(partials, null, 2)}
     }
 
     /**
+     * 分集归一的权威集列表：绑项目且项目已有集时用**项目侧 id（ep_0001）**；否则退回剧本侧 episodes（ep1）。
+     * 项目集若没带 sceneIds（旧投影）按序借剧本集的 sceneIds 补桥，让 shot.sceneId（剧本 sc1）能定位到项目集。
+     */
+    function storyboardEpisodeAuthority(run) {
+        const projectId = run?.options?.projectId;
+        const project = projectId && typeof getProject === "function" ? getProject(projectId) : null;
+        const projectEpisodes = project && Array.isArray(project.episodes) ? project.episodes.filter((episode) => episode && typeof episode === "object") : [];
+        const scriptEpisodes = Array.isArray(run?.stages?.script?.output?.episodes) ? run.stages.script.output.episodes : [];
+        if (!projectEpisodes.length) return scriptEpisodes;
+        return projectEpisodes.map((episode, index) => {
+            const sceneIds = Array.isArray(episode.sceneIds) && episode.sceneIds.length ? episode.sceneIds : (Array.isArray(scriptEpisodes[index]?.sceneIds) ? scriptEpisodes[index].sceneIds : []);
+            return { ...episode, sceneIds };
+        });
+    }
+
+    /** 项目目录（活动优先、其次归档）；找不到 project.json 返回 null（测试用内存假项目 → 空操作）。 */
+    function projectDataDir(projectId) {
+        const dataDir = config?.dataDir || "data";
+        for (const bucket of ["projects", "projects-archive"]) {
+            const dir = safeJoin(join(dataDir, bucket), String(projectId));
+            if (dir && existsSync(safeJoin(dir, "project.json"))) return dir;
+        }
+        return null;
+    }
+
+    /**
+     * 让 `project.episodes[].shotIds`（及缺失时的 sceneIds）对 gates / context 可见。
+     *
+     * 背景：project.episodes 由脚本阶段的 applyEpisodeProjection 落盘，只含 scenes、没有 shotIds；
+     * 「哪一镜属于哪一集」的权威来源在**分镜阶段**。这里把分集归一回填进 project.episodes。
+     * 写入语义对齐 projects.js 的 persistDerived：原子写（temp+rename）、更新 updatedAt、**不改 version**、
+     * 幂等（无变化不写盘）。未绑项目 / project.json 不存在 → 空操作；写入失败只告警，绝不拖垮分镜阶段。
+     */
+    function persistProjectEpisodeShotIds(run, episodes) {
+        const projectId = run?.options?.projectId;
+        if (!projectId || !Array.isArray(episodes) || !episodes.length) return;
+        const project = typeof getProject === "function" ? getProject(projectId) : null;
+        const current = project && Array.isArray(project.episodes) ? project.episodes : null;
+        if (!current || !current.length) return;
+        const byId = new Map(episodes.map((episode) => [String(episode.id), episode]));
+        const sameIds = (a, b) => Array.isArray(a) && a.length === b.length && a.every((id, index) => String(id) === b[index]);
+        let changed = false;
+        const next = current.map((episode) => {
+            const hit = byId.get(String(episode?.id));
+            if (!hit) return episode;
+            const shotIds = Array.isArray(hit.shotIds) ? hit.shotIds.map(String) : [];
+            const sceneIds = Array.isArray(episode.sceneIds) && episode.sceneIds.length ? episode.sceneIds.map(String) : (Array.isArray(hit.sceneIds) ? hit.sceneIds.map(String) : []);
+            if (sameIds(episode.shotIds, shotIds) && sameIds(episode.sceneIds, sceneIds)) return episode;
+            changed = true;
+            return { ...episode, shotIds, sceneIds };
+        });
+        if (!changed) return;
+        const dir = projectDataDir(projectId);
+        if (!dir) return;
+        try {
+            const file = safeJoin(dir, "project.json");
+            const temp = `${file}.${process.pid}${Math.random().toString(36).slice(2, 8)}.tmp`;
+            writeFileSync(temp, JSON.stringify({ ...project, episodes: next, updatedAt: nowIso() }, null, 2));
+            renameSync(temp, file);
+        } catch (error) {
+            console.warn(`[pipeline] 分集 shotIds 回填失败（不影响分镜阶段）：${error.message}`);
+        }
+    }
+
+    /**
+     * 分镜阶段产出后：把 shots[].episodeId 归一到真实集 id，反向映射（shotIds/sceneIds）回填进 storyboard 产物，
+     * 并让 project.episodes[].shotIds 对 gates / context 可见（幂等、不改 version）。
+     * 未绑项目且剧本无 episodes 时无可判定依据：只把警告记进 stage.warnings，产物逐镜原样保留（不静默丢弃）。
+     */
+    function normalizeStoryboardEpisodes(run, stage) {
+        const shots = stage?.output?.shots;
+        if (!Array.isArray(shots) || !shots.length) return;
+        const normalized = normalizeShotEpisodeIds({ shots, episodes: storyboardEpisodeAuthority(run) });
+        stage.output.shots = normalized.shots;
+        if (normalized.episodes.length) {
+            // 只落 slim 形状（id/index/title/sceneIds/shotIds），不把项目集的 scenes/status 等内嵌对象带进分镜产物。
+            stage.output.episodes = normalized.episodes.map((episode) => ({
+                id: episode.id,
+                index: episode.index,
+                title: String(episode.title ?? ""),
+                sceneIds: episode.sceneIds.map(String),
+                shotIds: episode.shotIds.map(String),
+            }));
+        }
+        if (normalized.warnings.length) stage.warnings = [...(Array.isArray(stage.warnings) ? stage.warnings : []), ...normalized.warnings];
+        persistProjectEpisodeShotIds(run, normalized.episodes);
+    }
+
+    /**
      * 参考图条目按 kind 的优先级：角色优先正脸特写（锁面部识别点），其次三视图；场景母版独立一眼。
      * 决定 `selectedArtifactId` 取哪张、以及注入关键帧时的 REF_IMAGE 顺序。
      */
@@ -1990,6 +2080,8 @@ ${JSON.stringify(partials, null, 2)}
                 stage.status = "done";
                 stage.finishedAt = nowIso();
             }
+            // 分镜阶段产出即把「集」变成可分区事实键：归一 shots[].episodeId，并回填 project.episodes[].shotIds（幂等、不改 version）。
+            if (def.id === "storyboard") normalizeStoryboardEpisodes(run, stage);
             // 剧本阶段产出即回填 01 的设定建议，并把剧本事实（script + episodes/scenes）投影进 Project（都幂等；未绑项目时为空操作）。
             if (def.id === "script") {
                 backfillPlanSuggestion(run, stage.output);

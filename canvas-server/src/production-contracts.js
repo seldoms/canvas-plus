@@ -524,3 +524,162 @@ export function normalizeStaleStatus(input) {
     if (raw === STALE_STATUS.STALE || raw === STALE_STATUS.FRESH) return { value: raw, warnings: c.warnings };
     return { value: c.degraded("status", raw, STALE_STATUS.FRESH), warnings: c.warnings };
 }
+
+
+/* ------------------------------------------------------------------ *
+ * 8. Shot 分集键归一（§3.1「episode 提为分区键」的接线段）
+ * ------------------------------------------------------------------ */
+
+/**
+ * 从 id / 序数别名抽出 1-based 集号：ep_0001 / ep1 / EP-2 / 第1集 / "3" → 1/1/2/1/3；
+ * 抽不出返回 null。**只认序号、不认标题**——避免把任意字符串误当集号，判不出就走别的手段。
+ */
+function episodeOrdinal(value) {
+    if (value === undefined || value === null) return null;
+    if (typeof value === "number") return Number.isInteger(value) && value > 0 ? value : null;
+    const text = String(value).trim();
+    if (!text) return null;
+    const cn = /第\s*(\d{1,4})\s*集/.exec(text);
+    if (cn) return Number(cn[1]);
+    const ep = /^ep[_\-\s]*(\d{1,4})$/i.exec(text);
+    if (ep) return Number(ep[1]);
+    if (/^\d{1,4}$/.test(text)) return Number(text);
+    return null;
+}
+
+/** 宽松序号：只取**结尾的阿拉伯数字**，前缀任意（sc1 / sc_0001 / scene-3 / sh12 → 1/1/3/12）。
+ *  仅用于「场次 id 的跨命名体系比对」（剧本 sc1 ≡ 项目 sc_0001）；抽不出返回 null。 */
+function trailingOrdinal(value) {
+    if (value === undefined || value === null) return null;
+    const match = String(value).trim().match(/(\d{1,6})\s*$/);
+    return match ? Number(match[1]) : null;
+}
+
+/**
+ * 把 shots[].episodeId 归一到「真实集 id」，并把反向映射 episodes[].shotIds（sceneIds 缺失时补）回填。
+ *
+ * `episodes` 是**权威集列表**：调用方应传项目侧（ep_0001 这类）；未绑项目时传剧本侧（ep1）。
+ * 返回 `{ shots, episodes, warnings }`，三者在内存里都是新对象（不改入参，符合本模块纯函数约定）。
+ *
+ * 逐镜归一优先级（兜底依据 = shot 在整段分镜里的**顺序 / index**）：
+ *   ① shot.episodeId 精确命中权威集 id → 原样保留；
+ *   ② shot.episodeId 是可识别的序号别名（ep1 / 第1集 / 1）→ 映射到该序号位的权威集（code:"remapped"）；
+ *   ③ shot.sceneId 命中某集 sceneIds（精确，或按场次序号宽松匹配：sc1 ≡ sc_0001）→ 该集（code:"remapped"）；
+ *   ④ 仍判不出 → 按 shot 顺位在集间**等比均分**兜底（code:"assigned"）：
+ *        边界 = 各集容量（episode.shotCount 优先，否则 sceneIds.length，再否则 1）等比切分总镜头数。
+ *        例：2 集、容量相同、17 镜 → 前 9 镜归第 1 集、后 8 镜归第 2 集（四舍五入到整镜）。
+ *   ⑤ 没有任何权威集（episodes 为空）→ 保持 shot.episodeId 原样并逐镜产 warning（code:"unresolved"），
+ *      **绝不静默丢弃**。
+ */
+export function normalizeShotEpisodeIds({ shots, episodes } = {}) {
+    const shotList = Array.isArray(shots) ? shots : [];
+    const warnings = [];
+    const cleanShots = shotList.map((shot) => ({ ...asObject(shot) }));
+
+    const epRows = (Array.isArray(episodes) ? episodes : []).filter(isPlainObject);
+    if (!epRows.length) {
+        for (const shot of cleanShots) {
+            warnings.push({ field: "shots[].episodeId", code: "unresolved", shotId: String(shot.id ?? ""), got: shot.episodeId ?? null, message: "没有可用的集列表，shot.episodeId 无法判定，已保持原样（不静默丢弃）" });
+        }
+        return { shots: cleanShots, episodes: [], warnings };
+    }
+
+    const normalized = epRows.map((ep, position) => ({
+        ...ep,
+        id: asTrimmedString(ep.id) || `ep${position + 1}`,
+        index: Number(ep.index) > 0 ? Math.floor(Number(ep.index)) : position + 1,
+        sceneIds: (Array.isArray(ep.sceneIds) ? ep.sceneIds : []).map((item) => String(item)).filter((item) => item.trim() !== ""),
+        shotIds: [],
+    }));
+
+    const byId = new Map(normalized.map((ep) => [ep.id, ep]));
+    const byOrdinal = new Map();
+    for (const ep of normalized) {
+        const ordinal = episodeOrdinal(ep.id) ?? ep.index;
+        if (Number.isInteger(ordinal) && ordinal > 0 && !byOrdinal.has(ordinal)) byOrdinal.set(ordinal, ep);
+    }
+    const sceneOwner = new Map();
+    const sceneOrdinalOwners = new Map();
+    for (const ep of normalized) {
+        for (const sceneId of ep.sceneIds) {
+            if (!sceneOwner.has(sceneId)) sceneOwner.set(sceneId, ep);
+            const ordinal = trailingOrdinal(sceneId);
+            if (!ordinal) continue;
+            if (!sceneOrdinalOwners.has(ordinal)) sceneOrdinalOwners.set(ordinal, new Set());
+            sceneOrdinalOwners.get(ordinal).add(ep.id);
+        }
+    }
+
+    const resolveShot = (shot) => {
+        const rawText = shot?.episodeId === undefined || shot?.episodeId === null ? "" : String(shot.episodeId).trim();
+        if (rawText && byId.has(rawText)) return { id: rawText, via: "id" };
+        if (rawText) {
+            const ordinal = episodeOrdinal(rawText);
+            if (ordinal && byOrdinal.has(ordinal)) return { id: byOrdinal.get(ordinal).id, via: "ordinal" };
+        }
+        const sceneId = shot?.sceneId === undefined || shot?.sceneId === null ? "" : String(shot.sceneId).trim();
+        if (sceneId) {
+            if (sceneOwner.has(sceneId)) return { id: sceneOwner.get(sceneId).id, via: "scene" };
+            const owners = trailingOrdinal(sceneId) ? sceneOrdinalOwners.get(trailingOrdinal(sceneId)) : null;
+            if (owners && owners.size === 1) return { id: [...owners][0], via: "scene-ordinal" };
+        }
+        return null;
+    };
+
+    const unresolvedPositions = [];
+    cleanShots.forEach((shot, position) => {
+        const hit = resolveShot(shot);
+        if (!hit) {
+            unresolvedPositions.push(position);
+            return;
+        }
+        const rawText = shotList[position]?.episodeId === undefined || shotList[position]?.episodeId === null ? "" : String(shotList[position].episodeId).trim();
+        shot.episodeId = hit.id;
+        if (hit.via === "id") return;
+        warnings.push({
+            field: "shots[].episodeId",
+            code: rawText ? "remapped" : "assigned",
+            shotId: String(shot.id ?? ""),
+            got: rawText || null,
+            message: rawText ? `非权威集号 ${rawText} 已按序号归一为 ${hit.id}` : `缺集号，已按${hit.via === "scene" || hit.via === "scene-ordinal" ? "场次归属" : "序号"}补为 ${hit.id}`,
+        });
+    });
+
+    if (unresolvedPositions.length) {
+        const total = cleanShots.length;
+        const capacities = normalized.map((ep) => (Number(ep.shotCount) > 0 ? Math.floor(Number(ep.shotCount)) : ep.sceneIds.length || 1));
+        const totalCapacity = capacities.reduce((sum, value) => sum + value, 0) || normalized.length;
+        let acc = 0;
+        const bounds = capacities.map((capacity) => {
+            acc += capacity;
+            return Math.round((acc / totalCapacity) * total);
+        });
+        bounds[bounds.length - 1] = total;
+        const episodeAt = (position) => {
+            for (let index = 0; index < bounds.length; index += 1) if (position < bounds[index]) return normalized[index];
+            return normalized[normalized.length - 1];
+        };
+        for (const position of unresolvedPositions) {
+            const target = episodeAt(position);
+            cleanShots[position].episodeId = target.id;
+            warnings.push({ field: "shots[].episodeId", code: "assigned", shotId: String(cleanShots[position].id ?? ""), got: shotList[position]?.episodeId ?? null, message: `集号无法判定，已按镜头顺位均分兜底为 ${target.id}` });
+        }
+    }
+
+    for (const shot of cleanShots) {
+        const target = byId.get(String(shot.episodeId ?? ""));
+        if (target && shot.id !== undefined && shot.id !== null && String(shot.id) !== "") target.shotIds.push(String(shot.id));
+    }
+    for (const ep of normalized) {
+        if (ep.sceneIds.length) continue;
+        const seen = [];
+        for (const shot of cleanShots) {
+            if (String(shot.episodeId) !== ep.id) continue;
+            const sceneId = shot.sceneId === undefined || shot.sceneId === null ? "" : String(shot.sceneId).trim();
+            if (sceneId && !seen.includes(sceneId)) seen.push(sceneId);
+        }
+        ep.sceneIds = seen;
+    }
+
+    return { shots: cleanShots, episodes: normalized, warnings };
+}

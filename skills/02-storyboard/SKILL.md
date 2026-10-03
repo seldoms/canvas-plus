@@ -31,9 +31,13 @@ description: |
 
 ```json
 {
+  "episodes": [
+    { "id": "ep1", "sceneIds": ["sc1"] }
+  ],
   "shots": [
     {
       "id": "sh1",
+      "episodeId": "ep1",
       "sceneId": "sc1",
       "index": 1,
       "durationSec": 4,
@@ -62,6 +66,8 @@ description: |
 ```
 
 - `sceneId` 必须引用剧本里已存在的场次 id。
+- `episodeId`：**本镜所属的集 id**，必须原样来自剧本阶段 `episodes[].id`（如 `ep1`），**不得自造、不得写 `第1集` / `1` 这类自造序号**；剧本侧写得越准越好（服务端在绑项目时会把 `ep1` 归一到项目权威 id `ep_0001`，但源头写对才不靠兜底）。每个镜头都必须带 `episodeId`；剧本只有一集或未分集时，写剧本给出的那一个集 id，不得留空。
+- `episodes[]`（顶层，随产物回带「集 → 场次」映射）：`{ "id": <剧本 episodes[].id>, "sceneIds": [<剧本 scenes[].id>...] }`，必须与剧本 `episodes[].sceneIds` 一致，不得新增剧本没有的场次；这是服务端把镜头归位到集、并回填 `episodes[].shotIds` 的依据。
 - `prompt` / `negativePrompt` 用英文，供生图与生视频模板的 `PROMPT` token 直接使用。
 - `textOverlays`：本镜画面上**要渲染的确切文字**清单，逐条列明中文原样字样；每条含 `text` / `kind` / `position` / `style` 四键，`kind` 取 `sign` | `ticket` | `screen` | `logo` | `subtitle` | `none`。**画面里任何文字都必须逐字列明，绝不允许留空让模型自行发挥**；确无文字时显式写 `[{"text":"","kind":"none","position":"","style":""}]`。详见「提示词模板 → 八」。
 - `dialogue`：**镜头里有人开口说话就必须填**（哪怕听不见声音也要逐字记下，声画对齐与口型都依赖它）；确无对白写空字符串并在 `audio` 里说明。
@@ -98,7 +104,7 @@ description: |
 
 ### 三、字段落位（库的分镜字段如何折进本阶段契约）
 
-库里的分镜强调「机位 / 运镜 / 景深 / 光影 / 限制 / 衔接」等要素，但本阶段 JSON 契约固定，**除本次新增的结构化对象 `cameraSpec` 外不得再新增字段**。按下列落位把方法论写进去：
+库里的分镜强调「机位 / 运镜 / 景深 / 光影 / 限制 / 衔接」等要素，但本阶段 JSON 契约固定，**除结构化对象 `cameraSpec`、分集锚点 `episodeId`（以及顶层 `episodes[]` 集→场映射）外不得再新增字段**。按下列落位把方法论写进去：
 
 1. `shotSize`：景别（远景 / 全景 / 中景 / 近景 / 特写 / 超特写）。
 2. `camera`：**旧字段，继续可读**，给人工阅读的机位长描述。写「机位 + 运镜行为锁 + 焦段 / 光圈 / 景深焦点」。机位禁止只写「仰拍近景」这类抽象术语，必须写清摄影机在哪、离谁多远、高度在哪、拍谁（如「摄影机位于女主正前方偏右 15°，胸口高度，向上仰拍她抬头的脸，近景」）。运镜写清方向、速度、稳定度与起止状态，固定镜头也写「固定在哪里、看向哪里、禁止推拉摇移」。同字段内一并写清焦段（长焦 / 标准 / 广角 / 微距）、光圈与景深、焦点起点与落点。
@@ -109,7 +115,7 @@ description: |
 5. `audio`：只写本镜的环境音与关键同步音效（不写 BGM 编排，BGM 交给后期）；当 `dialogue` 为空时要在此说明无对白的原因。
 6. `prompt`：英文，结构为 主体外观 + 服装 + 场景 + 动作 + 构图景别 + 光线氛围 + 画质词；人物外观必须与剧本 `characters[].appearance` 一致；不写 Midjourney 尾参（`--ar/--style/--s/--no`）、不写 Seedance / 豆包参数、不写画幅与分辨率（尺寸由流水线模板的 `WIDTH/HEIGHT` 决定）。
 7. `negativePrompt`：英文，覆盖 多手多指、面部畸变、文字水印、低清、过曝，以及本镜的空间 / 连续穿帮禁止项。
-8. `id` / `sceneId` / `index` / `durationSec`：结构字段，规则见下方校验规则。
+8. `id` / `episodeId` / `sceneId` / `index` / `durationSec`：结构字段，规则见下方校验规则。
 
 ### 四、光影（可执行，不写形容词）
 
@@ -204,12 +210,21 @@ description: |
 1. 按场次顺序输出，`index` 全局递增，`id` 只允许 `[A-Za-z0-9_-]`。
 2. 只输出下面结构的 JSON 本体，字段名不得改动，不要 Markdown 代码块、不要解释文字：
 
-{"shots":[{"id":"sh1","sceneId":"sc1","index":1,"durationSec":4,"shotSize":"中景","camera":"","cameraSpec":{"position":"","height":"","angle":"","lens":"","aperture":"","focus":{"from":"","to":"","atSec":0},"movement":{"type":"","direction":"","speed":"","stabilization":""}},"action":"","dialogue":"","audio":"","textOverlays":[{"text":"","kind":"none","position":"","style":""}],"prompt":"","negativePrompt":""}]}
+{"episodes":[{"id":"ep1","sceneIds":["sc1"]}],"shots":[{"id":"sh1","episodeId":"ep1","sceneId":"sc1","index":1,"durationSec":4,"shotSize":"中景","camera":"","cameraSpec":{"position":"","height":"","angle":"","lens":"","aperture":"","focus":{"from":"","to":"","atSec":0},"movement":{"type":"","direction":"","speed":"","stabilization":""}},"action":"","dialogue":"","audio":"","textOverlays":[{"text":"","kind":"none","position":"","style":""}],"prompt":"","negativePrompt":""}]}
+
+### 十、分集锚点（episodeId 与 episode.sceneIds）（硬规则）
+
+1. 剧本阶段已经给出 `episodes[]`（每集有 `id` 与 `sceneIds`）。**每个镜头都必须带 `episodeId`**，值原样取自剧本 `episodes[].id`——脚本写 `ep1` 就写 `ep1`，**不得自造**（不得写 `第1集` / `1` / `episode1` 这类别名，也不得留空）。服务端会在绑项目时把剧本侧集号归一到项目权威 id（`ep1` → `ep_0001`），但源头写对才不依赖兜底。
+2. 顶层同时回带 `episodes[]`（`{ "id": <剧本集 id>, "sceneIds": [<该集场次 id>...] }`），必须与剧本 `episodes[].sceneIds` 一致：**只准搬运，不准新增 / 删减场次**。这是服务端把镜头归位到集、并回填 `episodes[].shotIds` 的唯一依据。
+3. 归位自检：每个镜头的 `sceneId` 必须落在其 `episodeId` 对应集的 `sceneIds` 里；同一场次的镜头必须落在同一集，**不允许跨集漂移**。剧本只有一集或未分集时，全部镜头归属那一个（唯一）集。
+4. 集号缺失或与剧本不一致**不阻断本阶段产出，但必须产生 QC warning**（服务端会按镜头顺位兜底，绝不静默丢弃）；自检发现的错位要在 `stage.warnings` 里可追。
 
 ## 校验规则
 
 - 顶层必须是对象且含 `shots` 数组，`shots` 至少 1 条。
 - `shots[].id` 唯一且只允许 `[A-Za-z0-9_-]`；`sceneId` 必须存在于上游 `script.scenes`。
+- 每个 shot 必须含 `episodeId`，且其值必须命中上游 `script.episodes[].id`；缺失 / 自造（`第1集` / `1` / `episode1`）一律 QC warning，不得静默丢弃（服务端会按镜头顺位兜底归一到真实集 id，`ep1` → 项目侧 `ep_0001`）。
+- 顶层建议含 `episodes[]`（每集 `{ id, sceneIds }`），必须是上游 `script.episodes[]` 的忠实搬运（不新增 / 不删减场次）；缺 `episodes` 或与剧本不一致时产生 QC warning。
 - `index` 为正整数且严格递增，不允许跳号导致排序歧义。
 - `durationSec` 为 1~8 的数字；`shotSize`、`camera`、`action` 非空。
 - `camera`（旧字符串）保留可读且非空；`cameraSpec`（新写入目标）应含 `position` / `height` / `angle` / `lens` / `aperture` / `focus` / `movement` 七项，`focus` 至少含 `from` / `to`，`movement` 至少含 `type`。
@@ -235,5 +250,5 @@ description: |
 
 - 编排器（`canvas-server/src/pipeline.js` 的 `readPromptTemplate` → `extractSection`）只把本文的 **`## 提示词模板`** 一节发给模型；其余章节是给人 / Agent 看的，不会进模型上下文。所以**新方法论必须写进「提示词模板」**（用 `###` 子标题，不会被 `^##\s` 截断），写在外面的章节约等于没写。
 - 本阶段由 `pipeline.js` 的 `composeWithLlm` **单次调用**（不分块）；`## 内容创作红线（硬约束）` 目前仅 01 剧本阶段的分块路径会抽取注入，本阶段该节主要供人 / Agent 阅读，硬约束同时逐条写进了「提示词模板 → 一、创作底线」。
-- 产出契约（`shots[]` 的 12 个文字 / 结构字段（含本次新增的 `textOverlays`）+ 结构化对象 `cameraSpec`）与校验规则由 `pipeline.js` 与 `registry.json`（`produces: "storyboard"`）共同执行。**旧 `camera` 字符串继续保留可读，`shots[]` 的既有字段名与结构不得改动**（下游 `04-keyframes` 读 `storyboard.shots[]`，`05-clip-assembly` 也依赖 `shots[].prompt` / `shots[].action`，改动会连挂）；`cameraSpec` 为本次新增的结构化写入目标，服务端尚未拆分、校验或映射到视频 Tool 的独立参数——在映射完成或明确「不支持」之前，缺失字段只能产生 QC warning，不得宣称机位已被可靠执行、不得静默丢失。`textOverlays` 为本次新增的**画上文字契约字段**，`04-keyframes` 已改为从 `storyboard.shots[].textOverlays` 逐字消费拼进生图 `prompt`；服务端解析 / 校验尚未接线，在映射完成前该字段缺失或不合规只能产生 QC warning，不得静默丢弃、也不得在关键帧阶段自行编字。
+- 产出契约（`shots[]` 的文字 / 结构字段（含 `textOverlays` 与本次新增的分集锚点 `episodeId`）+ 结构化对象 `cameraSpec` + 顶层 `episodes[]` 集→场映射）与校验规则由 `pipeline.js` 与 `registry.json`（`produces: "storyboard"`）共同执行。**旧 `camera` 字符串继续保留可读，`shots[]` 的既有字段名与结构不得改动**（下游 `04-keyframes` 读 `storyboard.shots[]`，`05-clip-assembly` 也依赖 `shots[].prompt` / `shots[].action`，改动会连挂）；`cameraSpec` 为本次新增的结构化写入目标，服务端尚未拆分、校验或映射到视频 Tool 的独立参数——在映射完成或明确「不支持」之前，缺失字段只能产生 QC warning，不得宣称机位已被可靠执行、不得静默丢失。`textOverlays` 为本次新增的**画上文字契约字段**，`04-keyframes` 已改为从 `storyboard.shots[].textOverlays` 逐字消费拼进生图 `prompt`；服务端解析 / 校验尚未接线，在映射完成前该字段缺失或不合规只能产生 QC warning，不得静默丢弃、也不得在关键帧阶段自行编字。
 - 本阶段方法论只影响内容与结构；`prompt` / `negativePrompt` 已按本地 ComfyUI 文生图 / 文生视频模板的 `PROMPT` token 形态书写，不引入 Midjourney 尾参、Seedance 参数或任何云端平台专属格式；尺寸与帧数由模板参数（`WIDTH/HEIGHT/LENGTH`，H3 宽高为 32 的倍数）统一决定，不写进 prompt。
