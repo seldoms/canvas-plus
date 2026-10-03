@@ -486,14 +486,20 @@ ReviewNote { id, scope: project|episode|scene|shot, targetId?, stage,
 | 包 | 内容 | 依赖 | 验收 |
 | --- | --- | --- | --- |
 | **P0-0** | 冻结领域词汇、稳定 ID、状态机、Stage/Tool/Artifact schema 和 Project 上下文协议；以新模型作为页面重构的唯一依据 | — | 能用同一份契约描述一集、一场、一镜、一次候选生成、一次任务和一个交付物；旧插件字段不再作为新接口必选字段 |
-| **P0-a** | 建立 Project 内核：服务端 Project/Episode/Scene/Shot/AssetRef/Canvas 引用、源版本、Project Context API，以及全新的项目总览页骨架 | P0-0 | 创建项目→导入来源→创建集/镜头→打开画布/任务/素材工作区；刷新或换设备仍能恢复同一项目上下文 |
+| **P0-a** | 建立 Project 内核：服务端 Project/Episode/Scene/Shot/AssetRef/Canvas 引用、源版本、脚本/分集投影、真实阶段门禁、Project Context API，以及全新的项目总览页骨架 | P0-0 | 创建项目→导入来源→运行脚本并回写 Project/episodes→创建集/镜头→打开画布/任务/素材工作区；刷新或换设备仍能恢复同一项目上下文 |
 | **P0-b** | 修 Job→Artifact→GenerationSlot 回写断链，并实现真实阶段状态、取消传播、attempt/idempotency 和可重放投影 | P0-0 | 关键帧完成后 `stage.artifacts` 非空且能驱动下游；部分失败、取消、重启、重跑均不会覆盖旧结果 |
 | **P0-c** | run 可恢复：持久化 run/sourceRevision、服务端列表与详情、命名、断点续跑和刷新保护；长篇正文改为版本引用 | P0-a、P0-b | 跑到一半刷新或服务重启，能从项目页找回、取消、续跑并看到原输入版本 |
-| **P0-d** | Device/Provider/Tool Registry 与资源调度：区分 GPU 生图、生视频、CPU 后期、LLM、外部 API，增加 schema 驱动参数和 LAN 鉴权/配额 | P0-0 | 两台设备或两类资源可并行；页面显示排队设备、能力不匹配和成本；取消能释放对应资源 |
+| **P0-d** | Device/Provider/Tool Registry 与资源调度：区分 GPU 生图、生视频、CPU 后期、LLM、外部 API，增加 schema 驱动参数和 LAN 鉴权/配额；现有注册表只是基础骨架 | P0-0 | 两台设备或两类资源可并行；页面显示排队设备、能力不匹配和成本；取消能释放对应资源；每个 Job 能追溯实际 Tool/Provider/Device |
+| **P0-e** | 可逆生产链与影响分析：为源版本、脚本、角色/场景资产、分镜、GenerationSlot、音频 Cue 和交付物建立输入指纹与依赖边；支持按项目/集/场/镜/阶段发起分支重跑，旧产物只读保留 | P0-a、P0-b、P0-c | 修改任意上游内容后能列出受影响对象；用户可选择从指定阶段回马枪；旧版本仍可播放、比较和回退；旧 Job 不能覆盖新 attempt |
+| **P0-f** | 制作圣经与确认锁：建立 Project Brief、Series Bible、Character/World/Audio Bible、交付规格和预算快照；每个关键阶段支持 `draft → review → approved → locked`，审批对象带 revision | P0-a、P0-c | 用户能明确确认“采用哪版剧本、角色、场景、声音和分镜”；下游只消费已批准版本；修改已锁对象会产生新 revision，不静默覆盖旧结果 |
+| **P0-g** | 内容与工艺质量门禁：结构校验、引用完整性、连续性、时长、口型/对白、音频响度、黑帧/静帧、字幕安全区和交付规格检查统一为可重放 QC Job | P0-b、P0-e | 每个阶段给出可解释的 pass/warn/block；失败项能定位到集/场/镜/音频 Cue；人工可以豁免并留下记录，系统不把风险提示混入正文 |
 | **P1-a** | 打通项目产物图谱：Artifact/AssetRef 回写项目，分镜、角色、场景和关键帧可在新工作区互相跳转；必要时提供旧插件数据导入适配器 | P0-a、P0-b | 关键帧进入项目资产无需复制像素；镜头详情可追溯来源、工具、任务和采用候选 |
 | **P1-b** | 活扣与批量执行：`GenerationSlot.candidates[]`、分组运行、逐镜重试、并排比较、采用/回退和 Canvas 批量操作 | P0-b、P0-d | 同一镜头使用两个 Tool 生成候选，保留全部历史并可点选采用；整集部分失败可续跑 |
 | **P1-c** | 六阶段方法论吸收 + 阶段 0 规划 + `skills/libraries/` 接线，按 Project/Workflow 版本运行 | P0-a、P0-c | 受 `AGENTS.md` 内容创作规范约束；规划、剧本、分镜、资产、关键帧、视频和后期均有确认门禁 |
-| **P1-d** | Delivery Executor：CPU ffmpeg 拼接、音频/TTS、字幕、封面、分集/全剧交付包和可复现清单 | P0-b、P0-d | 片段全部完成不自动等于成片完成；后期失败可单步重跑并保留日志和中间产物 |
+| **P1-d** | Delivery Executor：CPU ffmpeg 拼接、音频/TTS、字幕、封面、分集/全剧交付包和可复现清单；当前仅完成执行器和接口，尚无成功成片证据 | P0-b、P0-d | 片段全部完成不自动等于成片完成；后期失败可单步重跑并保留日志和中间产物；至少完成一次全链路可播放成片验收 |
+| **P1-e** | 完整声音后期：对白/旁白 TTS、音色锚点、口型参考音频、环境声、音效、BGM Cue、降噪/响度/混音、M&E 与多语言音轨 | P0-f、P0-g | 每句对白可追溯到角色、VoiceProfile、文本 revision 和 AudioArtifact；能单独替换音轨而不重做画面；交付前通过同步和响度检查 |
+| **P1-f** | 编辑与视觉完成：代理文件、时间线、粗剪/精剪、镜头替换、转场、节奏版本、色彩/画面统一、片头片尾和安全区 | P0-b、P0-e、P0-g | 用户可以在镜头级调整顺序和入出点；重做单镜不破坏剪辑版本；每个交付物保留 timeline/EDL/拼接清单 |
+| **P1-g** | 本地化、发布与归档：字幕翻译/校对、配音版本、平台规格预设、封面/元数据、版权/来源清单、项目快照和可离线恢复包 | P1-e、P1-f | 同一项目可输出多个语言和平台版本；每个发布包能追溯内容、模型、工具、Artifact、授权提示和 QC 结果 |
 | **P2** | 项目复用、跨集资产版本、引用计数/清理、性能与离线导出；逐步移除旧页面和兼容适配层 | P1 | 一部剧多集共享资产且不串状态，导出包可追溯，旧插件不再是运行时依赖 |
 
 ## 9. 明确不做
@@ -530,20 +536,29 @@ ReviewNote { id, scope: project|episode|scene|shot, targetId?, stage,
 
 图例：✅ 验收达成 ｜ 🟡 主体可用但有明确缺口 ｜ ⬜ 未开始
 
+> **本表于 2026-10-03 傍晚二次复核**（今日下午交付 batch 后）。复核口径：每条都取**运行时一手**（打接口 / 跑测试 / 全仓 grep）；**否定断言一律双范围复核**。本轮实测基线：后端 `node --test` **456/456 pass**、`tsc --noEmit` 0 错、`npm run build` 通过。以下状态列**只代表当前**，与上一版的差异均已在「一手证据」列尾部以 `⟶ 复核` 标出。
+
 | 工作包 | 实际状态 | 一手证据 / 缺口 |
 | --- | --- | --- |
-| **P0-0** 冻结领域契约 | ✅ | `canvas-server/src/contracts.js`(4.6KB)、`web/src/types/domain.ts`(9.5KB)、`docs/content/docs/progress/domain-contract.md`(29.7KB)；阶段 ID 权威命名 `plan/script/storyboard/design/keyframe/assembly/post` 冻结；D1–D12 决策全部登记 |
-| **P0-a** Project 内核 | 🟡 | `canvas-server/src/projects.js`(15.1KB) 把项目落盘到 `data/projects/<id>/`（`prj_` ULID + 原子写 + 乐观版本）；网关 `/api/projects` 列表/创建/详情/上下文/归档；前端「我的项目」+ 6 个工作区骨架页（带阶段门禁）。**缺口（2026-10-03 复核更正）**：会诊判定的「`Project.runIds[]` **全仓**无写入点」**只对后端成立** —— 回填实际由**前端**做：项目工作区内建 run 后 `attachProjectRun` 调 `PATCH /api/projects/:id`（`web/src/pages/projects/hooks/use-project-run.ts:106`，提交 `004f30a` 落地，失败还有 `linkFailed` 提示）。但回填**只覆盖这一条路径**：实测 `GET /api/projects/prj_01M3ZK27NYPXRPBVRAT0SSJ2B5/context` → `runIds = ["run-murnwa81-k27eq"]`（**有值** ✅），而**从流水线页建的 run 不在其中**（出片 run `run-murpt28o-46f5q` 的 `options.projectId` 指向本项目、却不在 `runIds[]` 里）。服务端侧仍无「建 run 时按 `options.projectId` 幂等追加」的逻辑（会诊建议的 `POST /api/projects/:id/runs` 未实现） |
-| **P0-b** Job→Artifact→Slot 回写断链 | ✅ | 网关订阅任务终态并重放 `jobs.json` 历史终态；`registerArtifacts`(pipeline.js:942) 幂等回写 `(projectId,runId,artifactUrl)`；阶段状态以任务终态为准（`done/running/partial/error/canceled`）。**活证据**：`run-murpt28o-46f5q` 复跑至终态 —— keyframe `artifacts=29`、assembly `artifacts=10`（此前恒为 0），且每个 clip 都带 `candidates[]`/`selected`（活扣机制一并生效） |
-| **P0-c** run 可恢复 | 🟡 | 异步 run（`POST .../run` 立即 202）+ 轻量 `progress.json` + `GET /runs/:id/progress` + 取消贯通 LLM/Job + 断点续跑 + `run.estimate` 成本预估 + 启动收敛 `reconcileRunning()`。**缺口（复核更正）**：反向导航**已部分可用** —— `context.runIds` 已被 `workspace-gates.ts`（阶段门禁）、过程时间线、资源面板、项目总览共用，不再是空数组。残留两条：① 只覆盖「项目内建 run」路径，从流水线页建的 run 不回填（见 P0-a 更正）；② 多 run 时前端**只取 `runIds[0]`**（`workspace-gate-panel.tsx:40`、`use-project-timeline.ts:20`），第二个及以后的 run 在门禁与时间线里不可见 |
-| **P0-d** 资源调度与注册表 | ✅ | `canvas-server/src/registry.js`(12.4KB)：本地 GPU / CPU / 外部 API / LLM 四类独立队列；`canRun` 提交前能力路由（能力不匹配直接拒，不静默换设备）；`deviceLabel`/`maxConcurrency`。测试 `registry`(8) + `registry-wiring`(5) |
-| **P1-a** 项目产物图谱 | 🟡 | 生成型阶段产物自动登记 AssetRef（幂等去重）；项目工作区新增「过程时间线」，图片/视频缩略图 + 文本摘要 + 成片清单，阶段运行中 3s/8s 节流轮询。**缺口**：① 资产页只有 artifact id、无缩略图（会诊 M3）；② 「资产」页读前端本地 store，与项目 AssetRef **仍是两个数据源** |
-| **P1-b** 活扣与批量执行 | ✅ | `GenerationSlot.candidates[]` + 逐条 `regenerate` 端点（换模型只追加候选、保留历史）+ 模型别名（`alias` 字段，请求仍用原名）+ 横向候选交互 + 逐镜重试（默认 2 次） |
-| **P1-c** 六阶段方法论 + 阶段 0 规划 | 🟡 | 阶段 0 预置选项（题材/基调/动画片/像素风/布偶戏）+ `planSuggestion` 自动回填（仅字段仍占位且建议≠现值）；01 改三段式 `analyze→outline→script`（`progress.steps` 可见）；五个阶段技能接进方法论库并加「内容创作红线」；`normalizeEpisodes` 强制集数对齐 `plan.episodeCount`。**缺口**：**D1 时长档位跟模型（`24×秒+3`，仅 5/10/15s）未落**；**D3 关键帧单镜 ≥4 张未落（现配置 2，自动重生成未接）**——两处因产品负责人 2026-10-03 喊停改码而挂起，`pipeline.js` 已空出。**另注（证据效力）**：集数/时长修复只有**单元测试**背书，**尚无带该代码的端到端复跑**——唯一一轮复跑 `run-murpt28o-46f5q` 的 `script` stage **没有 `steps` 字段**（三段式会写 `stage.steps.<id>.output`），证明它跑的是**三段式之前的旧代码**，其 `episodes: []`（而项目 `plan.episodeCount=2`）**不能**用作「修复未生效」的证据；要判定必须**新跑一轮** |
-| **P1-d** Delivery Executor | ✅ | `canvas-server/src/delivery.js`(15.2KB)：片段 ffmpeg concat（`cut`）/ xfade（`fade`/`dissolve`/`slide`）+ 外部音轨 `amix` 混音 + 字幕烧入 + 抽封面 + 可复现拼接清单 + ffmpeg 日志；独立接口 `POST /runs/:id/steps/assembly/assemble`（片段未全成功 400、已成片默认复用）。测试 `delivery`(19) + `delivery-wiring`(8)。**注**：本轮复跑因上游 6 镜 OOM 落 `partial`，**成片实际未合成**（这正是设计行为：片段不齐不许出片），执行体本身未被证伪 |
-| **P2** 项目复用与清理 | ⬜ | 未开始（跨集资产版本、引用计数/清理、离线导出、移除旧兼容层）|
+| **P0-0** 冻结领域契约 | ✅ | `contracts.js`(6.5KB)、`web/src/types/domain.ts`、`domain-contract.md`；阶段 ID `plan/script/storyboard/design/keyframe/assembly/post` 冻结；D1–D12 登记。⟶ 复核：今日新增 `blocked` 阶段状态与 `Shot.episodeId`，均已同步进契约 |
+| **P0-a** Project 内核 | 🟡 | `projects.js`(23.0KB) 原子写 + 乐观版本；`/api/projects` 列表/创建/详情/上下文/归档；6 个工作区页 + 门禁。缺口：`runIds[]` 仅覆盖「项目内建 run」路径（前端 `use-project-run.ts:106` PATCH 回填），**从流水线页建的 run 不回填**；服务端「建 run 时按 `options.projectId` 幂等追加」仍未实现 |
+| **P0-b** Job→Artifact→Slot 回写断链 | ✅ | 终态重放 + `registerArtifacts` 幂等回写；阶段状态以任务终态为准。**活证据**：本项目 keyframe `artifacts=17`、assembly 2 条 clip done。⟶ 复核：今日补上 **keyframe→`episodes[].shots[].generationSlots`** 投影（此前缺失导致 `assembly` 门禁被永挡，见 #48）；幂等守卫「已存在≠已完成」缺陷亦修（#41） |
+| **P0-c** run 可恢复 | 🟡 | 异步 run（202）+ `progress.json` + `GET /runs/:id/progress` + 取消贯通 + 断点续跑 + `run.estimate` + 启动 `reconcileRunning()`。缺口：① 只覆盖项目内建 run（同上）；② 多 run 时前端只取 `runIds[0]`（`workspace-gate-panel.tsx:40`、`use-project-timeline.ts:20`），第二个及以后不可见 |
+| **P0-d** 资源调度与注册表 | 🟡 | `registry.js`(12.4KB) 四类注册表 + 能力路由。缺口：各类 Job 未统一进调度链；音频/TTS 未纳入同一生产契约；设备并行与取消释放无端到端验证 |
+| **P0-e** 可逆生产链与影响分析 | 🟡 | ⟶ **复核上调（⬜→🟡）**：`impact.js`(**32.8KB**，57 处 fingerprint/revision/stale 相关) 已落地并**接了 HTTP** —— 实打 `POST /api/projects/:id/impact` 返回 `{changed, stale:[], keep:[sh_…×17], summary}`、`GET …/impact/options` 返回带 `revision` 的 assetRefs（老周 revision=79）。缺口：**「分支重跑 / 回马枪」施工未接**（分析能算，不能按集/场/镜发起分支 run）；旧产物只读保留与回退播放未做 |
+| **P0-f** 制作圣经与确认锁 | 🟡 | ⟶ **复核上调（⬜→🟡）**：`bible.js`(**25.9KB**) 已实现五类实体（ProjectBrief / Series / Character / World / Audio Bible）规范化 + `draft→review→approved→locked` 状态机（含 revision 语义：改已锁对象必须产生新 revision）+ 34 例单测。**缺口关键**：全仓 grep 显示该模块**只有 1 处自引用、未被任何模块消费** —— 尚未接进门禁与下游阶段，「下游只消费已批准版本」这条验收**未达成** |
+| **P0-g** 内容与工艺质量门禁 | ⬜ | 全仓 grep `qcJob/runQc/qualityGate/连续性检查` **0 处**；只有阶段局部校验与成片输入校验。缺统一的连续性/声画/技术规格可重放 QC Job |
+| **P1-a** 项目产物图谱 | 🟡 | ⟶ 复核：缺口①②**已修** —— 资产工作区改为**以服务端 AssetRef 为唯一数据源**（不再读前端本地 store）、补上缩略图与站内弹窗预览、采用状态与切换候选入口（`180b173`）。残留缺口③：角色三视图/场景母版**已进入 AssetRef**（本机 keyframe 参考图 6 条已绑定），但**音色基准尚未进入图谱** |
+| **P1-b** 活扣与批量执行 | ✅ | `GenerationSlot.candidates[]` + 逐条 `regenerate` + 模型别名 + 横向候选交互 + 逐镜重试（默认 2）。缺口（未变）：分组（整集）运行与画布批量操作 |
+| **P1-c** 六阶段方法论 + 阶段 0 规划 | 🟡 | 阶段 0 预置 + `planSuggestion` 回填；01 `analyze→outline→script`；五阶段技能接方法论库；`normalizeEpisodes` 强制集数对齐。⟶ 复核：`textOverlays` 契约已落 02（#44 修正），台词注解「不参与生产参数」已写进 02（#50）。**缺口未变**：**D1 时长档位跟模型（`24×秒+3`，仅 5/10/15s）未落**（grep 0 处）；**D3 关键帧单镜 ≥4 张未落**（`config.pipeline.maxKeyframesPerShot` 仍 = 2，自动重生成未接） |
+| **P1-d** Delivery Executor | 🟡 | `delivery.js`(15.2KB)：ffmpeg concat/xfade + `amix` + 字幕 + 封面 + 清单 + 日志；测试 delivery(19)+wiring(8)。⟶ 复核：**已有真实片段产物证据** —— 本项目 `sh1`/`sh5` 两段 768×1376 / 24fps mp4 落盘且**自带 aac 音轨**（H3 是音画联合模型）。**缺口**：仍无**完整成片**（17 镜只出 2 段，其余 15 段为控算力主动取消）；`plan.audio` 仍靠外部手工传入，TTS 未接生产阶段 |
+| **P1-e** 完整声音后期 | 🟡 | ⟶ **复核上调（⬜→🟡）**：`audio.js`(29.4KB) + `audio-track.js`(18.9KB) 已实现 VoiceProfile / AudioCue / 声画对齐检查 / 幂等投影（grep 85 处）；台词清洗与显式语速解析已落（#50）；**TTS 工作流 `audio_qwen3_tts` 已建并产出两条真实音色对白**（老周 F0 143.7Hz / 女孩 254.0Hz，客观可区分）。缺口：**未接进 pipeline 阶段**（当前靠手工/一次性调用产出，无音频 Job、无 AudioCue 落库、无响度/M&E/多语言音轨）；环境声/BGM Cue 未做 |
+| **P1-f** 编辑与视觉完成 | ⬜ | 有 assembly 清单与 ffmpeg 执行器，无版本化 Timeline / 代理媒体 / 粗剪精剪 / 锁画工作区（grep 0 处） |
+| **P1-g** 本地化、发布与归档 | ⬜ | 无字幕翻译校对、多语言配音、平台规格包、授权来源清单、可离线恢复包 |
+| **P2** 项目复用与清理 | ⬜ | 跨集资产版本、引用计数/清理、离线导出、移除旧兼容层均未开始 |
 
-**一句话**：P0 五个包（契约/内核/回写/恢复/调度）与 P1 的活扣、交付两个包**主体已落地且有测试或活证据**；剩下三处**明确缺口**——① 多 run 只取 `runIds[0]` + 跨路径（流水线页建的 run）不回填（**注**：会诊原判「`runIds[]` 从未写」已失效，见 P0-a）；② D1/D3 两条产品硬约束未实现；③ 资产页与项目 AssetRef 双数据源。**此外端到端复跑只完成一轮且成片失败**，见 §11.4。
+**一句话（2026-10-03 傍晚复核）**：Project 内核、任务回写、投影、候选活扣、**角色一致性锁**、**画上文字**、**片段出片**、**音色合成**都已有真实产物与一手证据；剩余**未做**集中在四块 —— ① **P0-g 统一 QC 门禁**；② **P0-e 的分支重跑/回马枪施工**（影响分析已能算）；③ **P0-f 的确认锁接门禁**（实体与状态机已备，未消费）；④ **P1-f / P1-g / P2**（时间线精剪、本地化发布、复用清理）。另有两个**产品已拍板但未实现**的约束：**D1 时长档位跟模型**、**D3 关键帧 ≥4 张 + 自动重生成**。
+
 
 ### 11.2 遇到哪些问题（按严重度分级，仅列**当前仍未解决**的）
 
@@ -558,6 +573,11 @@ ReviewNote { id, scope: project|episode|scene|shot, targetId?, stage,
 | 24 | **成片配乐与配音不一致** | 根因未定位（上一轮排查被新诉求打断）。与 #23 同源：音频轨既非流水线产出、也无对齐校验 |
 | 25 | **成片 6 镜显存 OOM**（复跑实测） | 复跑 run `run-murpt28o-46f5q` 的 assembly 落 **`partial`**：16 镜前 10 成功、`sh11`–`sh16` 全数 ComfyUI `SamplerCustomAdvanced` 报 **`VBAR OOM`**（147 的 16GB 显存；首次 43 分钟后 OOM、重试 78 秒再 OOM，**非偶发**）。ComfyUI 本身活着（0.38.2 / 16310MB） |
 | 26 | **渠道注册表被前端全量覆盖 → 外部 LLM 全废**（实测复现） | 前端 `POST /api/llm/providers` 是**全量替换**写回。2026-10-03 实测：`data/llm-providers.json` 只剩死渠道「默认渠道 → `api.openai.com`（无 key）」，可用的 `deepseek` 被冲掉 → **这就是「画布生成文章疯狂弹认证」的根因**（`/api/llm/providers` 实测 `providers:[]` 式空转 → 生成必 401）；网关日志被「每 8s 一条死渠道告警」刷满。已手动恢复 deepseek 并重启（`/v1/models` 现 10 个含 `deepseek::*`），**根因未修**。方案：服务端网关路由表唯一写者 / 浏览器渠道表浏览器唯一写者，只按 name 显式 upsert，禁止全量替换 |
+| 27 | **角色音色与配音没有生产链** | `01` 的 `characters[].voice` 只是音色、语速、口音文字；前端虽有全局 `audioModel/audioVoice` 和 OpenAI 兼容 TTS 模板，项目流水线没有 TTS 阶段、`voiceProfileId` 或对白 `AudioCue`。`delivery.js` 的 `amix` 只能混合调用方手工传入的 `plan.audio` |
+| 28 | **角色三视图与场景母版没有成为项目资产** | `03-costume-props` 的技能契约已经声明 `turnaroundArtifactIds`、`referenceArtifactIds`、`sceneMasterArtifactId`、`views`、`confirmed`，但 `pipeline.js:registerDesignAssets` 仍登记 `artifactIds: []`，没有生成/绑定这些参考图；`confirmed` 门禁也还没有完整接入 |
+| 29 | **机位描述存在但不可验证** | `02-storyboard` 的 `camera` 字符串要求机位、运镜、焦段、光圈、景深和焦点，`04-keyframes` 会把它交给模型；服务端不拆分校验，也不确认视频 Tool 是否消费这些摄影机约束，换工具后可能静默丢失 |
+| 30 | **上游修改不能可靠触发下游失效** | 当前 `regenerate` 只支持生成型阶段单条候选，`setStageInput` 替换整段 JSON；没有 revision 输入指纹、影响分析、stale 状态或分支 run，角色/场景/分镜修改后可能新旧产物混用 |
+| 31 | **关键帧跨镜头角色漂移** | `pipeline.js:generativePlan` 的关键帧 `start` 只提交 `PROMPT/WIDTH/HEIGHT/SEED`，没有角色参考图、场景母版或 `characterId`；只有同一镜头的 `end` 帧会引用 `start.artifactUrl`。分镜也没有稳定的角色/地点绑定，模型只能从每镜独立 prompt 猜人物，因此同一个人跨镜头长相、发型和服装会漂移 |
 | — | 关键帧 / 视频工作区显示 | 会诊发现 12 行空壳、29 张图不可见；本轮已补「过程时间线」（已提交 `78e390a`）。**后端产物已齐**（keyframe 29 / assembly 10），但**前端 UI 未目视验证**——需打开项目工作区确认时间线真能把 29 张图铺出来 |
 
 **🟡 严重级（能跑但结果错 / 数据不可靠）**
@@ -602,3 +622,353 @@ ReviewNote { id, scope: project|episode|scene|shot, targetId?, stage,
 2. **逐镜重试 `sh11`–`sh16`** —— 用已有的逐条 `regenerate`，不要重跑整条；
 3. **调 `assemble`** —— 片段齐了才能出片（这是设计行为，`partial` 时接口会拒）；
 4. **想验证集数 / 时长 / 三段式 / styleAnchor**，**必须新建 run** —— 本轮的 script 段是旧代码，证明不了任何事（见 §11.3 第 4 条）。
+
+### 11.5 本轮代码 Review 补充：声音、美术资产与可逆生产链（2026-10-03）
+
+#### 11.5.1 声音不是通用配置，而是三种不同生产对象
+
+当前已有三条能力路线，但被一个全局 `audioModel / audioVoice / audioFormat` 配置混在一起：
+
+| 路线 | 当前能力 | 当前缺口 | 正确的生产对象 |
+| --- | --- | --- | --- |
+| 本地短视频 | `video_h3_talk` 可将 `TTS_TEXT`、`TTS_SPEAKER` 和画面一起生成；H3 工作流也能输出原生音频 | 没有项目级角色音色锚点；视频内嵌音频与后期对白无法独立替换；尚未进入 Project 产物图 | `VoiceProfile` + `AudioCue` + 带 `audioMode` 的视频 Tool |
+| 外部短剧视频 | 前端有 OpenAI 兼容 `/v1/audio/speech`，外部视频接口也有 `generate_audio` / 参考音频参数 | 流水线没有调用 TTS；`voice` 只是剧本文字字段；外部视频的内嵌音频不可证明跨镜一致 | 独立 TTS `AudioArtifact`，再与视频合成；外部视频音频只作为可选候选 |
+| 后期声音 | `delivery.js` 支持 `amix`，但 `plan.audio` 由调用方手工传入 | 没有对白、旁白、音效、BGM 的 Cue Sheet 和时间轴校验 | `AudioTrack` / `AudioCue`，由后期阶段按镜头边界混音 |
+
+因此，`audioModel` 只能保留给画布中的快速单次生成。项目生产配置必须改为按能力与阶段快照保存：
+
+```js
+const productionAudio = {
+  dialogue: {
+    toolId: "tts.qwen3.customVoice",       // 本地或外部 TTS Tool
+    providerId: "lan-comfyui",
+    voiceProfileId: "vp_c1",
+    mode: "separate_track",                // separate_track | embedded
+  },
+  music: { toolId: "music.external", providerId: "api-main" },
+  sfx: { toolId: "sfx.local", providerId: "lan-comfyui" },
+  mix: { toolId: "ffmpeg.mix", providerId: "local-cpu" },
+};
+
+const voiceProfile = {
+  id: "vp_c1",
+  characterId: "c1",
+  language: "zh-CN",
+  speaker: "Serena",
+  design: "成年女性，清亮、克制、语速偏慢，紧张时尾音上扬",
+  referenceArtifactId: "art_voice_c1_anchor",
+  version: 1,
+};
+```
+
+短剧默认采用“独立对白轨”作为事实源：视频 Tool 可以生成原生声音，但进入后期前要抽取为候选并允许替换；最终成片以 `AudioCue` 混音结果为准。这样本地 H3 和外部视频 API 都能接入同一条交付链。
+
+#### 11.5.2 角色三视图、场景资产和机位的现状
+
+- `skills/03-costume-props/SKILL.md` 已定义角色服装、妆容、发型、道具和场景空场陈设；方法论文档还要求正面特写加正/侧/背三视图。
+- `03-costume-props` 的技能契约已经补上 `turnaroundArtifactIds`、`referenceArtifactIds`、`sceneMasterArtifactId`、`views`、`confirmed` 字段，但当前运行时只把角色/场景登记成空 `AssetRef`（`artifactIds: []`），没有自动生成或绑定参考图，也没有把确认状态可靠地接到关键帧门禁。
+- `skills/02-storyboard/SKILL.md` 已要求 `camera` 携带机位、运镜、焦段、光圈、景深、焦点和光源方向；但它仍是一个长字符串，服务端没有拆分、校验或把这些字段映射到视频 Tool 的独立参数。
+- `04-keyframes` 会读取 `design` 和 `storyboard`，但 `pipeline.js:generativePlan` 的关键帧 `start` 任务只提交文字 `PROMPT` 和采样参数，不会自动把角色三视图、正脸特写或场景母版作为 `REF_IMAGE_*`/`INPUT_IMAGE` 传给生图模板；只有同镜 `end` 帧引用本镜 `start`。默认每镜最多 2 帧，也未满足计划中的 D3「每镜至少 4 张」约束。
+
+整改后的资产链应明确为：
+
+```text
+角色文字设定 → 角色三视图/特写 → 用户确认 → Character AssetRef
+场景文字设定 → 空场母版/关键视角图 → 用户确认 → Scene AssetRef
+分镜 camera 结构化 → 关键帧 prompt + 视频 Tool camera 参数
+```
+
+示例目标结构：
+
+```js
+const characterRef = {
+  id: "aref_c1",
+  role: "character",
+  bindingId: "c1",
+  artifactIds: ["art_c1_turnaround", "art_c1_closeup"],
+  selectedArtifactId: "art_c1_turnaround",
+  metadata: { views: ["front", "three_quarter", "side", "back"], confirmed: true },
+};
+
+const shotCamera = {
+  position: "subject-front-right",
+  height: "chest",
+  angle: "15deg-up",
+  lens: "50mm",
+  aperture: "f2.8",
+  focus: { from: "door", to: "face", atSec: 2.2 },
+  movement: { type: "dolly", direction: "forward", speed: "slow", stabilization: "steady" },
+};
+```
+
+`storyboard.camera` 可以作为旧字段继续读取，但新写入应生成上述结构；没有结构化相机数据时，项目只能提示风险，不能宣称机位已被工具可靠执行。
+
+#### 11.5.4 关键帧角色一致性的阻断诊断
+
+这次用户发现的“同一个人在不同镜头长得不一样”已经可以确定为架构缺陷，具体链路如下：
+
+```text
+角色文字 appearance
+  → 03 服化道文字 prompt
+  → 02 每镜 prompt（模型重新改写）
+  → 04 每镜独立 start 文生图
+  → 05 才使用本镜 start，不再有机会修正跨镜身份
+```
+
+当前链路缺少四个必要环节：
+
+1. **参考图没有生成并锁定**：设计阶段虽然声明了三视图字段，但运行时是空 ArtifactRef。
+2. **镜头没有角色绑定**：`Shot` 只有 `sceneId` 和自由文本 prompt，没有稳定的 `characterIds`/`locationId` 映射；关键帧无法知道该取哪些参考图。
+3. **生图 Tool 没有收到参考图**：`generativePlan` 不填 `REF_IMAGE_*`，也没有 IP-Adapter、参考图编辑或其它身份锁定适配器。
+4. **没有一致性 QC**：生成后没有把新图与角色基准图进行相似度/人工确认，漂移图片仍会进入下一阶段。
+
+修复必须按顺序执行，单独增加提示词里的外观描述不能解决问题：
+
+```text
+角色资产生成 → 用户确认 → ShotBinding 投影
+ShotBinding(characterIds/locationId) → 解析 AssetRef.selectedArtifactId
+ToolAdapter(referenceImages + prompt + seed) → 关键帧 start
+身份/服装/场景 QC → 通过后才允许进入后续镜头或视频阶段
+```
+
+为避免破坏现有 02 阶段 11 字段契约，第一版不直接给 `shots[]` 加字段，而是增加独立的项目投影：
+
+```js
+const shotBinding = {
+  shotId: "sh_12",
+  characterIds: ["c1", "c2"],
+  locationId: "loc1",
+  propIds: ["prop_phone_01"],
+  assetRevision: { c1: 3, loc1: 2 },
+};
+
+const refs = resolveSelectedArtifacts(shotBinding);
+const params = {
+  PROMPT: buildShotPrompt({ shot, design, camera }),
+  REF_IMAGE_1: refs.character[0].url,
+  REF_IMAGE_2: refs.character[1].url,
+  REF_IMAGE_3: refs.scene[0].url,
+  SEED: stableSeed(projectId, shot.id, shotBinding.assetRevision),
+};
+```
+
+不同 Tool 的参考图能力必须由适配器声明：支持 `REF_IMAGE_*` 的模板直接映射；只支持 `INPUT_IMAGE` 的模板采用角色基准合成参考板或改用支持参考图的模板；完全不支持参考图的 Tool 必须在门禁中标为 `unavailable`，不能假装已经锁定角色。
+
+最小验收标准：同一角色至少 3 个不同场景、不同景别的关键帧中，角色基准图、服装版本、发型和绑定道具通过人工确认；关键帧任务记录 `characterIds`、参考 Artifact IDs、资产 revision、seed 和 Tool；任何一项缺失，阶段只能是 `blocked` 或 `warning`，不能标记为可进入视频阶段。
+
+#### 11.5.3 “回马枪”当前支持范围
+
+当前实现有三种局部重做能力：
+
+1. 生成型阶段的 `regenerate` 可以对单个关键帧或片段追加候选，旧候选保留；适合换模型、换参数、处理单镜 OOM。
+2. `setStageInput` 可以人工替换某个阶段的完整 JSON；适合人工修订后继续下游。
+3. assembly 使用新的 attempt 目录，旧成片不会被覆盖。
+
+这些能力还不能组成完整回马枪。脚本、分镜、角色资产或场景资产发生变化时，系统没有可靠的依赖图来计算受影响镜头；Project 也没有把“当前产物基于哪个 revision”写入每个 Job/Artifact。因此当前行为可能出现旧关键帧、旧视频和新分镜混用。
+
+回马枪必须遵守四条规则：
+
+1. **旧结果永不覆盖**：每次修改创建新的 revision/attempt，旧 Artifact 只读保留。
+2. **先算影响范围再入队**：用户看到将被标记为 stale 的集、场、镜、音频 Cue 和交付物，可缩小范围后再运行。
+3. **下游按输入指纹失效**：只有输入 revision、上游 Artifact 选择、Tool 参数均相同，才允许复用；否则标记 stale。
+4. **新旧链可比较和回退**：Project 记录当前选中的 workflow run/Artifact，历史 run 仍可打开、预览和恢复。
+
+目标接口与投影逻辑示例：
+
+```js
+// POST /api/projects/:projectId/reruns
+// { scope: "shot", shotIds: ["sh_12"], fromStage: "keyframe", reason: "修改角色三视图" }
+const plan = impact.plan({
+  projectId,
+  sourceRevisionId,
+  changed: [{ type: "assetRef", id: "aref_c1", revision: 2 }],
+});
+// plan.stale = ["sh_12", "sh_13", ...]; plan.keep = 已确认且不受影响的镜头
+const workflowRun = runs.createBranch({ parentRunId, inputRevisionId: sourceRevisionId, scope: plan.stale });
+jobs.enqueue(plan.stale.map((shotId) => ({ shotId, workflowRunId: workflowRun.id })));
+```
+
+```js
+function isReusable(output, input) {
+  return output.inputFingerprint === fingerprint(input)
+    && output.status === "done"
+    && output.selectedArtifactId;
+}
+
+function markStale(project, changedIds) {
+  for (const ref of project.assetRefs) {
+    if (changedIds.includes(ref.bindingId)) ref.status = "stale";
+  }
+  for (const episode of project.episodes) {
+    for (const scene of episode.scenes ?? []) {
+      for (const shot of scene.shots ?? []) {
+        if (shotDependsOn(shot, changedIds)) shot.status = "stale";
+      }
+    }
+  }
+}
+```
+
+`stale` 是当前结果的派生状态，不等于删除，也不等于失败；只有新 attempt 生成并通过人工门禁后，Project 才切换 `selected` 指针。
+
+### 12. Review 后的整改顺序与关键逻辑示例
+
+本轮审计后的执行顺序调整为：
+
+1. **P0：Project 事实链**——脚本/episodes 投影、明确门禁、分镜 PATCH 路由、sourceRevision 引用。
+2. **P0：角色/场景参考锁**——真正生成并确认三视图、正脸特写、场景母版，建立 ShotBinding 和 AssetRef selected 指针。
+3. **P0：关键帧一致性链**——关键帧 start 必须按 ShotBinding 注入参考 Artifact；Tool 不支持参考图时明确阻断；增加跨镜身份/服装/场景 QC。
+4. **P0：可逆执行链（P0-e）**——revision、输入指纹、影响分析、stale、分支 run、旧结果只读。
+5. **P0：音频生产链**——VoiceProfile、TTS Tool、AudioCue、独立对白轨、声画对齐门禁。
+6. **P1：结构化摄影机**——从 `camera` 字符串逐步升级为可校验对象，并按 Tool 能力映射或明确提示“不支持”。
+7. **P1：统一调度与交付**——本地短视频、外部短剧、TTS、音乐、音效和 CPU 混音全部使用同一 Job/Artifact/AssetRef 契约。
+
+最低验收场景：用户修改一个主角的三视图后，系统只将引用该角色的镜头、对白 Cue、相关片段和成片标记为 stale；用户选择从关键帧阶段重跑；旧版本仍可播放，新版本完成后才切换项目当前版本。修改一个镜头的机位时，只影响该镜及其视频、对白口型和交付片段，不重跑整部剧。
+
+## 13. 全生产链主动审计：当前计划还缺什么
+
+当前五阶段流水线主要覆盖“剧本 → 分镜 → 视觉资产 → 关键帧 → 视频/后期生成”。一套可以稳定生产短视频和短剧的平台还必须覆盖制片、声音、编辑、质检、本地化和发布。下面按用户真正经历的生产周期重新盘点；“技能文档已有”不等于“系统已实现”。
+
+### 13.1 立项与制作规格
+
+缺少一个可以约束全项目的 `ProjectBrief`。创建项目时还应明确：目标市场和语言、发行平台、画幅和分辨率、集数与单集时长、内容分级、预算/额度、交付格式、是否需要字幕/配音/M&E、使用本地能力还是外部 API，以及哪些素材拥有可用授权。
+
+这些字段现在分散在项目表、全局配置、页面默认值和人工记忆中，导致同一项目可能用不同画幅、语言、音频策略和视频模型运行。`ProjectBrief` 应在 Project 创建时保存，后续所有 WorkflowRun 只引用并快照它。
+
+```js
+const projectBrief = {
+  market: "global",
+  languages: ["zh-CN", "en-US"],
+  platformProfiles: ["vertical-short-drama-9x16"],
+  episodeCount: 2,
+  episodeDurationSec: 30,
+  visualMode: "external_video_api", // local_short | external_drama | hybrid
+  audioMode: "separate_dialogue_track",
+  delivery: { video: "h264-aac-mp4", subtitles: ["vtt", "srt"], cover: true },
+  budget: { maxJobs: 200, maxExternalCredits: 50 },
+  rights: [{ scope: "source", status: "to_review" }],
+  version: 1,
+};
+```
+
+### 13.2 内容开发与“圣经”
+
+现在有剧本人物 `appearance/voice` 和服化道文字，但缺少能长期约束生产的四份稳定文档：
+
+- **Series Bible**：世界观、时间线、叙事规则、人物关系和不可改变事实。
+- **Character Bible**：角色身份、外观、三视图、服装版本、表演边界、音色和语言习惯。
+- **World/Location Bible**：地点、时代、空间结构、空场母版、固定光源、可出现/不可出现的物件。
+- **Audio Bible**：角色 VoiceProfile、语言、发音、情绪范围、BGM 方向、环境声和禁用声音。
+
+剧本、分镜、提示词和音频 Cue 都应引用这些文档的 revision。它们不是给模型看的长文本，而是可以被校验、审批、锁定和回滚的项目事实。
+
+### 13.3 预制片：角色、场景、道具与镜头设计
+
+当前 `03-costume-props` 主要产出文字；完整预制片还缺：
+
+1. 角色正脸特写、正/侧/背三视图、表情表、服装版本和关键道具绑定。
+2. 场景空场母版、平面/空间关系、关键视角、昼夜/天气版本和固定灯光方向。
+3. 道具单实例、材质细节、正反面和跨镜头状态变化。
+4. 分镜的镜头轴线、屏幕方向、视线关系、景别、焦段、机位、运镜和镜头衔接校验。
+5. 阶段审批：角色与场景未确认，不能直接生成整集关键帧。
+
+`camera` 目前是字符串。短期可以保留兼容读取，长期应拆为 `position / height / angle / lens / focus / movement / lighting`，并在每个视频 Tool 上声明哪些字段能真正执行。不能执行的字段要在 QC 中显示 warning，不能静默丢失。
+
+### 13.4 生成执行：草稿、正式版和本地/外部双路径
+
+本地小视频和外部短剧不应只用一个“视频生成”按钮。它们需要同一套 Job/Artifact 契约、不同的生产 Profile：
+
+| Profile | 适用 | 默认策略 |
+| --- | --- | --- |
+| `local_short` | 预览、短广告、低成本试拍 | 本地 GPU、低分辨率、快速迭代、可接受内嵌音频 |
+| `external_drama` | 正式短剧片段 | 外部视频 API、角色/场景参考图、独立 TTS、严格交付规格 |
+| `hybrid` | 本地预演后外部精制 | 本地先验证构图与动作，锁定版本后只把选定镜头送外部 |
+
+每个 Profile 都要保存 Tool、Provider、Device、模型、模板、参数、预算和输入 Artifact 快照。当前模型选择仍有全局配置和项目页面两套入口，无法证明一条镜头到底使用了哪套生产策略。
+
+### 13.5 声音生产
+
+声音要与画面平行建链：
+
+```text
+台词/旁白文本 → VoiceProfile → TTS Job → AudioArtifact
+镜头 audio cue → 环境声/音效 Job → AudioArtifact
+情绪/节奏规划 → BGM Cue → MusicArtifact
+视频片段 + AudioCue 时间轴 → 对齐/混音 Job → AudioTrack
+AudioTrack + 画面 + 字幕 → Deliverable
+```
+
+需要新增的最小对象：
+
+```js
+const audioCue = {
+  id: "cue_sh12_dialogue_01",
+  shotId: "sh12",
+  type: "dialogue", // dialogue | narration | sfx | ambience | music
+  startSec: 1.2,
+  endSec: 3.8,
+  text: "你终于来了。",
+  characterId: "c1",
+  voiceProfileId: "vp_c1",
+  artifactId: "art_audio_001",
+  status: "approved",
+};
+```
+
+系统必须检查：对白时长与镜头时长、角色与 VoiceProfile、口型参考音频、字幕文本、音频采样率、峰值/响度、对白和 BGM 的压混关系。`delivery.js` 当前的 `amix` 只能作为最后一步执行器，不能代替这些生产对象。
+
+### 13.6 编辑与视觉完成
+
+生成片段不是成片。还缺少一个真正的项目时间线：
+
+- 代理视频和正式视频的替换关系。
+- 镜头入点、出点、速度、转场和版本化剪辑。
+- 粗剪、精剪、锁画三个阶段。
+- 画面裁切、画幅适配、色彩统一、片头片尾和安全区。
+- 音频轨与视频轨的锁定关系。
+- 可以只替换一个镜头而不破坏已确认剪辑版本。
+
+当前 assembly 清单能完成拼接，但还不能承担剪辑工程；应增加 `TimelineRevision`，让交付物引用明确的镜头顺序、时间范围、转场、音轨和字幕版本。
+
+### 13.7 质量检查与人工确认
+
+需要把质量检查拆成两类，且都要进入项目记录：
+
+| 类型 | 检查内容 | 失败后的行为 |
+| --- | --- | --- |
+| 内容/连续性 | 角色身份、服装、道具、场景、轴线、视线、动作承接、台词、机位和风格锚点 | 标记具体镜头或 Cue，允许人工确认/退回 |
+| 技术/交付 | 文件可读、分辨率、帧率、时长、黑帧、静帧、无声、响度、字幕安全区、编码、封面和文件命名 | 阻止发布，保留日志和可重跑 QC Job |
+
+QC 不应只在最终导出时执行。每个阶段都应有自己的门禁结果，并记录检查器版本、输入 revision、豁免人和时间。
+
+### 13.8 本地化、发行和归档
+
+面向海外发行时，成片之后还缺：
+
+- 字幕翻译、术语表、时间轴重排、双人校对。
+- 多语言 TTS/配音和 M&E（无对白音乐音效）版本。
+- 平台规格预设、封面、标题、简介、标签和内容分级信息。
+- 音乐、素材、模型和外部 API 的来源/授权记录。
+- 可离线恢复包：Project JSON、源版本、Workflow、Prompt、Artifact 清单、Timeline、字幕、音轨和 QC 报告。
+
+发布包不是复制几个 mp4 文件；它必须能够回答“这个版本由哪一版脚本、哪一版角色设定、哪一套模型和哪一次音频混音产生”。
+
+### 13.9 运营与故障恢复
+
+平台还缺少制片运营层：外部 API 预算、局域网设备健康、任务优先级、预计等待、失败分类、重试成本、磁盘空间、备份、审计日志和密钥隔离。特别是外部短剧生产，不能把 API 额度消耗隐藏在一次“重新生成”按钮后面。
+
+最低运行记录应包含：
+
+```js
+const provenance = {
+  projectId,
+  workflowRunId,
+  inputRevisions: { script: "rev_12", design: "rev_8", audio: "rev_3" },
+  toolSnapshot: { toolId: "video.external.v1", providerId: "provider_a", model: "model_x" },
+  deviceId: null,
+  costEstimate: { localGpuSec: 0, externalCredits: 2.4 },
+  startedAt: "2026-10-03T12:00:00.000Z",
+};
+```
+
+这份全链路审计把后续重点从“继续增加更多生成模板”调整为“先补生产事实、审批、声音、编辑、QC 和发布闭环”。模板数量只有在这些环节能追踪、能回退、能验收后才会转化为稳定产能。
