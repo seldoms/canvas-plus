@@ -14,6 +14,7 @@ import { WorkspaceGatePanel } from "./workspace-gate-panel";
 import { WorkspaceInputPanel } from "./workspace-input-panel";
 import { WorkspaceResources } from "./workspace-resources";
 import { WorkspaceRunPanel } from "./workspace-run-panel";
+import { ProcessTimeline } from "./process-timeline";
 
 /**
  * 工作区外壳：项目内工作区导航 + 加载/错误态 + 「当前输入 / 待确认 / 关联资源」三块标准面板。
@@ -137,6 +138,14 @@ export function WorkspaceLayout({
                                 notice={run.notice}
                                 onRun={() => void run.start()}
                                 onCancel={() => void run.cancel()}
+                            />
+                            <ProcessTimeline
+                                projectId={projectId}
+                                runIds={context.runIds}
+                                assetRefs={context.project.assetRefs ?? []}
+                                gates={gates}
+                                gatesLoading={gatesLoading}
+                                stageStatus={stageStatus}
                             />
                             <WorkspaceResources context={context} />
                             {children}
