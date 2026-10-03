@@ -21,6 +21,11 @@ const DEFAULTS = {
         probeTimeoutMs: 8000,
         defaultModel: "",
         fallbacks: [],
+        // 本地 Ollama 原生 /api/chat 的上下文窗口。Modelfile 默认只有 8192，
+        // 关键帧/剧本阶段提示词一超就被硬截断成残缺 JSON；实测 16384/32768/65536/131072 均不 OOM，
+        // 取 32768 与本项目「单块 16000 字 + 模板 + 输出」的 32k 设计假设对齐，且占用已 GPU 驻留、留有余量。
+        // 仅对本地 Ollama 生效；外部 OpenAI 兼容渠道不受影响。
+        numCtx: 32768,
     },
     comfy: {
         baseUrl: "http://127.0.0.1:8188",

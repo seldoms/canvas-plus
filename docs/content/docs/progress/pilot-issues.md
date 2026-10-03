@@ -24,7 +24,7 @@
 | 5 | 接口 | `GET /progress` 只报"当前/最后一个阶段"，无全阶段汇总，前端要额外拉 `/runs/:id` | 响应原文 `{"progress":{"stage":"script","phase":"done",...},"inflight":false}` | 改进 | 后端 | 待讨论 |
 | 6 | 接口 | 更新项目必须用 `PATCH`，但无 API 文档/发现入口，调用方只能读源码猜（我第一把用 POST 得到 404） | `POST /api/projects/:id` → 404；改 `PATCH` → 200（已实测） | 改进 | 后端 | 待讨论 |
 | 7 | 03 资产 | **阻断**：LLM 请求打到已停用的 `127.0.0.1:1234`（LM Studio）返回 400，阶段直接 error、产物 null | `stages.design.error` 原文：`LLM 请求失败：http://127.0.0.1:1234/v1/chat/completions 返回 400 No models loaded`；`config.json` 的 `llm.fallbacks=["http://127.0.0.1:1234","http://127.0.0.1:8080"]` 两个都是死服务 | 阻断 | 后端/配置 | 已修复待验证 |
-| 8 | 03 资产 | **阻断**：LLM 响应头超时 `UND_ERR_HEADERS_TIMEOUT`。根因不是"LLM 慢"，而是 `llm.defaultModel=qwen2.5:latest` **与 139 显存常驻的 `qwen3.8:27b` 反复互相挤占**（16G 显存装不下两个），每次调用先卸载再加载 | `stages.design.error` 原文；实测对照：兼容层调常驻模型 **4.4s**、原生 **1.9s**（均快）→ 排除 API 层慢 | 阻断 | 后端/配置 | 已修复待验证 |
+| 8 | 03 资产 | **阻断**：LLM 响应头超时 `UND_ERR_HEADERS_TIMEOUT`。**根因是「非流式 + 生成超过 5 分钟」**：`chat()` 硬编码 `stream:false`，ollama 必须整段生成完才发响应头，而 undici 默认 `headersTimeout=300s` 先于 `timeoutMs(600s)` 触发；换用已常驻的 `qwen3.8:27b` 后**仍然复现**（证明与模型切换无关，切换只是放大因素） | ① `stages.design.error` 原文；② 实测 `n_gen=2774` 仍在生成、14.45 t/s → 单次 > 5 分钟；③ 换成常驻模型仍复现；④ `llm.js:198` 写死 `stream:false`、全仓无 undici 配置 | 阻断 | 后端 | 已修复待验证 |
 | 9 | 03 资产 | 同一模型下 OpenAI 兼容层比 ollama 原生 API 慢约 **2.3 倍**（4.4s vs 1.9s）；阶段技能要求的 `think:false` 兼容层也不认 | 本轮实测数据（见 #8 证据） | 改进 | 后端 | 待讨论 |
 | 10 | 05 片段/成片 | `stage.status=done` 与 `stage.output.assembly.status=queued` 语义冲突：片段都生成完了、阶段却显示 done，但成片根本没合成（无 url）。前端不得不自己加"done 且有 url 才算成片"的守卫 | 前端线在 `run-muprxois-wvmqq` 上实测发现；`pipeline.js` 的 `executeAssemble` 回写位置 | 一般 | 后端/契约 | 待讨论 |
 ### 本轮会诊结论
@@ -42,7 +42,9 @@
 ### 与第一轮对比
 
 （哪些修好了、哪些还在、新暴露了什么）
-
+| 11 | 03/04 文本阶段 | **提示词与输出持续膨胀**：design 需生成 2774+ tokens（提示词 3343 字）；**keyframe 阶段的提示词已达 7987 字**，纯文本准备就耗数分钟，且每个文本阶段串行等待。根因是各阶段把完整上游产物全量拼进提示词，没有裁剪/摘要 | ① ollama 日志 `n_gen=2774, tg=14.45 t/s`；② keyframe 的 `/progress` `label: "模型生成中（提示词 7987 字）"`；③ design 实测 405 秒完成 | 一般 | 技能与提示词 | 待讨论 |
+| 12 | 后端 | `chat()` 的长生成超时已修（`node:http` 替代 fetch，177 项测试全绿），但**前端代理 `forwardToLlm` 仍用 fetch**，同一 headersTimeout 隐患未堵 | 修复线回报：`llm.js:148` 仍是 `await fetch(...)` | 改进 | 后端 | 待讨论 |
+| 13 | 后端 | LLM 走 OpenAI 兼容层而非 ollama 原生 `/api/chat`：慢约 2.3 倍，且兼容层不认 `think:false`（无法关思考） | 本轮实测 4.4s vs 1.9s；memory 记录的既有结论 | 改进 | 后端 | 待讨论 |
 ### 本轮会诊结论
 
 （同上）
