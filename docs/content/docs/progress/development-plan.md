@@ -532,6 +532,24 @@ ReviewNote { id, scope: project|episode|scene|shot, targetId?, stage,
 > **复核基线**：本轮提示词策略复核在允许回环监听的受控环境执行 `cd canvas-server && node --test test/*.test.mjs` → **667 tests / 667 pass / fail 0 / 4.31s**。此前 206/206 是旧快照，不再作为当前基线。
 > 问题详情与整改单在 `pilot-issues.md`（只追加、不替换）；本章只做**汇总与分级**。
 
+> ⚠️⚠️ **本节是 2026-10-03 傍晚的快照，下列结论已被后续代码超越。**
+> 2026-10-04 由小代**读代码 + 打接口 + 跑测试**逐条复核，权威结论见
+> `pilot-issues.md` 的「2026-10-04 第四轮 · 独立验收总账」与 `platform-flow.md` §8。**引用本节前先看这张修正表：**
+>
+> | §11 原文（旧） | 2026-10-04 复核后的实况 |
+> |---|---|
+> | 「**D1 时长档位**未落（grep 0 处）」 | **已实现**：`src/durations.js` 全套（含 `/api/durations`），骨架校验已接进 storyboard 阶段 |
+> | 「**D3 关键帧单镜 ≥4 张**未落（仍 = 2）」 | **默认已是 4**：`config.js` `maxKeyframesPerShot: 4` |
+> | 「关键帧 `start` 没有角色参考图」 | **已注入**：`pipeline.js` 写 `INPUT_IMAGE` + `REF_IMAGE_1..N`，并登记为 AssetRef 供锁定 |
+> | 「服化道登记 `artifactIds: []`，没有生成参考图」 | **已生成并绑定**：`attachDesignReferences` / `bindDesignReferenceArtifacts`（仅无 prompt 的绑定留空占位） |
+> | 「多 run 时前端只取 `runIds[0]`，第二个不可见」 | **已有 run 选择器**：`use-project-workspace.ts` + `workspace.runSelector` |
+> | 「`pipeline.js` **1456 行**全能编排器」 | 实际 **2947 行** |
+> | 「阶段 ID 冻结 `plan/script/storyboard/design/keyframe/assembly/post`」 | 运行时注册表只有 **5 个 run 阶段**（`skills/registry.json`）；`plan` 是项目级阶段 0、**`post` 不存在** |
+> | 「测试基线 **667/667**」 | 现为 **716/716**（2026-10-04，多轮修复后） |
+> | 「帧数口径 `24×秒+3` → 5s=123 / 15s=363」 | **此口径是错的**。权威 = 官方工作流自述的 **`17k+5` 网格（向上吸附，24fps）** → **5s=124 / 10s=243 / 15s=362**；`durations.js` 与 `pipeline.js` 已统一（提交 `72ccc88`） |
+>
+> 其余历史结论（含 §11.3 那句「证据效力只覆盖旧代码版本」的自我提醒）**保持原样**，作为演变记录，不删改。
+
 ### 11.1 做到什么程度 —— 对着 §8 工作包逐项对账
 
 图例：✅ 验收达成 ｜ 🟡 主体可用但有明确缺口 ｜ ⬜ 未开始
