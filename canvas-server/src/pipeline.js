@@ -10,6 +10,8 @@ import { durationsForTemplate, durationMetaForTemplate, isDurationAllowed, skele
 import { artifactUrl, ensureDir, safeJoin } from "./files.js";
 import { listTemplates } from "./providers/comfy.js";
 import { buildShotBinding, missingRefsReport, resolveSelectedArtifacts, stableSeed } from "./reference-lock.js";
+// 提示词编译器：按所选模型把「模型无关的内容事实」编译成该模型要的提示词（图片/视频一视同仁）。
+import { compilePromptForTemplate } from "./prompt-compiler.js";
 import { normalizeShotEpisodeIds, RUN_SHOT_ID_FIELD } from "./production-contracts.js";
 import { loadRegistry, readSkill } from "./skills.js";
 import { listReferenceCapableTemplates, resolveToolForShot, scanTemplateDir } from "./tool-adapter.js";
@@ -2054,8 +2056,41 @@ ${JSON.stringify(partials, null, 2)}
         const resolved = resolveSelectedArtifacts({ shotBinding, assetRefs });
         const report = missingRefsReport({ shotBinding, assetRefs });
         const needCount = shotBinding.characterIds.length + (shotBinding.locationId ? 1 : 0) + shotBinding.propIds.length;
-        const urls = [...resolved.character, ...resolved.scene, ...resolved.prop].map(referenceUrlOf).filter(Boolean);
-        return { shotBinding, report, needCount, urls };
+        // 参考图「注入顺序」事实源：角色在前、场景/道具在后，附上角色/场景名（供编译器写素材说明，编号不写死在内容层）。
+        const nameById = new Map();
+        for (const character of Array.isArray(design.characters) ? design.characters : []) nameById.set(`character::${String(character?.id ?? "")}`, String(character?.name ?? ""));
+        for (const location of Array.isArray(design.locations) ? design.locations : []) nameById.set(`scene::${String(location?.id ?? "")}`, String(location?.name ?? ""));
+        for (const prop of Array.isArray(design.props) ? design.props : []) nameById.set(`prop::${String(prop?.id ?? "")}`, String(prop?.name ?? ""));
+        const infos = [];
+        for (const [role, list] of [
+            ["character", resolved.character],
+            ["scene", resolved.scene],
+            ["prop", resolved.prop],
+        ]) {
+            for (const entry of list) {
+                const url = referenceUrlOf(entry);
+                if (!url) continue;
+                infos.push({ url, role, bindingId: entry.bindingId, name: nameById.get(`${role}::${entry.bindingId}`) || "" });
+            }
+        }
+        const urls = infos.map((entry) => entry.url);
+        return { shotBinding, report, needCount, urls, infos };
+    }
+
+    /** 取本镜的场景对象（分镜既有 scenes + 剧本回落），供编译器写「地点」。 */
+    function sceneForShot(run, shot) {
+        const id = String(shot?.sceneId ?? "").trim();
+        if (!id) return {};
+        const storyboard = run.stages?.storyboard?.output && typeof run.stages.storyboard.output === "object" ? run.stages.storyboard.output : {};
+        const scenes = sceneContextForBinding(run, storyboard);
+        return scenes.find((scene) => String(scene?.id ?? "") === id) || { id };
+    }
+
+    /** 由 shotBinding.characterIds 取本镜绑定的角色对象（design.characters 是事实源），供编译器写主体。 */
+    function charactersForShot(run, shotBinding) {
+        const design = run.stages?.design?.output && typeof run.stages.design.output === "object" ? run.stages.design.output : {};
+        const byId = new Map((Array.isArray(design.characters) ? design.characters : []).map((character) => [String(character?.id ?? ""), character]));
+        return (Array.isArray(shotBinding?.characterIds) ? shotBinding.characterIds : []).map((id) => byId.get(String(id))).filter(Boolean);
     }
 
     /** 优先参考图模板：显式 configured 优先，否则含 edit 的参考图模板，最后字典序第一个。 */
@@ -2132,12 +2167,13 @@ ${JSON.stringify(partials, null, 2)}
                 WIDTH: imageDims ? imageDims.WIDTH : Number(pipelineConfig.imageWidth) || 768,
                 HEIGHT: imageDims ? imageDims.HEIGHT : Number(pipelineConfig.imageHeight) || 1344,
                 BATCH: Number(pipelineConfig.imageBatch) || 1,
-                PROMPT: withPromptHead(style, promptBody),
                 ...(item.role === "end" ? { INPUT_IMAGE: start?.artifactUrl } : {}),
                 ...extraParams,
             };
             // 参考图 URL 角色在前、场景/道具在后；最多 REF_IMAGE_1..9（generate.js ASSET_TOKENS 上限）。
             let refUrls = blocked ? [] : refContext.urls.slice(0, 9);
+            let refInfos = blocked ? [] : refContext.infos.slice(0, 9);
+            let inputInfo = null;
             // start 帧语义是「生成该镜第一帧」，没有前一帧可作底图；而 img_qwen21_edit 一类模板的
             // INPUT_IMAGE 是必填槽（generate.js 只有 REF_IMAGE_* 是 optional）。若模板要求底图，就从
             // 本镜解析出的参考图里取**第一张**充当 INPUT_IMAGE（让模型真正「看见」角色，锁身份），
@@ -2146,7 +2182,9 @@ ${JSON.stringify(partials, null, 2)}
             if (!blocked && item.role !== "end" && params.INPUT_IMAGE === undefined && templateRequiresInputImage(decision.template)) {
                 if (refUrls.length) {
                     params.INPUT_IMAGE = refUrls[0];
+                    inputInfo = refInfos[0] || null;
                     refUrls = refUrls.slice(1);
+                    refInfos = refInfos.slice(1);
                 } else {
                     blocked = {
                         reason: `模板 ${decision.template} 要求必填底图 INPUT_IMAGE，但镜头没有可回退的角色/场景参考图`,
@@ -2154,8 +2192,34 @@ ${JSON.stringify(partials, null, 2)}
                     };
                 }
             }
+            // 「本次实际注入的槽位」事实源：严格按 params 的注入顺序组装，交给编译器生成素材编号（不写死在内容层）。
+            const slotImages = [];
+            if (params.INPUT_IMAGE !== undefined) {
+                slotImages.push({
+                    url: params.INPUT_IMAGE,
+                    kind: item.role === "end" ? "first_frame" : "input_image",
+                    role: inputInfo?.role,
+                    name: inputInfo?.name,
+                });
+            }
             refUrls.forEach((url, index) => {
                 params[`REF_IMAGE_${index + 1}`] = url;
+                slotImages.push({ url, kind: "reference", role: refInfos[index]?.role, name: refInfos[index]?.name });
+            });
+            // 「发起生成请求」那一刻按所选模型编译提示词：内容层给模型无关事实，编译器按模型标准产出 PROMPT。
+            const keyframeShot = shots.find((entry) => String(entry?.id) === String(item?.shotId)) || {};
+            params.PROMPT = compilePromptForTemplate({
+                template: decision.template,
+                family: "image",
+                shot: keyframeShot,
+                scene: sceneForShot(run, keyframeShot),
+                characters: charactersForShot(run, refContext.shotBinding),
+                style,
+                slots: { images: slotImages },
+                overlays: item.textOverlays,
+                legacyBody: promptBody,
+                basePrompt: item.prompt,
+                item,
             });
             // 稳定 seed + 按 run+条目隔离的 OUTPUT_PREFIX（同项目/同镜/同资产 revision → 同 seed，换台设备也不换脸）。
             if (projectId) {
@@ -2177,6 +2241,25 @@ ${JSON.stringify(partials, null, 2)}
         if (!item.keyframeId) item.keyframeId = start?.id ?? null;
         const shot = shots.find((entry) => entry.id === item.shotId);
         const videoDims = dimensionsForRatio(style.ratio, Math.min(Number(pipelineConfig.videoWidth) || 768, Number(pipelineConfig.videoHeight) || 1344));
+        // 片段侧同样在「发起生成请求」那一刻按所选模型编译提示词：把分镜的模型无关事实（动作/机位/台词/文字）
+        // 交给编译器，而不是把「英文静态生图描述 + 中文动作流水句」硬拼后甩给模型。
+        // 实际注入的槽位以 params 为准（当前片段侧只有起始帧 INPUT_IMAGE）；素材编号由编译器按注入顺序生成。
+        const videoShotBinding = shotReferenceContext(run, item, shots).shotBinding;
+        const slotImages = start?.artifactUrl ? [{ url: start.artifactUrl, kind: "first_frame" }] : [];
+        const legacyBody = [shot?.prompt, shot?.action].filter(Boolean).join(", ");
+        const prompt = compilePromptForTemplate({
+            template: pipelineConfig.videoTemplate,
+            family: "video",
+            shot: shot || {},
+            scene: sceneForShot(run, shot),
+            characters: charactersForShot(run, videoShotBinding),
+            style,
+            slots: { images: slotImages },
+            overlays: shot?.textOverlays,
+            legacyBody,
+            durationSec: item.durationSec,
+            item,
+        });
         return {
             kind: "video",
             template: pipelineConfig.videoTemplate,
@@ -2185,7 +2268,7 @@ ${JSON.stringify(partials, null, 2)}
             params: {
                 WIDTH: videoDims ? videoDims.WIDTH : Number(pipelineConfig.videoWidth) || 768,
                 HEIGHT: videoDims ? videoDims.HEIGHT : Number(pipelineConfig.videoHeight) || 1344,
-                PROMPT: withPromptHead(style, [shot?.prompt, shot?.action].filter(Boolean).join(", ")),
+                PROMPT: prompt,
                 LENGTH: frameCountFor(item.durationSec, Number(pipelineConfig.videoFps) || 24),
                 ...(start?.artifactUrl ? { INPUT_IMAGE: start.artifactUrl } : {}),
                 ...extraParams,
