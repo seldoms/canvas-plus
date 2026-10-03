@@ -1,11 +1,12 @@
 import { javascript } from "@codemirror/lang-javascript";
 import CodeMirror from "@uiw/react-codemirror";
 import { Button, Modal } from "antd";
-import { Copy } from "lucide-react";
+import { Copy, RefreshCw } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
 import { useCopyText } from "@/hooks/use-copy-text";
+import { buildGatewayTemplateScript, fetchGatewayProviders, isBuiltinGatewayTemplate, type GatewayTemplateInfo } from "@/services/api/gateway";
 import { getPluginAuthoringPrompt, getPluginReturn, getPluginTemplates, getPluginVariables } from "@/services/api/model-plugin";
 import type { ModelCapability } from "@/stores/use-config-store";
 
@@ -35,14 +36,43 @@ export function ModelScriptEditor({ open, capability, modelName, value, onSave, 
     const { t } = useTranslation();
     const copyText = useCopyText();
     const [draft, setDraft] = useState(value);
+    const [gatewayTemplates, setGatewayTemplates] = useState<GatewayTemplateInfo[] | null>(null);
+    const [gatewayLoading, setGatewayLoading] = useState(false);
+    const [gatewayError, setGatewayError] = useState("");
     useEffect(() => {
         if (open) setDraft(value);
     }, [open, value]);
+    // 每次打开或切换能力时清空网关模板结果，避免展示上一个能力/上次会话的残留。
+    useEffect(() => {
+        setGatewayTemplates(null);
+        setGatewayError("");
+        setGatewayLoading(false);
+    }, [open, capability]);
 
     const variables = getPluginVariables().filter((variable) => !variable.capabilities || variable.capabilities.includes(capability));
     const templates = getPluginTemplates()[capability];
     const capabilityLabel = t(`config.channelEditor.capabilities.${capability}`);
     const hasScript = Boolean(draft.trim());
+    const gatewayGroup = capability === "image" || capability === "video";
+
+    // 从网关 /api/providers 拉取当前能力匹配、且未在精选里出现过的模板；失败时明确提示而不静默留空。
+    const loadGatewayTemplates = async () => {
+        setGatewayLoading(true);
+        setGatewayError("");
+        try {
+            const providers = await fetchGatewayProviders();
+            const list = (providers.comfy?.templates || []).filter((template) => {
+                const mapped = template.family === "video" ? "video" : "image";
+                return mapped === capability && !isBuiltinGatewayTemplate(template.name, mapped);
+            });
+            setGatewayTemplates(list);
+        } catch (error) {
+            setGatewayTemplates(null);
+            setGatewayError(error instanceof Error ? error.message : String(error));
+        } finally {
+            setGatewayLoading(false);
+        }
+    };
 
     return (
         <Modal
@@ -152,19 +182,50 @@ export function ModelScriptEditor({ open, capability, modelName, value, onSave, 
                         </div>
                     </div>
                 </div>
-                <footer className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t border-stone-200 px-6 py-3 dark:border-stone-800">
-                    <div className="flex flex-wrap items-center gap-2">
-                        <span className="text-xs text-stone-400">{t("config.scriptEditor.startFromTemplate")}</span>
-                        {templates.map((template) => (
-                            <Button key={template.label} size="small" onClick={() => setDraft(template.script)}>
-                                {t("config.scriptEditor.insertTemplate", { name: template.label })}
-                            </Button>
-                        ))}
-                        <Button size="small" danger onClick={() => setDraft("")}>
-                            {t("config.scriptEditor.restoreDefault")}
-                        </Button>
+                <footer className="flex shrink-0 items-start justify-between gap-3 border-t border-stone-200 px-6 py-3 dark:border-stone-800">
+                    <div className="flex min-w-0 flex-1 flex-col gap-2">
+                        <div className="flex min-w-0 items-center gap-2">
+                            <span className="shrink-0 whitespace-nowrap text-xs text-stone-400">{t("config.scriptEditor.startFromTemplate")}</span>
+                            <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto">
+                                {templates.map((template) => (
+                                    <Button key={template.label} size="small" className="shrink-0" onClick={() => setDraft(template.script)}>
+                                        {t("config.scriptEditor.insertTemplate", { name: template.label })}
+                                    </Button>
+                                ))}
+                                <Button size="small" danger className="shrink-0" onClick={() => setDraft("")}>
+                                    {t("config.scriptEditor.restoreDefault")}
+                                </Button>
+                            </div>
+                        </div>
+                        {gatewayGroup ? (
+                            <div className="flex min-w-0 items-center gap-2">
+                                <span className="shrink-0 whitespace-nowrap text-xs text-stone-400">{t("config.scriptEditor.gatewayTemplates")}</span>
+                                <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto">
+                                    {gatewayLoading ? (
+                                        <span className="shrink-0 text-xs text-stone-400">{t("config.scriptEditor.gatewayLoading")}</span>
+                                    ) : gatewayError ? (
+                                        <span className="min-w-0 truncate text-xs text-red-500" title={gatewayError}>
+                                            {t("config.scriptEditor.gatewayError", { message: gatewayError })}
+                                        </span>
+                                    ) : gatewayTemplates === null ? (
+                                        <span className="shrink-0 text-xs text-stone-400">{t("config.scriptEditor.gatewayIdle")}</span>
+                                    ) : gatewayTemplates.length === 0 ? (
+                                        <span className="shrink-0 text-xs text-stone-400">{t("config.scriptEditor.gatewayAllIncluded")}</span>
+                                    ) : (
+                                        gatewayTemplates.map((template) => (
+                                            <Button key={template.name} size="small" className="shrink-0" onClick={() => setDraft(buildGatewayTemplateScript(template))}>
+                                                {t("config.scriptEditor.insertTemplate", { name: template.title || template.name })}
+                                            </Button>
+                                        ))
+                                    )}
+                                </div>
+                                <Button size="small" className="shrink-0" icon={<RefreshCw className="size-3.5" />} loading={gatewayLoading} onClick={() => void loadGatewayTemplates()}>
+                                    {t("config.scriptEditor.gatewayFetch")}
+                                </Button>
+                            </div>
+                        ) : null}
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex shrink-0 items-center gap-2">
                         <Button onClick={onClose}>{t("common.cancel")}</Button>
                         <Button
                             type="primary"

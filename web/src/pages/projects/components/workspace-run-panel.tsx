@@ -4,6 +4,8 @@ import { useTranslation } from "react-i18next";
 
 import type { GatewayStageProgress } from "@/services/api/gateway";
 
+import { StageSteps } from "@/pages/pipeline/components/stage-steps";
+
 import { canRunStage, type WorkspaceGate } from "../workspace-gates";
 import type { WorkspaceDef } from "../workspaces";
 
@@ -49,6 +51,8 @@ export function WorkspaceRunPanel({
     const ownProgress = progress && progress.stage === workspace.stage ? progress : null;
     const total = Number(ownProgress?.total) || 0;
     const done = Number(ownProgress?.done) || 0;
+    // 01 剧本多步：步骤条来自轻量 progress.steps（项目工作区不拉全量 run，故只展示步骤状态/细节）。
+    const steps = ownProgress && Array.isArray(ownProgress.steps) ? ownProgress.steps : [];
 
     const blockedReason = () => {
         if (gate.state !== "blocked") return t("projects.workspace.run.gateUnknown");
@@ -84,6 +88,8 @@ export function WorkspaceRunPanel({
                             ) : null}
                         </div>
                     ) : null}
+
+                    {steps.length ? <StageSteps steps={steps} /> : null}
 
                     {notice ? <Alert type="warning" showIcon message={notice} /> : null}
                     {error ? <Alert type="error" showIcon message={t("projects.workspace.run.failed")} description={error} /> : null}

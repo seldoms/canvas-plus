@@ -8,6 +8,7 @@ import { resolveGatewayUrl, type GatewayArtifact, type GatewayStageProgress, typ
 import { isGenerativeStage, isVideoArtifact, orphanArtifacts, stageItems, stageMediaKind, templatesForStage } from "../pipeline-utils";
 import type { PipelineStageView } from "../use-pipeline-run";
 import { CandidateStrip } from "./candidate-strip";
+import { StageSteps, stepsFromRunStage } from "./stage-steps";
 
 const STATUS_CLASS: Record<GatewayStageStatus, string> = {
     pending: "text-stone-500 dark:text-stone-400",
@@ -60,6 +61,10 @@ export function StageCard({ index, view, busy, progress, resumeChunks, disabledR
     const running = view.status === "running";
     // 进度只在属于本阶段时显示：progress.json 是 run 级单文件，别的阶段跑时不该串到这张卡上
     const ownProgress = progress && progress.stage === view.id ? progress : null;
+    // 01 剧本多步：优先用轮询到的 progress.steps（实时状态），阶段跑完后回落到 run 里落盘的 stage.steps。
+    // 两者都没有（旧 run / 其余阶段）则空数组，卡片渲染与从前完全一致。
+    const liveSteps = ownProgress && Array.isArray(ownProgress.steps) ? ownProgress.steps : [];
+    const stepView = liveSteps.length ? liveSteps : stepsFromRunStage(view.stage?.steps);
     // 生成型阶段（关键帧 / 片段合成）按条目铺候选缩略图；扁平产物行只保留候选条之外的东西（如成片）
     const generative = isGenerativeStage(view.id);
     const items = generative ? stageItems(view.stage, view.id) : [];
@@ -110,6 +115,7 @@ export function StageCard({ index, view, busy, progress, resumeChunks, disabledR
                 </div>
             </div>
             {running && ownProgress ? <StageProgress progress={ownProgress} /> : null}
+            {stepView.length ? <StageSteps steps={stepView} outputs={view.stage?.steps} /> : null}
             {disabledReason ? <div className="mt-1 text-xs text-stone-500 dark:text-stone-400">{disabledReason}</div> : null}
             {view.stage?.error ? <div className="mt-1 text-xs text-red-600 dark:text-red-400">{view.stage.error}</div> : null}
             {expanded ? <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-words text-xs leading-relaxed text-stone-600 dark:text-stone-300">{output === undefined ? t("pipeline.noOutput") : JSON.stringify(output, null, 2)}</pre> : null}

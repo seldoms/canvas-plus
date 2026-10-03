@@ -622,6 +622,132 @@ async function generateImage({ prompt, params, baseUrl, http, poll }) {
 
 return await generateImage({ prompt, params, baseUrl, http, poll });`,
             },
+            {
+                label: i18n.t("modelPlugin.templates.qwen21T2i"),
+                script: `/**
+ * 本地网关生图：ComfyUI 模板 img_qwen21_t2i（Qwen-Image 2.1 文生图）。
+ * 使用前先在「配置 → 本地网关」填好网关地址，并把本渠道 baseUrl 指向同一网关（例：http://127.0.0.1:8788）。
+ * 同一渠道可同时承担文本、生图、生视频：文本走 /v1/*，生图生视频走 /api/*。
+ * @param {string} prompt
+ * @param {object} params
+ * @param {string} params.size - "1:1"、"9:16"、"1024x1024"、"auto"
+ * @param {number} params.count - 生成张数
+ * @param {number} [params.seed] - 随机种子，不传则随机
+ * @param {string} baseUrl - 渠道地址；网关模式下就是本地网关地址
+ * @param {function} http - 便捷请求；绝对 URL 原样使用，不会拼 /v1
+ * @param {function} poll - poll(request, extract, { intervalMs, timeoutMs })
+ * @returns {Promise<string[]>} 图片 URL 数组
+ */
+function resolveSize(size, fallback) {
+  const preset = { "1:1": [1024, 1024], "16:9": [1344, 768], "9:16": [768, 1344], "3:2": [1216, 832], "2:3": [832, 1216] };
+  if (preset[size]) return preset[size];
+  const matched = String(size || "").match(/^(\\d+)\\s*[x×]\\s*(\\d+)$/i);
+  return matched ? [Number(matched[1]), Number(matched[2])] : fallback;
+}
+
+function absoluteUrl(gateway, url) {
+  return /^https?:/i.test(url) ? url : gateway + (url.charAt(0) === "/" ? url : "/" + url);
+}
+
+async function waitForJobUrl(gateway, jobId, http, poll, options) {
+  const job = await poll(
+    () => http.get(gateway + "/api/jobs/" + jobId),
+    (value) => {
+      const task = value && value.job;
+      if (!task) return null;
+      if (task.status === "error" || task.status === "canceled") throw new Error("本地网关任务失败：" + (task.error || task.status));
+      return task.status === "done" ? task : null;
+    },
+    options,
+  );
+  const output = (job.outputs || [])[0];
+  if (!output || !output.url) throw new Error("本地网关任务已完成，但没有返回产物地址");
+  return absoluteUrl(gateway, output.url);
+}
+
+async function generateImage({ prompt, params, baseUrl, http, poll }) {
+  const gateway = baseUrl.replace(/\\/+$/, "").replace(/\\/v1$/i, "");
+  const [width, height] = resolveSize(params.size, [1024, 1024]);
+  const total = Math.max(1, Math.min(8, Number(params.count) || 1));
+  const baseSeed = params.seed === undefined || params.seed === null || params.seed === "" ? Math.floor(Math.random() * 2147483647) : Number(params.seed);
+  const urls = [];
+  for (let index = 0; index < total; index++) {
+    const created = await http.post(gateway + "/api/generate/image", {
+      template: "img_qwen21_t2i",
+      name: "canvas_qwen21_t2i_" + Date.now() + "_" + index,
+      params: { PROMPT: prompt, WIDTH: width, HEIGHT: height, BATCH: 1, SEED: baseSeed + index },
+    });
+    urls.push(await waitForJobUrl(gateway, created.job.id, http, poll, { intervalMs: 2000, timeoutMs: 900000 }));
+  }
+  return urls;
+}
+
+return await generateImage({ prompt, params, baseUrl, http, poll });`,
+            },
+            {
+                label: i18n.t("modelPlugin.templates.qwen21Edit"),
+                script: `/**
+ * 本地网关改图：ComfyUI 模板 img_qwen21_edit（Qwen-Image 2.1 指令改图）。
+ * 使用前先在「配置 → 本地网关」填好网关地址，并把本渠道 baseUrl 指向同一网关（例：http://127.0.0.1:8788）。
+ * 参考图先 multipart 上传到 /api/uploads，再把返回的 comfyName 作为 INPUT_IMAGE / REF_IMAGE_N 提交。
+ * images[0] 作主图 INPUT_IMAGE，images[1..9] 依次作 REF_IMAGE_1..REF_IMAGE_9（多图参考槽，可选）。
+ * @param {string} prompt - 编辑指令
+ * @param {string[]} images - 参考图 dataURL；第一张是主图，其余为多图参考
+ * @param {object} params
+ * @param {number} [params.seed] - 随机种子，不传则随机
+ * @param {string} baseUrl - 渠道地址；网关模式下就是本地网关地址
+ * @param {function} http - 便捷请求；绝对 URL 原样使用，不会拼 /v1
+ * @param {function} poll - poll(request, extract, { intervalMs, timeoutMs })
+ * @returns {Promise<string[]>} 图片 URL 数组
+ */
+function absoluteUrl(gateway, url) {
+  return /^https?:/i.test(url) ? url : gateway + (url.charAt(0) === "/" ? url : "/" + url);
+}
+
+async function waitForJobUrl(gateway, jobId, http, poll, options) {
+  const job = await poll(
+    () => http.get(gateway + "/api/jobs/" + jobId),
+    (value) => {
+      const task = value && value.job;
+      if (!task) return null;
+      if (task.status === "error" || task.status === "canceled") throw new Error("本地网关任务失败：" + (task.error || task.status));
+      return task.status === "done" ? task : null;
+    },
+    options,
+  );
+  const output = (job.outputs || [])[0];
+  if (!output || !output.url) throw new Error("本地网关任务已完成，但没有返回产物地址");
+  return absoluteUrl(gateway, output.url);
+}
+
+async function uploadImage(gateway, http, source, filename) {
+  const form = new FormData();
+  form.append("file", await (await fetch(source)).blob(), filename);
+  const uploaded = await http.post(gateway + "/api/uploads", form);
+  return uploaded.comfyName || uploaded.name;
+}
+
+async function editImage({ prompt, images, params, baseUrl, http, poll }) {
+  const gateway = baseUrl.replace(/\\/+$/, "").replace(/\\/v1$/i, "");
+  if (!images || !images.length) throw new Error("Qwen-Image 2.1 指令改图需要一张输入图，请先接入参考图");
+  const baseSeed = params.seed === undefined || params.seed === null || params.seed === "" ? Math.floor(Math.random() * 2147483647) : Number(params.seed);
+  // images[0] -> INPUT_IMAGE；其余按顺序落到 REF_IMAGE_1..9 多图参考槽，槽位可选，不用的由网关摘除。
+  const jobParams = { PROMPT: prompt, SEED: baseSeed };
+  const total = Math.min(images.length, 10);
+  for (let index = 0; index < total; index++) {
+    const token = index === 0 ? "INPUT_IMAGE" : "REF_IMAGE_" + index;
+    jobParams[token] = await uploadImage(gateway, http, images[index], "input_" + index + ".png");
+  }
+  const created = await http.post(gateway + "/api/generate/image", {
+    template: "img_qwen21_edit",
+    name: "canvas_qwen21_edit_" + Date.now(),
+    params: jobParams,
+  });
+  return [await waitForJobUrl(gateway, created.job.id, http, poll, { intervalMs: 2000, timeoutMs: 900000 })];
+}
+
+return await editImage({ prompt, images, params, baseUrl, http, poll });`,
+            },
         ],
         video: [
             {

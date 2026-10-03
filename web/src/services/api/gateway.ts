@@ -79,6 +79,29 @@ export type GatewayStageInfo = { id: string; title: string; skill: string; requi
 
 export type GatewayStageStatus = "pending" | "running" | "partial" | "done" | "error" | "canceled";
 
+/** 01 剧本阶段子步骤的运行状态（progress.steps 视图与 stage.steps 共用）。旧 run 无此字段。 */
+export type GatewayStageStepStatus = "pending" | "running" | "done" | "error";
+
+/** progress.steps 里的子步骤视图：只有状态与细节，不带产物（progress.json 保持几十字节）。 */
+export type GatewayProgressStep = {
+    id: string;
+    title: string;
+    status: GatewayStageStepStatus;
+    detail?: string;
+};
+
+/** stage.steps.<id> 的落盘结构：含中间产物（只在 GET run 详情里出现）。 */
+export type GatewayRunStep = {
+    id: string;
+    title: string;
+    status: GatewayStageStepStatus;
+    detail?: string;
+    output?: unknown;
+    error?: string;
+    startedAt?: string;
+    finishedAt?: string;
+};
+
 export type GatewayRunStage = {
     id: string;
     title: string;
@@ -86,6 +109,8 @@ export type GatewayRunStage = {
     inputs: Record<string, unknown>;
     output: unknown;
     artifacts: GatewayArtifact[];
+    /** 01 剧本阶段的三步子步骤产物与状态；其余阶段与旧 run 无此字段。 */
+    steps?: Record<string, GatewayRunStep>;
     error?: string;
     startedAt?: string;
     finishedAt?: string;
@@ -123,6 +148,8 @@ export type GatewayStageProgress = {
     startedAt?: string;
     finishedAt?: string;
     updatedAt?: string;
+    /** 01 剧本阶段的子步骤状态（analyze→outline→script）；其余阶段与旧 run 无此字段。 */
+    steps?: GatewayProgressStep[];
 };
 
 export type GatewayPipelineRun = {
@@ -335,6 +362,8 @@ const BUILTIN_GATEWAY_SCRIPTS: Record<string, { capability: "image" | "video"; l
     img_zimage_artistic: { capability: "image", labelKey: "zimage" },
     img_flux_artistic: { capability: "image", labelKey: "flux" },
     img_krea2_artistic: { capability: "image", labelKey: "krea2" },
+    img_qwen21_t2i: { capability: "image", labelKey: "qwen21T2i" },
+    img_qwen21_edit: { capability: "image", labelKey: "qwen21Edit" },
     video_h3_i2v: { capability: "video", labelKey: "h3ImageToVideo" },
     video_minimax_h3_t2v: { capability: "video", labelKey: "h3TextToVideo" },
 };
@@ -508,6 +537,11 @@ async function generate({ prompt, images, videos, params, baseUrl, http, poll })
 }
 
 return await generate({ prompt, images, videos, params, baseUrl, http, poll });`;
+}
+
+/** 该网关模板在「精选模板」里是否已有定制脚本；脚本编辑器的网关分组用它去重，避免和精选重复列出。 */
+export function isBuiltinGatewayTemplate(name: string, capability: "image" | "video") {
+    return Boolean(builtinGatewayScript(name, capability));
 }
 
 /* ------------------------------------------------------------------ *

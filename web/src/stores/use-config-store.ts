@@ -13,6 +13,8 @@ export type ChannelModel = {
     name: string;
     capability: ModelCapability;
     script?: string;
+    /** 展示用短名；仅影响 UI 显示，请求与匹配一律仍用 name。 */
+    alias?: string;
 };
 
 export type ModelChannel = {
@@ -307,7 +309,8 @@ export function normalizeChannelModels(models: Array<string | ChannelModel> | un
         seen.add(name);
         const capability = typeof item === "string" ? guessCapability(name) : item.capability || guessCapability(name);
         const script = typeof item === "string" ? undefined : item.script?.trim() || undefined;
-        result.push({ name, capability, script });
+        const alias = typeof item === "string" ? undefined : item.alias?.trim() || undefined;
+        result.push({ name, capability, script, alias });
     }
     return result;
 }
@@ -403,7 +406,31 @@ export function modelOptionName(value: string) {
     return decodeChannelModel(value)?.model || value;
 }
 
+/** 渠道模型的展示名：有别名用别名，否则用原名。仅用于 UI 展示，不参与任何匹配。 */
+export function channelModelDisplayName(model: Pick<ChannelModel, "name" | "alias">) {
+    return model.alias?.trim() || model.name;
+}
+
+/** 配置项值（channelId::name）的展示名，不含渠道前缀；无别名时回退原名。 */
+export function modelOptionDisplayName(config: AiConfig, value: string) {
+    const decoded = decodeChannelModel(value);
+    if (!decoded) return value;
+    const channel = config.channels.find((item) => item.id === decoded.channelId);
+    const model = channel?.models.find((item) => item.name === decoded.model);
+    return model ? channelModelDisplayName(model) : decoded.model;
+}
+
+/** 「展示名（渠道名）」：展示层统一走这里；请求侧仍用 modelOptionName。 */
 export function modelOptionLabel(config: AiConfig, value: string) {
+    const decoded = decodeChannelModel(value);
+    if (!decoded) return value;
+    const channel = config.channels.find((item) => item.id === decoded.channelId);
+    if (!channel) return decoded.model;
+    return `${modelOptionDisplayName(config, value)}（${channel.name}）`;
+}
+
+/** 「原名（渠道名）」：供 title/悬浮提示显示完整模型名，不受别名影响。 */
+export function modelOptionFullLabel(config: AiConfig, value: string) {
     const decoded = decodeChannelModel(value);
     if (!decoded) return value;
     const channel = config.channels.find((item) => item.id === decoded.channelId);

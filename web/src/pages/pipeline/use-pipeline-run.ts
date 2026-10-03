@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import i18n from "@/i18n";
 import {
@@ -87,6 +87,8 @@ export function usePipelineRun() {
     const [gwBase, setGwBase] = useState("");
     /** 当前阶段的细粒度进度（第几块/共几块/预计还需多久），来自轻量 progress.json。 */
     const [progress, setProgress] = useState<GatewayStageProgress | null>(null);
+    /** 01 剧本多步：上次见到的已完成子步骤数。仅在子步骤推进时拉一次完整 run 取中间产物，不轮询大 run。 */
+    const scriptStepsDone = useRef(0);
     const [historyLoading, setHistoryLoading] = useState(false);
     /** 恢复只做一次，之后不再被本地恢复逻辑覆盖当前 run。 */
     const [restored, setRestored] = useState(false);
@@ -112,7 +114,7 @@ export function usePipelineRun() {
             .flatMap((channel) =>
                 channel.models
                     .filter((model) => model.capability === "text")
-                    .map((model) => ({ value: `${channel.name}::${model.name}`, label: `☁️ ${channel.name} / ${model.name}` })),
+                    .map((model) => ({ value: `${channel.name}::${model.name}`, label: `☁️ ${channel.name} / ${model.alias?.trim() || model.name}` })),
             );
         if (remote.length) groups.push({ label: "☁️ 外部 API", options: remote });
         return groups;
@@ -266,6 +268,7 @@ export function usePipelineRun() {
     // 换 run 才清进度；阶段跑完/失败后保留最后一条，卡片要靠 phase:"failed" + done 判断能不能续跑
     useEffect(() => {
         setProgress(null);
+        scriptStepsDone.current = 0;
     }, [runId]);
 
     // 文本阶段（尤其 01 剧本的分块改编）可能跑一个多小时，而后端是 202 后台执行，
@@ -277,9 +280,20 @@ export function usePipelineRun() {
             void fetchPipelineProgress(runId, gwBase || undefined)
                 .then((data) => {
                     if (!alive) return;
-                    setProgress(data.progress);
-                    const phase = data.progress?.phase;
-                    if (phase === "done" || phase === "failed") void refresh();
+                    const latest = data.progress;
+                    setProgress(latest);
+                    const phase = latest?.phase;
+                    // 01 剧本多步：有子步骤新完成时拉一次完整 run，让中间产物（主线/角色/分集）落到卡片上。
+                    const steps = latest && Array.isArray(latest.steps) ? latest.steps : [];
+                    const doneCount = steps.filter((step) => step.status === "done").length;
+                    if (latest?.stage === "script" && steps.length && doneCount > scriptStepsDone.current) {
+                        scriptStepsDone.current = doneCount;
+                        void refresh();
+                    }
+                    if (phase === "done" || phase === "failed") {
+                        scriptStepsDone.current = 0;
+                        void refresh();
+                    }
                 })
                 .catch(() => {
                     /* 网关短暂不可达不该清掉已有进度，下一轮再试 */
