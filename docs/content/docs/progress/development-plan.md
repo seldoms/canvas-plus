@@ -356,6 +356,14 @@ ReviewNote { id, scope: project|episode|scene|shot, targetId?, stage,
 
 保留逐阶段人工审核门禁。一键跑完绕不过人工确认环节，不做。
 
+### D12 旧画布数据丢弃，不做迁移 【用户已定】
+
+项目尚未上线，**现有画布数据只是用户的测试数据，已确认不要**。因此**不做数据迁移、不写兼容层**：不读浏览器 localforage 里的旧 `CanvasProject` / `Asset`，不建一次性导入适配层，也不设 legacy 导入端点；新 Project 一律由 `/projects` 新建，画布引用由用户在新页面重新登记进 `project.json.canvasIds[]`。
+
+- **撤下 P0-a 的两条规则**：`p0a-project-kernel-plan.md` 的 R1（旧画布数据导入方式）与 R11（迁移时 `Asset → AssetRef` 的 `role`/`bindingId` 兜底）随之作废；该方案 §2.8「旧数据一次性导入」删除、§4.3 改写为「不迁移、不兼容」、M5 里程碑改为「新页面直接接管」。
+- **与 §7.3 的关系**：§7.3 末尾「以迁移期适配层收口旧数据」的表述对**旧画布数据**不再适用——新页面不读旧结构，也不需要适配层；旧 localforage 数据原样留在浏览器，不处理也不删。
+- **边界**：不做数据迁移 ≠ 旧页面立刻下线。P0-a 期间 `/canvas`、`/assets` 等旧页面仍可打开使用，只是不再接入 Project；旧页面的移除属 P2。
+
 ### 7.1 用户故事：从小说到可交付短剧
 
 以下用户故事是页面设计和接口验收的主线。用户不应该理解 `runId`、ComfyUI prompt 或某个模板文件的目录结构，
@@ -506,3 +514,5 @@ ReviewNote { id, scope: project|episode|scene|shot, targetId?, stage,
 5. 「一键跑完五阶段」 → **D11**（不做，保留逐阶段人工门禁）
 
 当前无待确认项。
+
+后续追加：**D12 旧画布数据丢弃、不做迁移**（用户已拍板，见 §7）。

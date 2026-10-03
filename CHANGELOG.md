@@ -7,6 +7,14 @@
 + [新增] 生图/生视频改为**候选活扣**：每个条目维护 `candidates[]`，换模型重跑只追加候选、保留全部历史产物，`jobId`/`artifactUrl`/`status` 保留为当前选中候选的派生别名。重跑不再清空上次结果，具备逐镜对比的基础。
 + [新增] 流水线 run 不再「刷新即丢」：前端把 run 历史与当前 run 持久化到 localforage（`infinite-canvas:pipeline_runs_v1`），刷新后自动恢复并接回阶段/job 轮询；新增历史流水线列表（接后端早已存在、前端一直没封的 `GET /api/pipeline/runs`，客户端立即收敛为摘要以免把内嵌整本小说的完整 run 存进内存）、本地重命名、按正文首行自动命名，以及有阶段在跑时关闭页面的提示。
 + [新增] 冻结领域契约（P0-0）：新增 `docs/content/docs/progress/domain-contract.md`、`web/src/types/domain.ts`、`canvas-server/src/contracts.js`，确定 Project/Episode/Scene/Shot/GenerationSlot/Job/Artifact/AssetRef/Workflow/Tool 的字段、稳定 ID 与状态机；画布并发写入、规划参数层级、审核提示粒度、候选上限、是否一键跑完五阶段五项决策登记为 D7–D11。
++ [新增] 新增 Project 服务端内核（P0-a 第一步）：`canvas-server/src/projects.js` 把项目落盘到 `data/projects/<id>/`（`project.json` + `episodes/` + `sources/`），带稳定 `prj_` ULID、临时文件 + rename 原子写与乐观版本校验；网关挂出 `/api/projects` 列表/创建/详情/上下文/归档路由。项目尚未上线，旧画布数据不做迁移、不写兼容层（见 D12）。
++ [新增] 前端新增「我的项目」：主导航首位新增入口；项目列表可新建、打开、归档（可切换显示已归档），项目总览汇总规划参数、集、关联流水线与画布、风险提示；新增六个项目工作区骨架页（规划·剧本 / 分镜 / 资产 / 关键帧 / 视频·后期 / 项目画布），按上游阶段状态显示门禁（未就绪拦截、读不到状态不拦截、不臆造完成度）。
++ [新增] 五个阶段技能接进长期方法论库：01 剧本 / 02 分镜 / 03 服化道 接管 `script-writing-studio`，04 关键帧 接管 `Luster-iwai-aesthetic-prompt`（岩井俊二美学签名，条件叠加、项目风格锚点优先），05 片段合成 接管 `script-writing-studio` 的段落与后期声音方法论；每阶段新增「内容创作红线（硬约束）」，产出契约字段一律不变，新增方法论全部写进只喂模型的「## 提示词模板」一节。逐条对照见 `skills/libraries/` 下两份接线说明。
++ [新增] 超长小说分块改编（01 剧本）的 map / reduce 提示词直接抽取阶段技能的「内容创作红线（硬约束）」注入，不再硬编码重复文案；技能缺该节时退回旧形态。
++ [新增] 新增 CPU 后期成片执行体 `canvas-server/src/delivery.js`：把 assembly 片段按顺序用 ffmpeg 拼成成片（`cut` 走 concat，`fade`/`dissolve`/`slide` 走 xfade），支持混音、字幕烧入与抽封面，产出成片 + 可复现的拼接清单 + ffmpeg 日志；新增独立接口 `POST /api/pipeline/runs/:id/steps/assembly/assemble`（片段未全成功回 400、已成片默认复用、`force` 用新目录重拼），成片才计入 `stage.artifacts`，绝不把「片段生成完」当「成片完成」。
++ [新增] 任务调度从全局单 worker 改为按资源类别分队列（P0-d 第一步）：本地 GPU（生图与生视频共用一条，默认并发 1）/ CPU / 外部 API / LLM 各自独立队列，互不阻塞；Job 记录 `resourceClass` / `queue` / `deviceId` 与排队、执行耗时。新增 Tool/Provider/Device 注册表（`registry.js`）与提交前能力路由 `canRun`，能力不匹配或设备不可用直接拒绝并给出原因，不静默改走别的设备。
++ [调整] 网关 `comfy` 配置新增 `deviceLabel`（默认「本地 ComfyUI」）与 `maxConcurrency`（默认 1，与旧全局串行行为一致）。
++ [优化] 服务端测试扩到 10 个文件：新增 `projects`（10 例）、`registry`（8 例）、`registry-wiring`（5 例）、`delivery`（19 例）、`delivery-wiring`（8 例）五个测试文件，`pipeline` 用例由 27 增至 30，全部通过。
 + [新增] 流水线阶段运行全面可观测、可取消、可续跑。运行改为**异步**：`POST .../steps/:stage/run` 立刻返回 `202`，工作在后台跑 —— 此前是阻塞式 POST，一个 163 块 / 83 分钟的阶段用一个 HTTP 请求扛，隧道/反代/浏览器会在几分钟内掐断连接，前端只看到「毫无反应」而后端仍在跑并消耗额度。
 + [新增] 阶段进度可见：每块 map 完成后写 `data/runs/<id>/progress.json`（几十字节，**不重写内嵌整本小说、可达 6.4MB 的 `run.json`**），新增轻量 `GET /api/pipeline/runs/:id/progress`；前端每 3 秒轮询，卡片显示「第 N/M 块 + 来源章节 + 预计剩余 + 实测速度」与进度条。
 + [新增] 阶段取消与断点续跑：`POST .../steps/:stage/cancel` 的取消信号贯通到 `llm.chat`（与内部超时共用一个 `AbortController`，且取消不会被当成连接失败去试下一个 fallback）；每块结果落盘 `chunks/<i>.json`，带 `resume: true` 重跑只补跑缺的块，前端在阶段失败后把「重跑」变成「续跑（已有 N 块）」。

@@ -10,17 +10,19 @@ description: Planned follow-up work
 
 ## Local gateway and film pipeline
 
-The Chinese version of this page carries the full detail. The authoritative ordering, dependencies and acceptance criteria are in §8 of `docs/content/docs/progress/development-plan.md`; the product-level priorities are in §6 of `prd.md`. Only not-yet-started items are listed here.
+The Chinese version of this page carries the full detail. The authoritative ordering, dependencies and acceptance criteria are in §8 of `docs/content/docs/progress/development-plan.md`; the product-level priorities are in §6 of `prd.md`. Each item below is marked with its current status (done / partial / not started).
 
 - ~~**P0-0 Freeze the domain contract**~~: done (`domain-contract.md` + `web/src/types/domain.ts` + `canvas-server/src/contracts.js`); see the pending tests list.
-- **P0-a Build the Project kernel**: add server-side Project/Episode/Scene/Shot/AssetRef/Canvas references, source revisions, a Project Context API, and a new project overview that links sources, episodes, shots, canvas, jobs, and assets.
+- **P0-a Build the Project kernel**: **server kernel, project list/overview, and workspace skeletons done** (`canvas-server/src/projects.js`, the `/api/projects` routes, the `/projects` pages and six workspace skeletons); full read/write APIs for episodes/scenes/shots/assets/sources, the server-side `stageGates[]`, and write actions inside the workspaces are **not done yet**.
 - ~~**P0-b Repair Job→Artifact write-back**~~: done and verified on real hardware (a historical run's keyframe artifacts were restored, and assembly truly enqueued); see the pending tests list.
 - **P0-c Make runs and source revisions recoverable**: **frontend part done** (run persistence, history list, naming, refresh protection); server detail and storing long-form source text by `sourceRevisionId` **not done yet**.
-- **P0-d Unify Tool/Provider/Device scheduling**: separate image/video GPUs, CPU post-production, LLMs, and external APIs with schema parameters, LAN resources, and quotas.
+- **P0-d Unify Tool/Provider/Device scheduling**: **first step done** (per-resource-class queues + Tool/Provider/Device registry + pre-submit capability check); schema-driven parameters, LAN authz/quotas, and multi-device parallelism are **not done yet**.
 - **P1-a Connect the project artifact graph**: let Artifact/AssetRef, storyboard, character, location, and keyframe workspaces link to one another; treat old plugins only as one-time import sources.
-- **P1-b Add swappable generation slots and batch execution**: candidate comparison, grouped runs, per-shot retries, selection/rollback, and resumable partial failures.
-- **P1-c Absorb the six-stage methodology**: add stage 0, run by Project/Workflow version, and wire the two libraries under the `AGENTS.md` content-authoring rules.
-- **P1-d Add clip assembly and delivery**: CPU ffmpeg for editing, audio, subtitles, covers, and episode/full-drama packages; completed clips do not mean a completed film.
+- **P1-b Add swappable generation slots and batch execution**: candidate slots (`candidates[]`) are in place; **side-by-side candidate comparison, per-shot retries, and selection/rollback are not built yet**, nor are grouped runs or Canvas batch operations.
+- **P1-c Absorb the six-stage methodology**: **stage-skill wiring done** (five stage skills adopt the two methodology libraries, and the long-novel chunk path injects the content red lines); stage 0 planning and running by Project/Workflow version are **not done yet**.
+- **P1-d Add clip assembly and delivery**: **film executor done** (`delivery.js` ffmpeg clips→film plus a standalone assemble endpoint); audio/TTS, subtitles, covers, episode/full-drama packages, and the post-production workspace UI are **not done yet**.
+- **P2 Project reuse and cleanup**: cross-episode asset versions, reference counting/cleanup, performance and offline export are **not started**; retiring the old pages and compatibility adapters also sits here.
+- Old canvas data: the user has confirmed the **old canvas data is not wanted** (it was his test data), so there is **no migration and no compatibility layer** (registered as §7 D12 in `development-plan.md`; P0-a options R1/R11 are therefore withdrawn).
 - Speed up video: measure the upstream `video_h3_i2v_sla` / `video_h3_i2v_blockcache` acceleration templates; rendering drafts at lower resolution and only the final pass at full size needs no new model and no new template.
 - Add a `schema` to `TemplateInfo`: upgrade `tokens: string[]` into a typed schema with ranges, defaults, and frame-grid constraints so that "drop in a workflow JSON and it just works" holds, and delete the frontend branches keyed on template names.
 - Generation-job observability: connect the ComfyUI WebSocket for real progress (a job's `progress` currently only ever reports 0/0) and expose it as `GET /api/jobs/:id/events` (SSE) plus `?wait=` long polling. Video jobs take 8–40 minutes. (Pipeline **stage** progress was finished in the previous round; this item is about **generation job** progress.)

@@ -12,17 +12,19 @@ description: 当前项目后续值得处理的事项
 
 ## 本地网关与影视流水线
 
-权威排序、依赖关系与验收标准见 `docs/content/docs/progress/development-plan.md` §8；产品视角的优先级见 `prd.md` §6。以下只列尚未开工的项。
+权威排序、依赖关系与验收标准见 `docs/content/docs/progress/development-plan.md` §8；产品视角的优先级见 `prd.md` §6。以下按项列出当前现状（已完成 / 部分完成 / 尚未开工）。
 
 - ~~**P0-0 冻结领域契约**~~：✅ 已完成（`domain-contract.md` + `web/src/types/domain.ts` + `canvas-server/src/contracts.js`），验收见待测试清单。
-- **P0-a 建立 Project 内核**：服务端 Project/Episode/Scene/Shot/AssetRef/Canvas 引用、源版本、Project Context API 和全新项目总览页，贯通来源、集、镜头、画布、任务和资产入口。
+- **P0-a 建立 Project 内核**：**服务端内核 + 项目列表/总览/工作区骨架已完成**（`canvas-server/src/projects.js`、`/api/projects` 系列路由、`/projects` 页面与六个工作区骨架）；集/场/镜/资产/源版本的完整读写接口、服务端 `stageGates[]`、工作区内的写入能力**尚未做**。
 - ~~**P0-b 修 Job→Artifact 回写断链**~~：✅ 已完成并真机验证（历史 run 的 keyframe 产物恢复、assembly 真正入队），验收见待测试清单。
 - **P0-c run/sourceRevision 可恢复**：**前端部分已完成**（run 持久化、历史列表、命名、刷新保护）；服务端详情、长篇正文改为 `sourceRevisionId` 版本引用**尚未做**。
-- **P0-d 统一 Tool/Provider/Device 调度**：区分 GPU 生图、生视频、CPU 后期、LLM、外部 API，支持 schema 参数、局域网资源和配额。
+- **P0-d 统一 Tool/Provider/Device 调度**：**第一步已完成**（按资源类别分队列 + Tool/Provider/Device 注册表 + 提交前能力校验）；schema 驱动参数、局域网鉴权/配额与多设备并行**尚未做**。
 - **P1-a 打通项目产物图谱**：Artifact/AssetRef、分镜、角色、场景和关键帧在新工作区互相跳转；旧插件只作为一次性导入源。
-- **P1-b 生图/生视频活扣与批量执行**：候选对比、分组运行、逐镜重试、采用/回退和 Canvas 批量操作，失败镜头可续跑。
-- **P1-c 六阶段方法论吸收**：新增阶段 0（规划与参数澄清），按 Project/Workflow 版本运行并接线两个库；受 `AGENTS.md` 内容创作规范约束。
-- **P1-d 片段合成和交付**：用 CPU ffmpeg 完成拼接、音频、字幕、封面、分集/全剧交付包；片段生成不等于成片完成。
+- **P1-b 生图/生视频活扣与批量执行**：候选活扣（`candidates[]`）已落地；**候选并排对比、逐镜重试、采用/回退的前端尚未做**，分组运行与 Canvas 批量操作也未做。
+- **P1-c 六阶段方法论吸收**：**阶段技能接线已完成**（五个阶段技能接管两个方法论库、长篇分块路径注入内容创作红线）；阶段 0 规划、按 Project/Workflow 版本运行**尚未做**。
+- **P1-d 片段合成和交付**：**成片执行体已完成**（`delivery.js` 的片段→成片 ffmpeg 合成 + 独立合成接口）；音频/TTS、字幕、封面、分集/全剧交付包与后期工作区界面**尚未做**。
+- **P2 项目复用与收尾**：跨集资产版本、引用计数/清理、性能与离线导出**尚未开工**；旧页面与兼容适配层的移除也归这一档。
+- 旧画布数据：用户已确认**不要旧画布数据**（那是他的测试数据），**不做迁移、不写兼容层**（登记为 `development-plan.md` §7 D12，P0-a 方案 R1/R11 随之撤销）。
 - 视频提速：实测上游 `video_h3_i2v_sla` / `video_h3_i2v_blockcache` 加速模板；先降分辨率出草稿、定稿再出高清是零新增模型零新增模板的方案。
 - `TemplateInfo` 增补 `schema`：把 `tokens: string[]` 升级成带类型、范围、默认值、帧网格约束的 schema，让「拷一个工作流 JSON 就自动可用」成立，并删掉前端按模板名硬编码的分支。
 - 生成任务可观测性：接 ComfyUI WebSocket 拿真实进度（当前 job 的 `progress` 只填 0/0），并暴露成 `GET /api/jobs/:id/events`（SSE）与 `?wait=` 长轮询。视频任务 8~40 分钟。（流水线**阶段**的进度已在上一轮做完，这条是**生成任务**的进度。）
