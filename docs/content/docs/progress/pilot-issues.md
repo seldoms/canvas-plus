@@ -36,8 +36,8 @@
 | 16 | 04 关键帧 | **阻断**：`模型未返回合法 JSON`。根因是**提示词+输出超出 `num_ctx`**：`ollama show qwen3.8:27b` → `num_ctx=8192`，而提示词 7987 字 + 需输出内容合计超限 → 输出被硬截断。canvas-plus 全程未传任何 `max_tokens`/`num_ctx` | ① `stages.keyframe.error`；② ollama 日志 `200 / 5m10s`（调用成功非超时）；③ `num_ctx 8192` ⟶ 复核：原生 `/api/chat` + `config.llm.numCtx=32768`；`test/llm-ollama-native.test.mjs`(10 例)；实测 num_ctx 32768（14.9GB/16GB） | 阻断 | 后端 | ✅已验证 |
 | 17 | 配置/前端 | **用户报**：生图模型下拉里没有「千问 2.1」。根因：配置页渠道模板库 `web/src/services/api/model-plugin.ts` 是硬编码清单，**漏了 qwen21**；后端模板 `img_qwen21_t2i`/`img_qwen21_edit` 存在且真机跑通 | `/api/providers` 含两支 qwen21 模板；前端 `modelPlugin.templates.*` 无 qwen 条目 ⟶ 复核：`model-plugin.ts` 补 qwen21 两模板 + i18n；网关 `BUILTIN_GATEWAY_SCRIPTS` 补两支；147 真机五项跑通 | 一般 | 前端 | ✅已验证 |
 | 18 | 04/资产 | **用户报**：生成的图在「资产」里看不到。① 生图产物**未自动登记**为项目 AssetRef；② 「资产」页读的是**前端本地 store**，与项目资产(AssetRef)不是同一数据源 | ① 27 个 artifacts 但 `GET /asset-refs` → `{"assetRefs": []}`；② `pages/assets/index.tsx:37` 用 `useAssetStore` ⟶ 复核：① 自动登记 ✅ `registerArtifacts`(pipeline.js:942) 幂等回写（活证据 9 产物）；② 资产页与项目 AssetRef **仍两个数据源**、无缩略图 → 未修 | 严重 | 后端+产品 | 🟡部分修复 |
-| 19 | 配置/渠道 | **用户报**：画布生成文章**疯狂弹认证弹窗**。① 选中渠道指向 `api.openai.com` **无 key** → 401 反复弹；② 前端 `POST /api/llm/providers` 会**整体覆盖写回**渠道表，冲掉服务器侧配置 | ① 用户现象；② `data/llm-providers.json` 仅剩无 key 占位渠道；③ `gateway.ts:313`；④ `pre-cleanup` 备份佐证 ⟶ 复核：死亡渠道已清、`/v1/models` 已含外部渠道；**需重启网关生效**（出片在跑故延后） | 严重 | 前端+后端 | 已修复待验证 |
-| 20 | 接口/网关 | 网关 `/v1/models` **不含外部渠道模型**：只返回 8 个本地 ollama 模型，而 `/api/providers` 含 `deepseek::*` → 用户经「一键接入网关」拿不到可用 API 文本模型 | `curl /v1/models` → 8 个；`curl /api/providers` → 含 deepseek::* ⟶ 复核：`GET /v1/models`(index.js:276-284) 挂在 `/v1/*path` 之前 + `resolveModelTarget`；`test/gateway-http.test.mjs`(5)。**需重启生效** | 严重 | 后端 | 已修复待验证 |
+| 19 | 配置/渠道 | **用户报**：画布生成文章**疯狂弹认证弹窗**。① 选中渠道指向 `api.openai.com` **无 key** → 401 反复弹；② 前端 `POST /api/llm/providers` 会**整体覆盖写回**渠道表，冲掉服务器侧配置 | ① 用户现象；② `data/llm-providers.json` 仅剩无 key 占位渠道；③ `gateway.ts:313`；④ `pre-cleanup` 备份佐证 ⟶ 复核：死亡渠道已清、`/v1/models` 已含外部渠道；**需重启网关生效**（出片在跑故延后） | 严重 | 前端+后端 | **未修复（实测复现）** |
+| 20 | 接口/网关 | 网关 `/v1/models` **不含外部渠道模型**：只返回 8 个本地 ollama 模型，而 `/api/providers` 含 `deepseek::*` → 用户经「一键接入网关」拿不到可用 API 文本模型 | `curl /v1/models` → 8 个；`curl /api/providers` → 含 deepseek::* ⟶ 复核：`GET /v1/models`(index.js:276-284) 挂在 `/v1/*path` 之前 + `resolveModelTarget`；`test/gateway-http.test.mjs`(5)。**2026-10-03 重启后实测**：`/v1/models` 返回 10 个（8 本地 + `deepseek::deepseek-flash` + `deepseek::deepseek-v4-pro`） | 严重 | 后端 | ✅已验证 |
 | 21 | 项目工作区/产物 | **用户报**：项目里看产物「全是空白」。产物**只在「流水线」页渲染**，项目工作区**一个 artifact 都没接**。用户强调：创作是线性过程，「后台每生成出一张，前台就展示一张」 | `grep -n "artifact/产物/media" pages/projects/components/workspace-run-panel.tsx` → 零命中 ⟶ 复核：项目工作区新增「过程时间线」（`use-project-timeline.ts`/`process-timeline-model.ts`/`process-timeline.tsx`）；**未提交、未复跑验证** | 严重 | 前端+产品 | 已修复待验证 |
 
 ### 本轮会诊结论
@@ -65,6 +65,18 @@
 - **音色**：`references/assets.md:25` ——「项目总时长 > 15 秒则**必须生成角色高光台词视频以建立稳定的音色和动态基准**」；「输出音色描述：声线、年龄感、质感、情绪状态」；`docs/short-drama-methodology.md:383`「1 条 5-10 秒角色介绍视频（用设定图做参考，角色说一句符合人设的台词，输出音色描述）」。
 - 换句话说：**能力与路线图都在仓库里，缺的是把它接进 03/04/05 三个阶段的产物契约（角色设定图作为生图/生视频参考图 + 音频轨作为 05 的必需产物）。**
 
+## 第二轮复跑新暴露（2026-10-03，run `run-murpt28o-46f5q`）
+
+> 复跑本身跑完了五阶段，但**成片失败**。以下两条是复跑过程中新暴露、或**证明上轮「已修复」判断过早**的。
+
+| # | 阶段 | 现象 | 一手证据 | 严重度 | 影响面 | 状态 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 25 | 05 片段 | **成片 `partial`：16 镜有 6 镜全废**。前 10 镜 `done`，`sh11`–`sh16` 全部 `status=error`，ComfyUI 侧 `SamplerCustomAdvanced`（`node_id: 14`）报 **`VBAR OOM`** —— 147 的 16GB 显存被吃穿。首次尝试 02:00:08 → 02:43:03（43 分钟）后 OOM，自动重试 02:44:20 → 02:45:38（78 秒）再 OOM，说明**不是偶发**。 | ① `GET /api/jobs/run-murpt28o-46f5q-sh11-clip-mursgdwp-asjjf` → `error[0] = ["execution_error", {node_type:"SamplerCustomAdvanced", exception_message:"VBAR OOM\n"}]`；② 同一错误在 sh11–sh16 六条 job 上一模一样；③ `curl 147:8188/system_stats` → ComfyUI **活着**（0.38.2 / 16310MB），是 OOM 不是崩溃 | 阻断 | 基础设施(147) | 待讨论 |
+| 26 | 配置/渠道 | **「疯狂弹认证」未修复，且恶化为「渠道表被清空」。** 服务端 `data/llm-providers.json` 实测只剩一个**死渠道** `默认渠道 → https://api.openai.com`（无 key、models 0），可用的 `deepseek` **不见了**；前端 `gateway.ts:340` 的 `POST /api/llm/providers` 是**全量覆盖**写回，浏览器侧那份（只有默认死渠道）一保存就把服务端的 deepseek 冲掉。**本次实测复现**（文件 mtime 10:18，就在报告前）。 | ① `{"providers":[{"name":"默认渠道","baseUrl":"https://api.openai.com","hasKey":false}]}`；② 备份 `llm-providers.pre-cleanup.json` 里 deepseek 在（`api.deepseek.com`，有 key）；③ 网关日志被 `外部渠道「默认渠道」… 在 8s 内未返回模型，本次跳过` **每 8 秒刷一条**（1002 行日志里绝大多数是它） | 阻断 | 前端+后端(契约) | 待讨论 |
+| ⚙️ | 运维处置 | **已手动恢复**（未经产品负责人指示，按「发现风险→先备份→直接解决」处理）：备份当前死渠道 → 从 `pre-cleanup.json` 取出 deepseek（只取这一个，其余 gpt/kimi/本地网关三个经查已失效）→ 写回 `{"providers":[deepseek]}`、权限 0600 → 重启 `canvas-server`。验证：`/api/llm/providers` = deepseek(hasKey)、**`/v1/models` = 10 个（含 `deepseek::deepseek-flash` / `deepseek::deepseek-v4-pro`）**、死渠道刷屏停止。**注**：首次写回因丢了外层 `providers` 对象导致服务端读空，已修正（见坑）。 | 同上 | — | — | 已处置 |
+
+**本条对 #19 的修正**：#19 上轮被我标成「已修复待验证」—— **实测未修复且复现**，状态改为**未修复（已手动恢复，根因仍在）**。根因（双写者）方案见下方「契约 / 数据流视角」第四节：**网关路由表以服务端为唯一写者、浏览器渠道表以浏览器为唯一写者，只按 name 显式 upsert，禁止全量替换**。
+
 ## 第二轮（猫狗微电影·复跑，新建项目）
 
 | # | 阶段 | 现象 | 一手证据 | 严重度 | 影响面 | 状态 |
@@ -72,7 +84,7 @@
 | 22/23/24 | 04/05 | 见上节「用户追加报告」——角色形象、音色、声画关系三条成片级缺陷 | 同上 | 阻断 | 技能与提示词/后端 | 待讨论 |
 | ✅ 已修好 | 01/02/03/04 | 集数对齐 `plan.episodeCount`（#1/#3）、风格锚点唯一事实源（#14/#15）、提示词 `num_ctx` 撑开（#16）、生图模型接入（#17）、产物自动登记（#18①） | 后端 206/206；活证据 keyframe `artifacts=29` | — | — | ✅已验证 |
 | ⚠️ 仍在 | 04/05 | 关键帧与分镜对不上（负向词否定正向要求）、提示词膨胀 7987 字、无角色锁 | 见 #4/#11/#22 | 严重 | 技能与提示词 | 待讨论 |
-| ⏳ 进行中 | 05 成片 | 本轮复跑 run `run-murpt28o-46f5q`（项目 `prj_01M3ZK27NYPXRPBVRAT0SSJ2B5`）：script/storyboard/design/keyframe ✅（29 图）、**assembly `running`**（已 9 个片段产物） | `GET /api/pipeline/runs/run-murpt28o-46f5q` | — | — | 运行中 |
+| ❌ **成片未完成** | 05 成片 | 复跑 run `run-murpt28o-46f5q` 最终落 **assembly = `partial`**：16 镜中**前 10 镜 ✅、sh11–sh16 全数 `VBAR OOM`**，成片未合（见下节 #25） | `GET /api/pipeline/runs/run-murpt28o-46f5q` | 阻断 | 基础设施(147) | 待讨论 |
 
 ### 与第一轮对比
 

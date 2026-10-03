@@ -2,6 +2,7 @@
 
 ## Unreleased
 
++ [运维] 恢复被覆盖的外部 LLM 渠道并让网关门禁修复生效：`data/llm-providers.json` 被前端 `POST /api/llm/providers` 的**全量覆盖**写回冲成只剩一个无 key 的死渠道（`默认渠道 → api.openai.com`），可用的 `deepseek` 消失 —— 这是「画布生成文章疯狂弹认证」的直接原因，也是网关日志被「每 8s 一条死渠道告警」刷满的原因。已从备份取回 `deepseek` 写回（只取这一个，其余 gpt/kimi/本地网关三个经查已失效）并重启 `canvas-server`；`/v1/models` 自此正确包含 `deepseek::deepseek-flash` 与 `deepseek::deepseek-v4-pro`（此前已修但一直等重启）。**双写者根因未修**，见 `pilot-issues.md` #26。
 + [新增] 项目内直接落「源版本」：不再等到点「运行本阶段」才发现项目缺源 —— 前端新增 `source-input` / `source-import-modal` / `project-source-panel` 三件与 `use-project-source`，可在新建项目与项目工作区内粘贴或选文件导入正文；后端源版本**不可变**（同 id 重复提交被拒）、列表只回摘要（不回正文）、写入即回填 `project.sourceRevisionId`，摘要带 `sha256` 与 `chars`。项目内建 run 优先取该源版本作为 `novel`，取不到再回落 `project.script`。
 + [文档] 维护开发计划（回答「做到什么程度、遇到哪些问题」）：`development-plan.md` 新增 **§11 进度快照与问题台账**，对着 §8 工作包（P0-0/P0-a…P2）逐项给出实际状态与一手证据（文件路径、接口响应、测试计数），并附按严重度分级的问题清单与本轮风险面；`pilot-issues.md` 把第一轮 21 条的状态从「一律待讨论」按复核结果逐条更新（**12 条已验证 / 4 条待讨论 / 1 条已定整改方案 / 1 条部分修复 / 3 条已修复待验证**），并**追加 #22–#24**——用户 2026-10-03 报的**角色形象未固定**、**角色音色未固定**与**配乐与配音不一致**，三条都给到根因证据与「方法论已在仓库、缺的是接进 03/04/05 产物契约」的结论；`todo.mdx` / `todo.zh-CN.mdx` 同步修正三处滞后状态（P0-c 源版本、P1-b 活扣/逐镜重试、P1-c 阶段 0 规划、P1-d 字幕/封面已落地）并补三条缺口。复核基线：后端 `node --test` **206/206 pass**。
 

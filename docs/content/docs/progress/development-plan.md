@@ -556,6 +556,7 @@ ReviewNote { id, scope: project|episode|scene|shot, targetId?, stage,
 | 22 | **角色形象没有固定下来**（用户 2026-10-03 报） | 「角色一致性」只存在于**文字**：01 让模型输出 `characters[].appearance`，之后每镜把这段文字重复写进提示词。**没有定妆图/参考图锁脸、没有 seed 锁定、没有角色 ID 贯穿到生图**。而 H3 参考图生视频模板（`video_h3_ref2v_image`，一张参考图即可锁角色）**已经具备能力却没被接进来** |
 | 23 | **角色音频 / 音色没有固定下来**（用户 2026-10-03 报） | `voice` 字段同样只是**文本描述**（"音色、语速、口音"），**下游零消费**：无 TTS 接线、无音色库、无配音产物。`delivery.js` 有 `amix` 混音能力，但 `plan.audio` **靠外部手工传入**，流水线没有任何环节生产音频轨 |
 | — | **成片配乐与配音不一致** | 根因未定位（上一轮排查被新诉求打断）。与 #23 同源：音频轨既非流水线产出、也无对齐校验 |
+| 25 | **成片 6 镜显存 OOM**（复跑实测） | 复跑 run `run-murpt28o-46f5q` 的 assembly 落 **`partial`**：16 镜前 10 成功、`sh11`–`sh16` 全数 ComfyUI `SamplerCustomAdvanced` 报 **`VBAR OOM`**（147 的 16GB 显存；首次 43 分钟后 OOM、重试 78 秒再 OOM，**非偶发**）。ComfyUI 本身活着（0.38.2 / 16310MB） |
 | — | 关键帧 / 视频工作区显示 | 会诊发现 12 行空壳、29 张图不可见；本轮已补「过程时间线」，**但尚未复跑验证** |
 
 **🟡 严重级（能跑但结果错 / 数据不可靠）**
@@ -563,7 +564,7 @@ ReviewNote { id, scope: project|episode|scene|shot, targetId?, stage,
 | # | 问题 | 现状 |
 | --- | --- | --- |
 | — | **多 run 只认第一个 + 跨路径不回填** | `workspace-gate-panel.tsx:40` / `use-project-timeline.ts:20` 硬编码 `runIds[0]`；回填只做在「项目内建 run」路径（`use-project-run.ts:106`），从**流水线页**建的 run 不进 `runIds[]`（实测出片 run `run-murpt28o-46f5q` 即如此）。**注**：会诊原判「`runIds[]` 从未被写」**已失效**，实测 `context.runIds=["run-murnwa81-k27eq"]` 非空 |
-| — | 渠道注册表**双写者** | 前端 `POST /api/llm/providers` **整车覆盖**写回，曾把服务端直写的 deepseek 冲掉（铁证：`data/llm-providers.json.pre-cleanup.json`）。应改为「服务端网关路由表唯一写者 / 浏览器渠道表浏览器唯一写者，只按 name 显式 upsert」 |
+| — | 渠道注册表**双写者** | 前端 `POST /api/llm/providers` **整车覆盖**写回。**2026-10-03 实测复现**：渠道表里只剩死渠道「默认渠道 → `api.openai.com`（无 key）」，可用的 deepseek 被冲掉，日志被「每 8s 一条」的死渠道告警刷满（1002 行里绝大多数是它）；已手动恢复 deepseek 并重启（`/v1/models` 现含 `deepseek::*`），**根因未修**。应改为「服务端网关路由表唯一写者 / 浏览器渠道表浏览器唯一写者，只按 name 显式 upsert」 |
 | — | 关键帧与分镜对不上 | `shots[5].negativePrompt` 含 `costume change, unnatural transformation`，把正向要求的变身镜用负向词否定；`sh12` 公园抛球实际室内抱狗 |
 | — | 「2 集 × 30 秒」无人负责 | 9 个 run `episodes=[]`、分镜 16 镜 83 秒超 38%。本轮 `normalizeEpisodes` + 集数进提示词**已部分修复**，待复跑验证 |
 | — | 网关 `/v1/models` 漏外部渠道 | 已修（`GET /v1/models` 在 `/v1/*path` 兜底前），**需重启才生效**，因出片 run 在跑故延后 |

@@ -36,7 +36,9 @@
 | 🔴 **产品拍板 D1/D3 两条硬约束未落**：D1 时长档位跟模型（H3 `24×秒+3`，仅 5/10/15s，档位字段与模型清单同源）；D3 关键帧单镜 **≥4 张** + 不达标自动重生成（现配置 2）。2026-10-03 用户喊停改码，`pipeline.js` 已空出待做 | `pilot-issues.md` §「产品负责人拍板」D1/D3 |
 | **测试基线**：后端 `node --test` → **206 tests / 206 pass / fail 0**（本轮实测）；前端此前 `tsc --noEmit` 0 错、`npm run build` 通过 | `cd canvas-server && node --test test/*.test.mjs` |
 | ⚠️ **工作区仍有 20 个文件未提交**（含 `canvas-server/src/pipeline.js`、`test/pipeline.test.mjs`、`pending-test.mdx`、`skills/04-keyframes/SKILL.md`、7 个前端新文件如 `process-timeline.tsx` / `source-import-modal.tsx`）—— 测试与 tsc 均绿、属"已验证待落盘"，接手者按主题分批提交即可 | `git status --short` |
-| ⏳ **出片 run 仍在跑**：`run-murpt28o-46f5q`（项目 `prj_01M3ZK27NYPXRPBVRAT0SSJ2B5`）script/storyboard/design/keyframe ✅（29 张图）／assembly `running`（已 9 个片段产物）。**重启网关会打断它** —— 这也是 `/v1/models` 修复（已改代码）延后生效的原因 | `GET /api/pipeline/runs/run-murpt28o-46f5q` |
+| ❌ **出片结果：assembly `partial`（16 镜里 6 镜全废）**：前 10 镜 ✅、`sh11`–`sh16` 全数 ComfyUI `SamplerCustomAdvanced` 报 `VBAR OOM`（147 的 16GB 显存），成片未合 | `pilot-issues.md` #25 |
+| 🔴 **渠道表被前端全量覆盖（实测复现）**：`data/llm-providers.json` 只剩死渠道「默认渠道 → api.openai.com（无 key）」，deepseek 被冲掉 → 这就是「疯狂弹认证」的根因，**#19 上轮标「已修复」是误判**。**已手动恢复**（备份→取回 deepseek→写回→重启）：`/v1/models` 现 10 个（含 `deepseek::deepseek-flash` / `deepseek::deepseek-v4-pro`）、死渠道刷屏停止。**根因（双写者）未修** | `pilot-issues.md` #26 |
+| ✅ 出片结束后已确认 `在跑 job = 0`，重启 `canvas-server` 已完成（`/v1/models` 修复顺带生效）；工作区已全部提交、干净 | `systemctl is-active canvas-server` |
 | **本轮 git**：`b3874d5`（文档：§11 + 21 条复核 + #22–#24）、`d601800`/`639508a`/`154e0d3`/`2f85b4e`（上一轮） | `git log --oneline` |
 
 **本轮新增（已浏览器实测）**
@@ -130,6 +132,9 @@
 12. **`FRAME_RATE` 不是 H3 模板的 token**，LENGTH 才是帧数，且走 17n+5 网格（5s≈124 帧、2.3s≈56 帧）。不要直接把 `秒数 × fps` 喂进去。
 13. **H3 宽高必须可被 32 整除**，否则 conditioning 节点直接 `ValueError`。网关已在渲染前自动吸附（720→736），调用方仍应尽量传标准尺寸（480×864、768×1344）。
 14. **ComfyUI 会「活着但装死」**：进程在、8188 在 LISTENING、TCP 能握手，但 HTTP 永不响应（本次网关任务挂了 27 分钟才发现）。判活要用 `curl --max-time 8 …/system_stats` 能返回 JSON 才算。恢复姿势：`ssh win147 "schtasks /End /TN ComfyUI_Start"` → `taskkill /PID <pid> /F` → `schtasks /Run /TN ComfyUI_Start`，约 105 秒起完。网关侧任务需取消后重新提交（ComfyUI 重启丢队列）。
+
+- **`data/llm-providers.json` 是 `{"providers":[...]}` 外层对象，不是裸数组**。手改时丢了外层，服务端会静默读成空表、**所有外部渠道一起消失**（本次踩到，已修正）。该文件**启动时加载**，改完必须 `systemctl restart canvas-server` 才生效。
+- **网关日志是 `StandardOutput=append:/var/log/canvas-server.log`，历史报错永久留在文件里**。判断「某个报错是不是当前问题」必须先确认那段代码在当前版本还在不在 —— 本次差点把 68 条历史 `TypeError: router.put is not a function`（旧版本的 index.js 遗留）误报成现存 bug。
 
 ## 运行环境速查
 
