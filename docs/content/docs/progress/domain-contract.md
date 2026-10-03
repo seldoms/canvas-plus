@@ -56,6 +56,7 @@
 | `styleAnchor` | `string` | 是 | 风格锚点：一句话，全项目所有生图/生视频提示词首句必须一字不差（PRD §3.2、§4 阶段 0） |
 | `plan` | `Plan` | 是 | 阶段 0 规划产物，结构见下 |
 | `script` | `unknown` | 是 | 一份剧本（01 阶段产物的权威副本）。**内部形态由 P0-a/P1-c 定**，本契约只冻结字段名与归属 |
+| `sourceRevisionId` | `string \| null` | 否 | 当前采用的源版本 id，指向 `sources/<revisionId>.json`；初始为 `null`（P0-a 回填，见 `p0a-project-kernel-plan.md` §1.5 #2） |
 | `episodes` | `Episode[]` | 是 | 多条主线 = 多集/多单元，共享同一套角色/场景/道具资产（PRD §3.2 主线语义） |
 | `assetRefs` | `AssetRef[]` | 是 | 项目内的语义引用（引用而非复制，D2） |
 | `runIds` | `string[]` | 是 | 关联的流水线 run；一个项目可跑多轮 |
@@ -93,6 +94,8 @@
 | `dramaMode` | `string` | 是 | 叙事取向：`短剧向` / `微电影向` / `单元剧` / `连续剧`；预置可选、也支持自定义 |
 | `audience` | `string` | 是 | 目标受众 |
 | `episodeCount` | `number` | 是 | 目标集数 |
+
+> **01 剧本阶段回填**：`script` 阶段产物可含可选 `planSuggestion`（字段 `genre` / `tone` / `visualStyle` / `dramaMode` / `audience` / `episodeCount?` / `episodeDurationSec?`，语义同上表）。服务端在剧本阶段完成后**只回填项目 `plan` 中用户尚未填写的字段**（仍是默认占位值的字段），已有值一律不动；`ratio` / `styleAnchor` **不在建议范围内**。回填走 `projects.update`（原子写 + version 自增），且**幂等**：重复投递 / 重启重放不会反复覆盖。
 
 ### 3.2 Episode（集 / 单元）
 
@@ -205,6 +208,23 @@
 | `gate` | `string` | 是 | 人工确认门禁（如 `manual` / `auto`）；枚举值 P0-a 定 |
 | `tools` | `string[]` | 是 | 可用 Tool id 列表 |
 
+**阶段 ID 权威命名（冻结，唯一权威）**
+
+> 本表冻结「阶段 ID」：门禁、流水线 registry、前端工作区三处**共用同一套命名**，实现逐字对齐，不得改名、不得引入同义别名。
+> 落点：服务端门禁 `canvas-server/src/gates.js` 的 `GATE_STAGES`、流水线 `skills/registry.json` 的 run 阶段、前端 `web/src/pages/projects/workspaces.ts` 的 `stage` 字段。
+
+| 阶段 ID | 名称 | 归属 | 上游依赖 requires | 说明 |
+| --- | --- | --- | --- | --- |
+| `plan` | 规划 | 项目级（非 run 阶段） | — | 阶段 0 规划产物 `Project.plan`；不是流水线 run 的一段 |
+| `script` | 剧本 | run 阶段（01） | `plan` | 小说 → 剧本（`skills/01-novel-to-script`），可产出可选 `planSuggestion` |
+| `storyboard` | 分镜 | run 阶段（02） | `script` | 剧本 → 分镜表 |
+| `design` | 资产（服化道） | run 阶段（03） | `script` | 角色 / 场景 / 道具造型；**取代旧名 `assets`** |
+| `keyframe` | 关键帧 | run 阶段（04） | `storyboard`、`design` | 生成型阶段：出关键帧图像 |
+| `assembly` | 片段生成 | run 阶段（05） | `keyframe` | 生成型阶段：片段 → 成片；**取代旧名 `video`** |
+| `post` | 后期 | 交付阶段 | `assembly` | 成片交付 / 后期（音字等）；非 01~05 五段式 run 阶段的默认组成 |
+
+**旧名作废**：`assets`（→ `design`）、`video`（→ `assembly`）不再作为阶段 ID 使用；门禁匹配、前端 `stage` 字段、`ReviewNote.stage` 均以本表为准。
+
 **Tool**（一次可执行能力）
 
 | 字段 | 类型 | 必填 | 说明 |
@@ -259,7 +279,7 @@
 | --- | --- | --- | --- |
 | Project | `prj_` | 创建项目时，前缀 + 26 位 ULID | 永不变 |
 | Episode | `ep_` | 建集时，`ep_` + 4 位序号 | 序号补零；集重排不改 id |
-| Scene | `sc_` | 建场时，`sc_` + 4 位序号 | 场重排不改 id |
+| Scene | `sc_` | 建场时，`sc_` + 4 位序号 | 序号在**项目内全局唯一**（跨集不重复）；场重排不改 id |
 | Shot | `sh_` | 建镜时生成 | **不可随重排改变**：增删调序只改 `index`，`id` 恒定。现有插件 `reindex()` 把 id 重写成 `sh1..shN`，**必须改为只改 index**（development-plan §5.2、§6 陷阱） |
 | GenerationSlot | `slot_` | 挂到 shot 上时，`slot_<shotId>_<role>` | 随 shotId 稳定；同 shot 同 role 唯一 |
 
