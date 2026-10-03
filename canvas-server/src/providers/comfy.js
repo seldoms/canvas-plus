@@ -27,6 +27,7 @@ const TITLES = {
     img_qwen21_edit: "Qwen-Image 2.1 指令改图",
     upscale_4x: "4 倍放大",
     video_h3_i2v: "H3 图生视频",
+    video_h3_i2v_fl: "H3 首尾帧多参考图生视频",
     video_h3_ref2v: "H3 参考视频生视频",
     video_h3_ref2v_image: "H3 参考图生视频",
     video_h3_ref2v_image_turbo: "H3 参考图生视频（Turbo 8 步）",

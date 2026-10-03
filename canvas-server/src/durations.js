@@ -42,6 +42,7 @@ export function frameCountForDuration(seconds, frameRate = MODEL_FRAME_RATE) {
  */
 export const DURATION_CATALOG = Object.freeze({
     video_h3_i2v: { durations: H3_DURATIONS, verified: true, note: "H3 图生视频（I2V）" },
+    video_h3_i2v_fl: { durations: H3_DURATIONS, verified: true, note: "H3 首尾帧 + 多参考图生视频（FL2VA）" },
     video_h3_ref2v: { durations: H3_DURATIONS, verified: true, note: "H3 参考视频生视频" },
     video_h3_ref2v_image: { durations: H3_DURATIONS, verified: true, note: "H3 参考图生视频" },
     video_h3_ref2v_image_turbo: { durations: H3_DURATIONS, verified: true, note: "H3 参考图生视频（Turbo 8 步）" },

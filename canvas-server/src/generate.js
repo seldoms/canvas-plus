@@ -6,6 +6,10 @@ import { collectOutputs, disableEmptyImageRefs, disableEmptyLoras, extractTokens
 /** 这些 token 的值是素材（本机路径 / 远端 URL / 网关产物地址），提交前要先上传到 ComfyUI。 */
 export const ASSET_TOKENS = [
     "INPUT_IMAGE",
+    // 首尾帧视频模板（video_h3_i2v_fl）用 FIRST_FRAME/LAST_FRAME 命名首帧与尾帧，语义上与 INPUT_IMAGE 同源，
+    // 也必须先上传到 ComfyUI 再接线；LAST_FRAME 是可选槽（见 isOptionalRef）。
+    "FIRST_FRAME",
+    "LAST_FRAME",
     "REF_VIDEO",
     "PERSON_IMAGE",
     "CLOTHING_IMAGE",
@@ -13,8 +17,12 @@ export const ASSET_TOKENS = [
     ...Array.from({ length: 9 }, (_, index) => `REF_IMAGE_${index + 1}`),
 ];
 
-/** 可选素材 token：缺省填空串，渲染后由 disableEmptyImageRefs 把对应的 LoadImage 节点摘掉。 */
-const isOptionalRef = (token) => /^REF_IMAGE_\d+$/.test(token);
+/**
+ * 可选图像素材 token：缺省填空串，渲染后由 disableEmptyImageRefs 把对应的 LoadImage 节点摘掉（而不是报错）。
+ * - REF_IMAGE_n：多参考图槽位，Qwen-Image 2.1 / H3 ref_images(autogrow) 都按「用几张给几张」调用；
+ * - LAST_FRAME：首尾帧模板的尾帧，未给时摘掉 last_frame 的 LoadImage 即可退回单首帧（节点 last_frame 本就是 optional）。
+ */
+const isOptionalRef = (token) => /^REF_IMAGE_\d+$/.test(token) || token === "LAST_FRAME";
 
 function sleep(ms, signal) {
     return new Promise((resolve, reject) => {
