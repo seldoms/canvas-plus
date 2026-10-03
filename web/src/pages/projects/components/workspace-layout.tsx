@@ -4,18 +4,21 @@ import { Link, useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import type { ReactNode } from "react";
 
-import type { ProjectContext } from "@/services/api/projects";
+import type { ProjectContext, ProjectGate } from "@/services/api/projects";
 import type { ReviewNote } from "@/types/domain";
 
-import type { StageStatusMap } from "../workspace-gates";
+import { resolveWorkspaceGate, type StageStatusMap } from "../workspace-gates";
 import { WORKSPACES, workspacePath, type WorkspaceDef } from "../workspaces";
+import { useProjectRun } from "../hooks/use-project-run";
 import { WorkspaceGatePanel } from "./workspace-gate-panel";
 import { WorkspaceInputPanel } from "./workspace-input-panel";
 import { WorkspaceResources } from "./workspace-resources";
+import { WorkspaceRunPanel } from "./workspace-run-panel";
 
 /**
- * 工作区骨架外壳：项目内工作区导航 + 加载/错误态 + 「当前输入 / 待确认 / 关联资源」三块标准面板。
- * 各工作区页面只传自身 key 与（可选的）额外正文，编排逻辑集中在这里。
+ * 工作区外壳：项目内工作区导航 + 加载/错误态 + 「当前输入 / 待确认 / 关联资源」三块标准面板。
+ * 各工作区页面只传自身 key 与（可选的）额外正文，编排逻辑集中在这里；
+ * 门禁在此由 resolveWorkspaceGate 统一判定（服务端 /gates 优先，回退前端推导）。
  */
 export function WorkspaceLayout({
     projectId,
@@ -29,6 +32,8 @@ export function WorkspaceLayout({
     blockingNotes,
     runsLoading,
     runsError,
+    gates,
+    gatesLoading,
     children,
 }: {
     projectId: string;
@@ -42,11 +47,15 @@ export function WorkspaceLayout({
     blockingNotes: ReviewNote[];
     runsLoading: boolean;
     runsError: string;
+    gates: ProjectGate[];
+    gatesLoading: boolean;
     children?: ReactNode;
 }) {
     const { t } = useTranslation();
     const navigate = useNavigate();
     const project = context?.project;
+    const gate = resolveWorkspaceGate(workspace, stageStatus, hasRunInfo, blockingNotes.length, gates);
+    const run = useProjectRun({ projectId, stage: workspace.stage, context, stageStatus, refresh });
 
     return (
         <div className="flex h-full flex-col overflow-hidden bg-background text-stone-900 dark:text-stone-100">
@@ -103,19 +112,31 @@ export function WorkspaceLayout({
                                     <Typography.Text type="secondary">{project.title}</Typography.Text>
                                     <h1 className="text-2xl font-semibold tracking-tight text-stone-950 dark:text-stone-100">{t(`projects.workspace.${workspace.key}`)}</h1>
                                 </div>
-                                <Button type="text" icon={<RefreshCw className="size-4" />} loading={loading || runsLoading} onClick={refresh}>
+                                <Button type="text" icon={<RefreshCw className="size-4" />} loading={loading || runsLoading || gatesLoading} onClick={refresh}>
                                     {t("projects.refresh")}
                                 </Button>
                             </div>
                             <WorkspaceInputPanel context={context} workspace={workspace} stageStatus={stageStatus} />
                             <WorkspaceGatePanel
                                 workspace={workspace}
+                                gate={gate}
                                 stageStatus={stageStatus}
-                                hasRunInfo={hasRunInfo}
                                 blockingNotes={blockingNotes}
                                 runsLoading={runsLoading}
                                 runsError={runsError}
                                 runIds={context.runIds}
+                            />
+                            <WorkspaceRunPanel
+                                workspace={workspace}
+                                gate={gate}
+                                hasRun={run.hasRun}
+                                starting={run.starting}
+                                running={run.running}
+                                progress={run.progress}
+                                error={run.error}
+                                notice={run.notice}
+                                onRun={() => void run.start()}
+                                onCancel={() => void run.cancel()}
                             />
                             <WorkspaceResources context={context} />
                             {children}

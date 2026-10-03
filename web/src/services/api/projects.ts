@@ -1,7 +1,7 @@
 import axios, { type AxiosRequestConfig } from "axios";
 
 import i18n from "@/i18n";
-import type { Plan, Project } from "@/types/domain";
+import type { ArtifactId, AssetRef, AssetRole, Episode, EpisodeId, Plan, Project, Scene, SceneId, Shot, ShotId } from "@/types/domain";
 import { gatewayBaseUrl } from "./gateway";
 
 /**
@@ -125,4 +125,131 @@ export async function updateProject(id: string, patch: ProjectUpdateInput) {
 export async function archiveProject(id: string) {
     const data = await projectRequest<{ project: Project }>({ method: "post", url: `/api/projects/${encodeURIComponent(id)}/archive` });
     return data.project;
+}
+
+/* ------------------------------------------------------------------ *
+ * 分镜 / 资产引用 / 门禁（P0-a 前端编辑，接口形状已冻结）
+ *
+ * 后端并行实现中：请求失败一律抛带 status 的 Error（400 不合法 / 409 冲突 / 404 不存在），
+ * 页面据此提示并保留用户已输入内容，不回退。
+ * ------------------------------------------------------------------ */
+
+/** 集详情：Episode + scenes[]，每场含 shots[]（GET /episodes/:epId）。 */
+export type SceneWithShots = Scene & { shots: Shot[] };
+export type EpisodeDetail = Episode & { scenes: SceneWithShots[] };
+
+/**
+ * PATCH /api/projects/:id/shots/:shotId 请求体。
+ * 字段与 02 分镜契约一致（`Shot.storyboard` 内部形态）；`index` 可重排，`id` 不在此列。
+ */
+export type ShotPatchInput = {
+    index?: number;
+    durationSec?: number;
+    shotSize?: string;
+    camera?: string;
+    action?: string;
+    dialogue?: string;
+    audio?: string;
+    prompt?: string;
+    negativePrompt?: string;
+    generationSlots?: Shot["generationSlots"];
+};
+
+/** POST /api/projects/:id/asset-refs 请求体；role + bindingId 必填，其余可省。 */
+export type AssetRefCreateInput = {
+    role: AssetRole;
+    bindingId: string;
+    episodeId?: EpisodeId;
+    sceneId?: SceneId;
+    shotId?: ShotId;
+    artifactIds?: ArtifactId[];
+    selectedArtifactId?: ArtifactId | null;
+    metadata?: Record<string, unknown>;
+};
+
+/** PATCH /api/projects/:id/asset-refs/:refId 请求体；只改绑定与候选采用。 */
+export type AssetRefPatchInput = {
+    bindingId?: string;
+    artifactIds?: ArtifactId[];
+    selectedArtifactId?: ArtifactId | null;
+};
+
+/** GET /api/projects/:id/gates 元素。 */
+export type ProjectGate = {
+    stageId: string;
+    ready: boolean;
+    reason: string;
+    blockedBy: string[];
+};
+
+/** 单实体响应兼容 `{ <key>: entity }` 外壳与裸实体：形状已冻结但外壳未逐字约定，两种都接。 */
+function unwrapEntity<T>(data: unknown, key: string): T {
+    if (data && typeof data === "object" && key in (data as Record<string, unknown>)) {
+        return (data as Record<string, unknown>)[key] as T;
+    }
+    return data as T;
+}
+
+/** 列表响应兼容 `{ <key>: [] }` 外壳与裸数组。 */
+function unwrapList<T>(data: unknown, key: string): T[] {
+    if (Array.isArray(data)) return data as T[];
+    if (data && typeof data === "object") {
+        const value = (data as Record<string, unknown>)[key];
+        if (Array.isArray(value)) return value as T[];
+    }
+    return [];
+}
+
+/** 读集详情（含各场镜头）；不存在返回 null。 */
+export async function getEpisode(projectId: string, episodeId: string): Promise<EpisodeDetail | null> {
+    const data = await projectRequest<unknown>({
+        method: "get",
+        url: `/api/projects/${encodeURIComponent(projectId)}/episodes/${encodeURIComponent(episodeId)}`,
+    });
+    const episode = unwrapEntity<EpisodeDetail | null>(data, "episode");
+    if (!episode?.id) return null;
+    // scenes 可能内嵌在集详情里，也可能作为同级字段返回；两种都接。
+    const siblingScenes = data && typeof data === "object" ? (data as Record<string, unknown>).scenes : undefined;
+    const scenes = Array.isArray(episode.scenes) ? episode.scenes : Array.isArray(siblingScenes) ? (siblingScenes as SceneWithShots[]) : [];
+    return { ...episode, scenes };
+}
+
+/** 改镜：可改分镜字段与 index；id 不在 body 内，重排只改 index。 */
+export async function updateShot(projectId: string, shotId: string, patch: ShotPatchInput) {
+    const data = await projectRequest<unknown>({
+        method: "patch",
+        url: `/api/projects/${encodeURIComponent(projectId)}/shots/${encodeURIComponent(shotId)}`,
+        data: patch,
+    });
+    return unwrapEntity<Shot>(data, "shot");
+}
+
+export async function listAssetRefs(projectId: string): Promise<AssetRef[]> {
+    const data = await projectRequest<unknown>({ method: "get", url: `/api/projects/${encodeURIComponent(projectId)}/asset-refs` });
+    return unwrapList<AssetRef>(data, "assetRefs");
+}
+
+export async function createAssetRef(projectId: string, input: AssetRefCreateInput) {
+    const data = await projectRequest<unknown>({ method: "post", url: `/api/projects/${encodeURIComponent(projectId)}/asset-refs`, data: input });
+    return unwrapEntity<AssetRef>(data, "assetRef");
+}
+
+export async function updateAssetRef(projectId: string, refId: string, patch: AssetRefPatchInput) {
+    const data = await projectRequest<unknown>({
+        method: "patch",
+        url: `/api/projects/${encodeURIComponent(projectId)}/asset-refs/${encodeURIComponent(refId)}`,
+        data: patch,
+    });
+    return unwrapEntity<AssetRef>(data, "assetRef");
+}
+
+/** 读项目级阶段门禁；后端未就绪时抛错，由调用方回退前端推导。 */
+export async function listProjectGates(projectId: string): Promise<ProjectGate[]> {
+    const data = await projectRequest<unknown>({ method: "get", url: `/api/projects/${encodeURIComponent(projectId)}/gates` });
+    return unwrapList<ProjectGate>(data, "gates").map((gate) => ({
+        stageId: String(gate.stageId ?? ""),
+        ready: Boolean(gate.ready),
+        reason: String(gate.reason ?? ""),
+        blockedBy: Array.isArray(gate.blockedBy) ? gate.blockedBy : [],
+    }));
 }

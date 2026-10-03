@@ -509,3 +509,39 @@ async function generate({ prompt, images, videos, params, baseUrl, http, poll })
 
 return await generate({ prompt, images, videos, params, baseUrl, http, poll });`;
 }
+
+/* ------------------------------------------------------------------ *
+ * 项目内跑流水线（P0-a 工作区）：源文本读取 + run 回填项目
+ * ------------------------------------------------------------------ */
+
+/** GET /api/projects/:id/sources 的元素摘要（不含正文）。 */
+export type GatewayProjectSourceSummary = { id: string; kind: string; title: string; chars?: number };
+
+/**
+ * 读项目当前采用的源文本，供「项目内建 run」当 novel 用。
+ * 传 revisionId 时直接取该版本；否则先列 sources，优先 kind=novel，其次最新一条；无源版本返回 null。
+ * 服务端未就绪（404 等）由 gatewayRequest 转成可读错误，调用方决定提示。
+ */
+export async function resolveProjectSourceText(projectId: string, revisionId?: string | null, baseUrl?: string) {
+    let id = String(revisionId ?? "").trim();
+    if (!id) {
+        const list = await gatewayRequest<{ sources: GatewayProjectSourceSummary[] }>({ method: "get", url: `/api/projects/${encodeURIComponent(projectId)}/sources` }, baseUrl);
+        const sources = Array.isArray(list?.sources) ? list.sources : [];
+        id = (sources.find((source) => source.kind === "novel") || sources[0])?.id || "";
+    }
+    if (!id) return null;
+    const data = await gatewayRequest<{ source: { id: string; text?: string; content?: string } }>(
+        { method: "get", url: `/api/projects/${encodeURIComponent(projectId)}/sources/${encodeURIComponent(id)}` },
+        baseUrl,
+    );
+    const text = String(data?.source?.text ?? data?.source?.content ?? "");
+    return text.trim() ? { revisionId: id, text } : null;
+}
+
+/** 把 runId 追加回项目 runIds（PATCH /api/projects/:id）；run.options.projectId 只是过渡位，项目侧关联仍要显式回填。 */
+export async function attachProjectRun(projectId: string, runIds: string[], baseUrl?: string) {
+    await gatewayRequest<{ project: unknown }>(
+        { method: "patch", url: `/api/projects/${encodeURIComponent(projectId)}`, data: { runIds } },
+        baseUrl,
+    );
+}

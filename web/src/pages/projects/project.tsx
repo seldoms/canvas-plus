@@ -6,14 +6,16 @@ import { useTranslation } from "react-i18next";
 import { usePipelineStore } from "@/stores/use-pipeline-store";
 
 import { WorkspaceEntries } from "./components/workspace-entries";
-import { useProjectDetail } from "./hooks/use-project-detail";
+import { NextStepPanel } from "./components/next-step-panel";
+import { DeliveryExportButton } from "./components/delivery-export-button";
+import { useProjectWorkspace } from "./hooks/use-project-workspace";
 
-/** 项目总览页骨架：一个 projectId 走 GET /context，汇总规划、集、运行、画布与检查表。 */
+/** 项目总览页骨架：一个 projectId 走 GET /context，汇总规划、集、运行、画布与检查表，并给出门禁驱动的「下一步」。 */
 export default function ProjectOverviewPage() {
     const { t } = useTranslation();
     const navigate = useNavigate();
     const { projectId = "" } = useParams();
-    const { context, loading, error, refresh } = useProjectDetail(projectId);
+    const { context, loading, error, refresh, stageStatus, gates, gatesLoading } = useProjectWorkspace(projectId);
     const project = context?.project;
 
     const openRun = (runId: string) => {
@@ -66,11 +68,27 @@ export default function ProjectOverviewPage() {
                                 </Button>
                             </div>
 
+                            <NextStepPanel projectId={projectId} gates={gates} gatesLoading={gatesLoading} stageStatus={stageStatus} />
+
                             <section>
                                 <Typography.Title level={5} className="!mb-3">
                                     {t("projects.detail.workspaces")}
                                 </Typography.Title>
                                 <WorkspaceEntries projectId={projectId} />
+                            </section>
+
+                            <section>
+                                <div className="flex flex-wrap items-start justify-between gap-3">
+                                    <div>
+                                        <Typography.Title level={5} className="!mb-1">
+                                            {t("projects.delivery.sectionTitle")}
+                                        </Typography.Title>
+                                        <Typography.Text type="secondary" className="text-sm">
+                                            {t("projects.delivery.sectionHint")}
+                                        </Typography.Text>
+                                    </div>
+                                    <DeliveryExportButton projectId={projectId} />
+                                </div>
                             </section>
 
                             <section>

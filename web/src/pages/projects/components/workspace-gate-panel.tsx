@@ -5,25 +5,26 @@ import { useTranslation } from "react-i18next";
 import { usePipelineStore } from "@/stores/use-pipeline-store";
 import type { ReviewNote } from "@/types/domain";
 
-import { evaluateGate, stagesWithStatus, type StageStatusMap } from "../workspace-gates";
+import { stagesWithStatus, type StageStatusMap, type WorkspaceGate } from "../workspace-gates";
 import type { WorkspaceDef } from "../workspaces";
 
 /**
- * 「待确认」面板：显式呈现门禁结果 —— 上游未 done 时写明「请先完成 XX 阶段」，
- * 有阻断级风险提示时列出，读不到阶段状态时如实说明并标注临时性（等待服务端 stageGates）。
+ * 「待确认」面板：显式呈现门禁结果。
+ * 门禁结论由 workspace-gates.resolveWorkspaceGate 得出（服务端 /gates 优先，回退前端推导），
+ * 本面板只负责渲染 + 标注来源。阻断时写明被阻断的上游阶段与服务端原因。
  */
 export function WorkspaceGatePanel({
     workspace,
+    gate,
     stageStatus,
-    hasRunInfo,
     blockingNotes,
     runsLoading,
     runsError,
     runIds,
 }: {
     workspace: WorkspaceDef;
+    gate: WorkspaceGate;
     stageStatus: StageStatusMap;
-    hasRunInfo: boolean;
     blockingNotes: ReviewNote[];
     runsLoading: boolean;
     runsError: string;
@@ -31,7 +32,6 @@ export function WorkspaceGatePanel({
 }) {
     const { t } = useTranslation();
     const navigate = useNavigate();
-    const gate = evaluateGate(workspace.requires, stageStatus, hasRunInfo, blockingNotes.length);
     const running = stagesWithStatus(stageStatus, ["running", "partial"]);
     const failed = stagesWithStatus(stageStatus, ["error", "canceled"]);
     const stageName = (stage: string) => t(`pipeline.stages.${stage}`);
@@ -59,12 +59,16 @@ export function WorkspaceGatePanel({
                                         <li key={stage}>{t("projects.workspace.gate.blockedStage", { stage: stageName(stage) })}</li>
                                     ))}
                                     {gate.blockedByNotes ? <li>{t("projects.workspace.gate.blockedNotes", { count: blockingNotes.length })}</li> : null}
+                                    {gate.reason ? <li>{t("projects.workspace.gate.serverReason", { reason: gate.reason })}</li> : null}
                                 </ul>
                             }
                         />
                     ) : null}
-                    {gate.state === "ready" ? <Alert type="success" showIcon message={t("projects.workspace.gate.ready")} /> : null}
+                    {gate.state === "ready" ? <Alert type="success" showIcon message={t(workspace.editable ? "projects.workspace.gate.readyEditable" : "projects.workspace.gate.ready")} /> : null}
                     {gate.state === "unknown" ? <Alert type="info" showIcon message={t("projects.workspace.gate.unknown")} /> : null}
+                    <Typography.Text type="secondary" className="!text-xs">
+                        {t(gate.source === "server" ? "projects.workspace.gate.sourceServer" : "projects.workspace.gate.sourceFallback")}
+                    </Typography.Text>
                     {runsError ? <Alert type="warning" showIcon message={t("projects.workspace.gate.runsError")} description={runsError} /> : null}
                     {running.length ? <Typography.Text type="secondary">{t("projects.workspace.gate.running", { stages: running.map(stageName).join("、") })}</Typography.Text> : null}
                     {failed.length ? <Typography.Text type="warning">{t("projects.workspace.gate.failed", { stages: failed.map(stageName).join("、") })}</Typography.Text> : null}
@@ -73,7 +77,7 @@ export function WorkspaceGatePanel({
                             {t("projects.workspace.actions.openPipeline")}
                         </Button>
                         <Typography.Text type="secondary" className="text-xs">
-                            {t("projects.workspace.actions.pending")}
+                            {t(workspace.editable ? "projects.workspace.actions.editing" : "projects.workspace.actions.pending")}
                         </Typography.Text>
                     </Space>
                 </Space>
