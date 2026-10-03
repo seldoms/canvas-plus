@@ -250,6 +250,13 @@ export async function listProjectGates(projectId: string): Promise<ProjectGate[]
         stageId: String(gate.stageId ?? ""),
         ready: Boolean(gate.ready),
         reason: String(gate.reason ?? ""),
-        blockedBy: Array.isArray(gate.blockedBy) ? gate.blockedBy : [],
+        // 服务端 gates.js 抛的 blockedBy 是**结构化对象数组**（`{type:"upstream",stageId}` 或
+        // `{type:"review",noteId,message}`），不是字符串数组。这里只取上游阶段名给门禁文案插值用；
+        // 原样透传对象会被 `t(\`pipeline.stages.${stage}\`)` 拼成 `pipeline.stages.[object Object]`。
+        blockedBy: Array.isArray(gate.blockedBy)
+            ? (gate.blockedBy as unknown[])
+                  .map((item) => (typeof item === "string" ? item : String((item as { stageId?: unknown })?.stageId ?? "")))
+                  .filter(Boolean)
+            : [],
     }));
 }
