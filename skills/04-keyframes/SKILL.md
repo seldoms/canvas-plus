@@ -11,6 +11,15 @@ description: |
 - `role: "start"` 走 `config.pipeline.imageTemplate`（文生图）。
 - `role: "end"` 走 `config.pipeline.editTemplate`（以同镜头首帧为 `INPUT_IMAGE` 的图生图/改图）。
 
+> 视觉风格层接管自 `skills/libraries/Luster-iwai-aesthetic-prompt`（岩井俊二美学签名系统，MIT）：只吸收其**光学 / 色彩 / 介质**部分作为**默认叠加层**，剥掉 Midjourney 尾参与其人物 / 场景默认锚点；风格层与项目级 `styleAnchor` 的组合 / 覆盖规则见下文「二」。逐条对照见 `skills/libraries/luster-接线说明.md`。
+
+## 内容创作红线（硬约束）
+
+- **忠于原著、忠于用户**：关键帧只还原分镜与服化道已经确定的人物、服装、场景与动作，不得为道德教化、价值观引导、过审或「更积极健康」而改动画面设定。
+- **不注入教化式结构**：不添加原著 / 分镜里没有的「惩罚落点」「情感闭环」类画面暗示；画面内容由分镜与用户决定。
+- **风险只提示、不改稿**：识别到的政策、平台规则、年龄分级、IP 授权风险只能作为独立提示（项目层 `reviewNotes[]`）交给用户，**绝不写进 `frames` 或 `prompt`，绝不为规避风险改动画面**。
+- **质量校验照做**：`prompt` 能否直接生图、同一镜 `start` / `end` 的人物身份 / 服装 / 光线是否一致，属工艺要求，照常校验，与内容审查无关。
+
 ## 输入
 
 | 字段 | 必填 | 说明 |
@@ -71,11 +80,74 @@ description: |
 
 {"frames":[{"id":"sh1-start","shotId":"sh1","role":"start","prompt":"","template":null,"jobId":null,"artifactUrl":null,"status":"queued"}]}
 
+### 一、提示词的分层结构（顺序固定）
+
+每一帧的 `prompt` 按下面四层顺序拼成，**先风格、后内容、再光学、末介质**：
+
+1. **首句 = 项目风格锚点**：`{{options.styleAnchor}}`。这是项目级风格锚点（`Project.styleAnchor`），全项目所有生图 / 生视频提示词首句必须**一字不差**。若此处仍是**未被替换的 `{{options.styleAnchor}}`**（说明运行层没有提供项目锚点），改用下方「默认风格锚点」，且**绝不把占位符字样或 `{{ }}` 写进 `prompt`**。
+2. **主体与场景**：人物外观（年龄、体态、五官、发型、服装）与场景陈设必须来自 `design` 与该镜对应的场景，不得在这里改写人物设定。
+3. **光学 / 摄影层**：本帧的光源与光学事件（见「二」）。
+4. **介质与画质收尾**：一到两句胶质感 / 颗粒 / 色调收口。
+
+**默认风格锚点（仅当运行层未提供 `Project.styleAnchor` 时使用）**：
+`35mm film still, expired Kodak Gold 200`
+
+首句一旦由 `Project.styleAnchor` 给出，就以它为准，**不要**再把上面的默认锚点重复写进去，也不要在首句之外自拟第二套风格词。
+
+### 二、日系胶片风格层（Luster 冻结签名系统 · 条件叠加，不写死）
+
+风格层采用**优先级覆盖 + 组合**，防止一个固定风格串到所有剧：
+
+1. **项目级 `styleAnchor` 最优先**：存在时它独占 `prompt` 首句（见「一」），并压过本技能的一切默认风格。
+2. **匹配才叠加**：`styleAnchor` 指向**日系青春写实 / 生活流 / 胶质感**（或运行层未提供锚点、按本项目默认取向）时，在首句之上**叠加**下面的 Luster 冻结层；`styleAnchor` 指向**其它基调**（如赛博、硬科幻、古装、暗黑悬疑）时，**不得叠加下面的冻结句**，只可借用其**可执行结构**（单一光源 + 恰好一个光学事件 + 发丝级细节 + 冷暖分离），色彩与介质一律以 `styleAnchor` 为准。
+3. **不采用 Luster 的人物 / 场景默认锚点**（十八岁日本高中生、日本实物锚点等）：人物以 `design` 为准、场景以 `storyboard` / `design` 为准，风格层只管光学、色彩与介质。
+
+叠加时，逐字使用（一字不改）：
+
+- 风格层：`overexposure melting contours golden rim on hair, grey-blue shadows, fine grain, light leak upper right`
+- 焦点层：`1/100s shutter` + `subject tack-sharp`（同一镜多主体用 `subjects tack-sharp`）
+- 色彩公式：过期 Kodak Gold 200 —— 暗部灰蓝 × 高光暖黄 × 右上角轻微漏光 × 细颗粒中和数字锐利感 × 冷暖分离色调。
+
+叠加时还要遵守：
+
+- **每帧恰好一个光学事件**（不要堆叠两个）。事件从下述库里取一个，英文短语参考见 `skills/libraries/Luster-iwai-aesthetic-prompt/references/style-system.md`：发丝半透明琥珀金边 / 逆光过曝轮廓融化 / 大光斑前景 / 光柱罩住局部 / 云底紫闪+远处雨幕 / 几何影子分割 / 熔金暮蓝对撞 / 双色温分界线 / 花瓣变光斑 / 玻璃折射光斑 / 水面碎金反光 / 窗影投身 / 逆光尘埃悬浮 / 雨珠挂帘透光 / 信号灯红色入雾 / 萤火路灯一点暖 / 白床单透光变纱 / 雪粒逆光成星点 / 风扇发丝吹动慢光 / 汽水瓶壁凝珠反光。
+- **动态模糊只允许给环境元素**（草穗 / 花瓣 / 雨幕 / 裙摆），**禁止给人物**。
+- **有态度机位**：需要本阶段选机位 / 构图时优先贴地机位、低仰角抓拍、越肩、隔窗偷拍、门框纵深、几何分割等有态度的机位；但**机位必须服从分镜的 `prompt` / `action`**，分镜已给景别与运镜时以分镜为准。
+- **正文只用肯定式**：`prompt` 正文不写 `no` / `not` / `without` 这类否定措辞（否定交给模板，不要写进正文）。
+
+### 三、画面质量硬技巧（Luster 踩坑清单 · 质量规则）
+
+> 来自 `skills/libraries/Luster-iwai-aesthetic-prompt/references/pitfalls.md`，属**质量**要求（与内容审查无关）；人物 / 场景设定仍以 `design` / `storyboard` 为准。
+
+1. **显式声明画面人数**：先声明本帧可见人数，再写 `exactly one person` / `exactly two people`（动物入镜把动物计入），避免 AI 自行加人。
+2. **场景要写实物锚点**：不要只写抽象地点或风格词（只写 `Japanese` 会出美式街景）；写清具体的可见物件、招牌、电线杆、门窗、路面材质等能锚定环境的物理细节。
+3. **情绪写可见微动作，不裸写抽象情绪**：不要只写 `shouting` / `crying` / `sad` 这类抽象词（易被画成痛苦 / 迷茫）；改写成可见的微表情与身体反应，例如 `laughing, mouth open, eyes squeezed shut with joy`。
+4. **多人 / 性别混排给双锚点**：男女同框时分别写清性别与发型特征（如女生 `short shoulder-length hair`、男生 `clearly male short-haired`），避免特征互相污染。
+
+### 四、尺寸与生成参数（按本项目约束，不照搬云端）
+
+1. **不写 Midjourney 尾参**：`--ar` / `--style raw` / `--s` / `--no` 一律不写进 `prompt`；画幅由模板的 `WIDTH` / `HEIGHT` 决定。
+2. **宽高必须是 32 的倍数**：竖屏常用 `480×864` / `768×1344`，横屏常用 `1344×768`；实际值由 `options.image` 或 `config.pipeline.imageWidth` / `imageHeight` 决定，**模型不写尺寸**。
+3. **单镜帧数**不超过 `{{pipeline.maxKeyframesPerShot}}`（默认 2）。
+4. 真实生图由 canvas-server 任务队列执行；本阶段只产出提示词与清单，不伪造产物。
+
+### 五、自检
+
+1. 每帧 `prompt` 首句是否为**项目风格锚点原句**（而不是自拟的风格词，也不是未替换的占位符）？
+2. 叠加 Luster 层时，风格层与焦点层是否**逐字在场**、是否**恰好一个**光学事件、动态模糊是否只给环境元素？
+3. 人物外观 / 服装是否与 `design` 一致、场景是否与该镜一致、有没有引入首帧不存在的人物 / 道具？
+4. 有没有显式声明画面人数、场景有没有实物锚点、情绪有没有写成可见微动作？
+5. 有没有误写 `--ar` / `--style` 等尾参或尺寸？`template` / `jobId` / `artifactUrl` / `status` 是否已留空或置 null？
+
 ## 校验规则
 
 - 顶层必须是对象且含 `frames` 数组；每个 `frames[].shotId` 必须存在于上游 `storyboard.shots`。
 - `role` 只能是 `start` / `end` / `key`；每个镜头的 `start` 帧最多一帧。
 - `prompt` 非空且为英文；`template` 必须是 `config.pipeline.imageTemplate` 或 `editTemplate` 之一。
+- `prompt` 首句必须是项目风格锚点：要么是 `Project.styleAnchor` 原句，要么（运行层未提供锚点时）是本技能的默认风格锚点；不得自拟第三种首句。
+- 叠加 Luster 风格层时，其风格层 / 焦点层短语必须逐字出现，且每帧恰好一个光学事件。
+- 画面要显式声明可见人数、场景要有实物锚点、情绪要写成可见微动作（质量要求，来自 Luster 踩坑清单）。
+- `prompt` 内不得出现 `--ar` / `--style` / `--s` / `--no` 等生成器尾参，也不得残留 `{{...}}` 占位符。
 - `role: "end"` 的帧必须等本镜 `start` 帧拿到 `artifactUrl` 后才能入队，此时才写 `INPUT_IMAGE`；在此之前保持 `status: "queued"`、`jobId: null`。
 - 不伪造产物：没有真实任务时只留 `queued`，不允许填假的 `artifactUrl`。
 
@@ -91,3 +163,11 @@ description: |
 | `POST /api/uploads` | 上传参考图，返回 ComfyUI 侧引用名 |
 
 产物落盘：`data/runs/<runId>/keyframes.json`（注意：阶段 id 是 `keyframe`，产物键名是 `keyframes`）。
+
+## 已知边界（编排器行为，勿踩）
+
+- 编排器（`canvas-server/src/pipeline.js` 的 `readPromptTemplate` → `extractSection`）只把本文的 **`## 提示词模板`** 一节发给模型；其余章节是给人 / Agent 看的，不会进模型上下文。因此新方法论必须写进「提示词模板」（用 `###` 子标题，`^##\s` 不会在其中截断）。
+- **风格锚点注入路径**：`pipeline.js` 的 `buildContext` 只把 `novel` / `title` / `options` / `pipeline` 与上游阶段产物放进模板上下文，**不注入 `Project.styleAnchor`**。所以项目级风格锚点目前必须由运行层写进 `run.options.styleAnchor`（模板即用 `{{options.styleAnchor}}` 取用），否则该占位不被替换、退回本技能默认锚点。把 `Project` 字段接进 run 属编排器 / P0-a 范围，不在本阶段技能可改范围（改 `pipeline.js` 越界）。
+- **尺寸与采样参数由编排器填**：`WIDTH` / `HEIGHT` / `BATCH` / `SEED` / `LORA_FILE` 由 `generativePlan` 从 `config.pipeline` 与 `run.options.image` 取，模型不改。默认 `imageWidth/imageHeight` 为 `768×1344`（竖屏 9:16，均为 32 的倍数）。
+- **本项目生图模板以肯定式 `PROMPT` 为主**（如默认 `img_zimage_artistic` 不设独立负向 token），因此 Luster 的 `--no text, words, watermark` 不接线；正文一律用肯定式。
+- 本阶段的方法论只影响 `prompt` 内容与清单结构；不引入 Midjourney 尾参、Seedance 参数或任何云端平台专属格式（云端配额 / 时长不在本阶段）。
