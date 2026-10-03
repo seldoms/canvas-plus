@@ -4,9 +4,10 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { cn } from "@/lib/utils";
-import { resolveGatewayUrl, type GatewayArtifact, type GatewayStageProgress, type GatewayStageStatus } from "@/services/api/gateway";
-import { isVideoArtifact } from "../pipeline-utils";
+import { resolveGatewayUrl, type GatewayArtifact, type GatewayStageProgress, type GatewayStageStatus, type GatewayTemplateInfo } from "@/services/api/gateway";
+import { isGenerativeStage, isVideoArtifact, orphanArtifacts, stageItems, stageMediaKind, templatesForStage } from "../pipeline-utils";
 import type { PipelineStageView } from "../use-pipeline-run";
+import { CandidateStrip } from "./candidate-strip";
 
 const STATUS_CLASS: Record<GatewayStageStatus, string> = {
     pending: "text-stone-500 dark:text-stone-400",
@@ -52,13 +53,20 @@ function StageProgress({ progress }: { progress: GatewayStageProgress }) {
     );
 }
 
-export function StageCard({ index, view, busy, progress, resumeChunks, disabledReason, modelOptions, model, onModelChange, onRun, onRerun, onCancel, onEdit }: { index: number; view: PipelineStageView; busy: boolean; progress: GatewayStageProgress | null; resumeChunks: number; disabledReason: string; modelOptions: Array<{ label: string; options: Array<{ value: string; label: string }> }>; model: string; onModelChange: (model: string) => void; onRun: () => void; onRerun: () => void; onCancel: () => void; onEdit: () => void }) {
+export function StageCard({ index, view, busy, progress, resumeChunks, disabledReason, modelOptions, model, templates, regeneratingItem, onModelChange, onRun, onRerun, onCancel, onEdit, onRegenerate }: { index: number; view: PipelineStageView; busy: boolean; progress: GatewayStageProgress | null; resumeChunks: number; disabledReason: string; modelOptions: Array<{ label: string; options: Array<{ value: string; label: string }> }>; model: string; templates: GatewayTemplateInfo[]; regeneratingItem: string; onModelChange: (model: string) => void; onRun: () => void; onRerun: () => void; onCancel: () => void; onEdit: () => void; onRegenerate: (stageId: string, itemId: string, template: string) => Promise<string> }) {
     const { t } = useTranslation();
     const [expanded, setExpanded] = useState(false);
     const output = view.stage?.output;
     const running = view.status === "running";
     // 进度只在属于本阶段时显示：progress.json 是 run 级单文件，别的阶段跑时不该串到这张卡上
     const ownProgress = progress && progress.stage === view.id ? progress : null;
+    // 生成型阶段（关键帧 / 片段合成）按条目铺候选缩略图；扁平产物行只保留候选条之外的东西（如成片）
+    const generative = isGenerativeStage(view.id);
+    const items = generative ? stageItems(view.stage, view.id) : [];
+    const itemKind = stageMediaKind(view.id);
+    const stageTemplates = generative ? templatesForStage(templates, view.id) : [];
+    const itemsWithCandidates = items.filter((item) => (item.candidates || []).length);
+    const looseArtifacts = orphanArtifacts(view.artifacts, items);
 
     return (
         <section className="px-1 py-3 transition hover:bg-black/[0.02] dark:hover:bg-white/[0.03]">
@@ -105,9 +113,25 @@ export function StageCard({ index, view, busy, progress, resumeChunks, disabledR
             {disabledReason ? <div className="mt-1 text-xs text-stone-500 dark:text-stone-400">{disabledReason}</div> : null}
             {view.stage?.error ? <div className="mt-1 text-xs text-red-600 dark:text-red-400">{view.stage.error}</div> : null}
             {expanded ? <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-words text-xs leading-relaxed text-stone-600 dark:text-stone-300">{output === undefined ? t("pipeline.noOutput") : JSON.stringify(output, null, 2)}</pre> : null}
-            {view.artifacts.length ? (
+            {itemsWithCandidates.length ? (
+                <div className="mt-2 space-y-1">
+                    {itemsWithCandidates.map((item) => (
+                        <CandidateStrip
+                            key={item.id}
+                            item={item}
+                            index={items.indexOf(item)}
+                            kind={itemKind}
+                            templates={stageTemplates}
+                            busy={regeneratingItem === `${view.id}:${item.id}`}
+                            stageRunning={running}
+                            onRegenerate={(itemId, template) => onRegenerate(view.id, itemId, template)}
+                        />
+                    ))}
+                </div>
+            ) : null}
+            {looseArtifacts.length ? (
                 <div className="mt-2 flex flex-wrap gap-2">
-                    {view.artifacts.map((artifact) => (
+                    {looseArtifacts.map((artifact) => (
                         <StageArtifact key={artifact.url} artifact={artifact} />
                     ))}
                 </div>

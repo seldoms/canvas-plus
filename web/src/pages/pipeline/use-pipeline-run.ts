@@ -6,11 +6,13 @@ import {
     createPipelineRun,
     fetchGatewayJob,
     fetchGatewayLlmModels,
+    fetchGatewayProviders,
     fetchGatewayStages,
     fetchPipelineProgress,
     getPipelineRun,
     listPipelineRuns,
     probeGatewayBaseUrl,
+    regeneratePipelineItem,
     runPipelineStage as requestStageRun,
     summarizeRunStages,
     syncGatewayLlmProviders,
@@ -22,6 +24,7 @@ import {
     type GatewayStageInfo,
     type GatewayStageProgress,
     type GatewayStageStatus,
+    type GatewayTemplateInfo,
 } from "@/services/api/gateway";
 import { useConfigStore } from "@/stores/use-config-store";
 import { usePipelineStore, type PipelineRunRecord } from "@/stores/use-pipeline-store";
@@ -74,8 +77,12 @@ export function usePipelineRun() {
     const [jobs, setJobs] = useState<Record<string, GatewayJob>>({});
     const [starting, setStarting] = useState(false);
     const [busyStage, setBusyStage] = useState("");
+    /** 正在「换个模型再出一张」的条目，键为 `${stageId}:${itemId}`，用于候选条局部 loading。 */
+    const [regeneratingItem, setRegeneratingItem] = useState("");
     const [error, setError] = useState("");
     const [llmModels, setLlmModels] = useState<string[]>([]);
+    /** 网关 ComfyUI 模板清单：候选条「换个模型再出一张」按 family 过滤出同族模板。 */
+    const [templates, setTemplates] = useState<GatewayTemplateInfo[]>([]);
     const [stageModels, setStageModels] = useState<Record<string, string>>(loadStageModels);
     const [gwBase, setGwBase] = useState("");
     /** 当前阶段的细粒度进度（第几块/共几块/预计还需多久），来自轻量 progress.json。 */
@@ -123,6 +130,10 @@ export function usePipelineRun() {
             void fetchGatewayStages(base)
                 .then(setStages)
                 .catch(() => setStages([]));
+            // ComfyUI 模板清单（含 family）：候选条换模型下拉只从中过滤本阶段同族模板，不另建一套清单
+            void fetchGatewayProviders(base)
+                .then((available) => setTemplates(available.comfy?.templates || []))
+                .catch(() => setTemplates([]));
             // 把浏览器渠道（OpenAI 兼容且含文本模型）同步进网关 LLM 注册表，之后运行只传模型名、网关按「渠道名::模型」路由
             const providers = store.config.channels
                 .filter((channel) => (!channel.apiFormat || channel.apiFormat === "openai") && channel.baseUrl && !channel.name.includes("::") && channel.models.some((model) => model.capability === "text"))
@@ -400,6 +411,27 @@ export function usePipelineRun() {
         [runId, gwBase],
     );
 
+    /**
+     * 给单个条目追加一个候选（换模型再出一张）。后端 202 返回整个 run（该阶段已 running），这里只回错误文案，
+     * 好让候选条就近提示 400/409 的拒绝；成功返回空串，终态由现有轮询接回。
+     */
+    const regenerateItem = useCallback(
+        async (stageId: string, itemId: string, template?: string): Promise<string> => {
+            if (!runId) return i18n.t("pipeline.candidates.noRun");
+            const key = `${stageId}:${itemId}`;
+            setRegeneratingItem(key);
+            try {
+                setRun(await regeneratePipelineItem(runId, stageId, { itemId, template }, gwBase || undefined));
+                return "";
+            } catch (caught) {
+                return messageOf(caught);
+            } finally {
+                setRegeneratingItem("");
+            }
+        },
+        [runId, gwBase],
+    );
+
     return {
         novel,
         setNovel,
@@ -423,6 +455,9 @@ export function usePipelineRun() {
         modelOptions,
         stageModels,
         setStageModel,
+        templates,
+        regeneratingItem,
+        regenerateItem,
     };
 }
 

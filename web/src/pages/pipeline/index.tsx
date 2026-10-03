@@ -18,7 +18,7 @@ async function readNovelFiles(files: File[]) {
 
 export default function PipelinePage() {
     const { t } = useTranslation();
-    const { novel, setNovel, run, views, starting, busyStage, runningStage, progress, error, createRunOnly, runStage, cancelStage, saveStageOutput, refresh, openRun, resetRun, loadHistory, historyLoading, renameRun, modelOptions, stageModels, setStageModel } = usePipelineRun();
+    const { novel, setNovel, run, views, starting, busyStage, runningStage, progress, error, createRunOnly, runStage, cancelStage, saveStageOutput, refresh, openRun, resetRun, loadHistory, historyLoading, renameRun, modelOptions, stageModels, setStageModel, templates, regeneratingItem, regenerateItem } = usePipelineRun();
     const [editing, setEditing] = useState<{ id: string; title: string; text: string; error: string } | null>(null);
     const [imported, setImported] = useState<{ names: string[]; rejected: number } | null>(null);
     const [showHistory, setShowHistory] = useState(false);
@@ -198,11 +198,14 @@ export default function PipelinePage() {
                                     disabledReason={disabledReason(view)}
                                     modelOptions={modelOptions}
                                     model={stageModels[view.id] || ""}
+                                    templates={templates}
+                                    regeneratingItem={regeneratingItem}
                                     onModelChange={(value) => setStageModel(view.id, value)}
                                     onRun={() => void runStage(view.id)}
                                     onRerun={() => void runStage(view.id, { resume: resumableChunks(view) > 0 })}
                                     onCancel={() => void cancelStage(view.id)}
                                     onEdit={() => openEditor(view)}
+                                    onRegenerate={regenerateItem}
                                 />
                             ))}
                         </div>

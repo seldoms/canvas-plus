@@ -34,6 +34,31 @@ export type GatewayJob = {
     finishedAt?: string;
 };
 
+/** 生成型阶段里一个条目的单个候选：一次 attempt 的模板、任务与产物（domain-contract §3.6）。 */
+export type GatewayCandidate = {
+    template: string;
+    jobId: string;
+    artifactUrl: string | null;
+    status: GatewayJobStatus;
+    params: Record<string, unknown>;
+    createdAt: string;
+};
+
+/** 生成型阶段（keyframe / assembly）里一个可生成条目；jobId / artifactUrl / status 是 selected 的派生别名。 */
+export type GatewayGenerationItem = {
+    id: string;
+    shotId?: string;
+    role?: string;
+    prompt?: string;
+    durationSec?: number;
+    template?: string;
+    jobId?: string | null;
+    artifactUrl?: string | null;
+    status?: GatewayJobStatus;
+    selected?: string | null;
+    candidates?: GatewayCandidate[];
+};
+
 export type GatewayHealth = {
     ok: boolean;
     llm: { ok: boolean; baseUrl: string; error?: string };
@@ -291,6 +316,17 @@ export async function syncGatewayLlmProviders(providers: Array<{ name: string; b
 
 export async function updatePipelineStageInput(runId: string, stageId: string, patch: GatewayStageInputPatch, baseUrl?: string) {
     const data = await gatewayRequest<{ run: GatewayPipelineRun }>({ method: "post", url: `/api/pipeline/runs/${encodeURIComponent(runId)}/steps/${encodeURIComponent(stageId)}/input`, data: patch }, baseUrl);
+    return data.run;
+}
+
+export type GatewayRegenerateBody = { itemId: string; template?: string; params?: Record<string, unknown> };
+
+/**
+ * 为单个条目追加一个候选（换模型再出一张）。后端 202 立刻返回整个 run，新候选已是 queued 且 selected 指向它；
+ * 阶段被落成 running，终态仍由进度轮询拿到后再 getPipelineRun。400/409 的拒绝由 gatewayRequest 转成可读 message。
+ */
+export async function regeneratePipelineItem(runId: string, stageId: string, body: GatewayRegenerateBody, baseUrl?: string) {
+    const data = await gatewayRequest<{ run: GatewayPipelineRun }>({ method: "post", url: `/api/pipeline/runs/${encodeURIComponent(runId)}/steps/${encodeURIComponent(stageId)}/regenerate`, data: body }, baseUrl);
     return data.run;
 }
 
