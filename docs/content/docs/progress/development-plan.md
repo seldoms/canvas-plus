@@ -516,3 +516,69 @@ ReviewNote { id, scope: project|episode|scene|shot, targetId?, stage,
 当前无待确认项。
 
 后续追加：**D12 旧画布数据丢弃、不做迁移**（用户已拍板，见 §7）。
+
+---
+
+## 11. 进度快照与问题台账（2026-10-03 复核）
+
+> 本章回答两个问题：**做到什么程度**、**遇到哪些问题**。§8 写的是「要做什么 + 验收标准」，本章写「实际到哪了」。
+> **复核方式**：读代码 + 跑后端测试 + 打接口，不采信 CHANGELOG 自述。
+> **复核基线**：后端 `cd canvas-server && node --test test/*.test.mjs` → **206 tests / 206 pass / fail 0 / 2.9s**。
+> 问题详情与整改单在 `pilot-issues.md`（只追加、不替换）；本章只做**汇总与分级**。
+
+### 11.1 做到什么程度 —— 对着 §8 工作包逐项对账
+
+图例：✅ 验收达成 ｜ 🟡 主体可用但有明确缺口 ｜ ⬜ 未开始
+
+| 工作包 | 实际状态 | 一手证据 / 缺口 |
+| --- | --- | --- |
+| **P0-0** 冻结领域契约 | ✅ | `canvas-server/src/contracts.js`(4.6KB)、`web/src/types/domain.ts`(9.5KB)、`docs/content/docs/progress/domain-contract.md`(29.7KB)；阶段 ID 权威命名 `plan/script/storyboard/design/keyframe/assembly/post` 冻结；D1–D12 决策全部登记 |
+| **P0-a** Project 内核 | 🟡 | `canvas-server/src/projects.js`(15.1KB) 把项目落盘到 `data/projects/<id>/`（`prj_` ULID + 原子写 + 乐观版本）；网关 `/api/projects` 列表/创建/详情/上下文/归档；前端「我的项目」+ 6 个工作区骨架页（带阶段门禁）。**缺口**：`Project.runIds[]` 从头到尾没有被写过 → 项目→run 导航天然断链，项目与 run 的唯一关联是 `run.options.projectId`（活证据：`run-murpt28o-46f5q` 的 options 只有 `{"projectId":"prj_01M3ZK27NYPXRPBVRAT0SSJ2B5"}`） |
+| **P0-b** Job→Artifact→Slot 回写断链 | ✅ | 网关订阅任务终态并重放 `jobs.json` 历史终态；`registerArtifacts`(pipeline.js:942) 幂等回写 `(projectId,runId,artifactUrl)`；阶段状态以任务终态为准（`done/running/partial/error/canceled`）。**活证据**：`run-murpt28o-46f5q` keyframe `artifacts=29`、assembly `artifacts=9`（此前恒为 0） |
+| **P0-c** run 可恢复 | 🟡 | 异步 run（`POST .../run` 立即 202）+ 轻量 `progress.json` + `GET /runs/:id/progress` + 取消贯通 LLM/Job + 断点续跑 + `run.estimate` 成本预估 + 启动收敛 `reconcileRunning()`。**缺口**：与 P0-a 同一条——项目→run 的**反向**导航（按项目列 run）仍未建立 |
+| **P0-d** 资源调度与注册表 | ✅ | `canvas-server/src/registry.js`(12.4KB)：本地 GPU / CPU / 外部 API / LLM 四类独立队列；`canRun` 提交前能力路由（能力不匹配直接拒，不静默换设备）；`deviceLabel`/`maxConcurrency`。测试 `registry`(8) + `registry-wiring`(5) |
+| **P1-a** 项目产物图谱 | 🟡 | 生成型阶段产物自动登记 AssetRef（幂等去重）；项目工作区新增「过程时间线」，图片/视频缩略图 + 文本摘要 + 成片清单，阶段运行中 3s/8s 节流轮询。**缺口**：① 资产页只有 artifact id、无缩略图（会诊 M3）；② 「资产」页读前端本地 store，与项目 AssetRef **仍是两个数据源** |
+| **P1-b** 活扣与批量执行 | ✅ | `GenerationSlot.candidates[]` + 逐条 `regenerate` 端点（换模型只追加候选、保留历史）+ 模型别名（`alias` 字段，请求仍用原名）+ 横向候选交互 + 逐镜重试（默认 2 次） |
+| **P1-c** 六阶段方法论 + 阶段 0 规划 | 🟡 | 阶段 0 预置选项（题材/基调/动画片/像素风/布偶戏）+ `planSuggestion` 自动回填（仅字段仍占位且建议≠现值）；01 改三段式 `analyze→outline→script`（`progress.steps` 可见）；五个阶段技能接进方法论库并加「内容创作红线」；`normalizeEpisodes` 强制集数对齐 `plan.episodeCount`。**缺口**：**D1 时长档位跟模型（`24×秒+3`，仅 5/10/15s）未落**；**D3 关键帧单镜 ≥4 张未落（现配置 2，自动重生成未接）**——两处因产品负责人 2026-10-03 喊停改码而挂起，`pipeline.js` 已空出 |
+| **P1-d** Delivery Executor | ✅ | `canvas-server/src/delivery.js`(15.2KB)：片段 ffmpeg concat（`cut`）/ xfade（`fade`/`dissolve`/`slide`）+ 外部音轨 `amix` 混音 + 字幕烧入 + 抽封面 + 可复现拼接清单 + ffmpeg 日志；独立接口 `POST /runs/:id/steps/assembly/assemble`（片段未全成功 400、已成片默认复用）。测试 `delivery`(19) + `delivery-wiring`(8) |
+| **P2** 项目复用与清理 | ⬜ | 未开始（跨集资产版本、引用计数/清理、离线导出、移除旧兼容层）|
+
+**一句话**：P0 五个包（契约/内核/回写/恢复/调度）与 P1 的活扣、交付两个包**主体已落地且有测试或活证据**；剩下三处**明确缺口**——① 项目↔run 双向绑定（`runIds[]` 从未写）；② D1/D3 两条产品硬约束未实现；③ 资产页与项目 AssetRef 双数据源。
+
+### 11.2 遇到哪些问题（按严重度分级，仅列**当前仍未解决**的）
+
+> 完整历史（含已修复项与四视角会诊结论）见 `pilot-issues.md`。以下只列此刻还压着流程的。
+
+**🔴 阻断级（流程走不通 / 成片不可用）**
+
+| # | 问题 | 现状 |
+| --- | --- | --- |
+| 22 | **角色形象没有固定下来**（用户 2026-10-03 报） | 「角色一致性」只存在于**文字**：01 让模型输出 `characters[].appearance`，之后每镜把这段文字重复写进提示词。**没有定妆图/参考图锁脸、没有 seed 锁定、没有角色 ID 贯穿到生图**。而 H3 参考图生视频模板（`video_h3_ref2v_image`，一张参考图即可锁角色）**已经具备能力却没被接进来** |
+| 23 | **角色音频 / 音色没有固定下来**（用户 2026-10-03 报） | `voice` 字段同样只是**文本描述**（"音色、语速、口音"），**下游零消费**：无 TTS 接线、无音色库、无配音产物。`delivery.js` 有 `amix` 混音能力，但 `plan.audio` **靠外部手工传入**，流水线没有任何环节生产音频轨 |
+| — | **成片配乐与配音不一致** | 根因未定位（上一轮排查被新诉求打断）。与 #23 同源：音频轨既非流水线产出、也无对齐校验 |
+| — | 关键帧 / 视频工作区显示 | 会诊发现 12 行空壳、29 张图不可见；本轮已补「过程时间线」，**但尚未复跑验证** |
+
+**🟡 严重级（能跑但结果错 / 数据不可靠）**
+
+| # | 问题 | 现状 |
+| --- | --- | --- |
+| — | `Project.runIds[]` 从未被写 | 项目→run 只有正向 `options.projectId`，反向列表不存在 → 项目页找不回自己的 run |
+| — | 渠道注册表**双写者** | 前端 `POST /api/llm/providers` **整车覆盖**写回，曾把服务端直写的 deepseek 冲掉（铁证：`data/llm-providers.json.pre-cleanup.json`）。应改为「服务端网关路由表唯一写者 / 浏览器渠道表浏览器唯一写者，只按 name 显式 upsert」 |
+| — | 关键帧与分镜对不上 | `shots[5].negativePrompt` 含 `costume change, unnatural transformation`，把正向要求的变身镜用负向词否定；`sh12` 公园抛球实际室内抱狗 |
+| — | 「2 集 × 30 秒」无人负责 | 9 个 run `episodes=[]`、分镜 16 镜 83 秒超 38%。本轮 `normalizeEpisodes` + 集数进提示词**已部分修复**，待复跑验证 |
+| — | 网关 `/v1/models` 漏外部渠道 | 已修（`GET /v1/models` 在 `/v1/*path` 兜底前），**需重启才生效**，因出片 run 在跑故延后 |
+| — | D1 / D3 两条产品硬约束未落 | 见 11.1 的 P1-c 缺口 |
+
+**🟢 一般 / 改进（不影响正确性）**
+
+- `forwardToLlm`(llm.js L145) 仍用 fetch → 非流式长生成仍可能撞 `headersTimeout`（`chat()` 已改 `node:http`）。
+- 147 内存：`num_ctx=32768` 稳态 ~14.9GB / 16GB（余 ~1.5GB），出事故退 16384。
+- `pipeline.js` 1456 行「全能编排器」超 `AGENTS.md:24` 约定；通用编排器硬编码阶段 id、`|| []` 吞结构错误（架构视角 D1/D2，均带触发条件）。
+- `model-plugin.ts` 1435 行；`projects.js` 兼子模块微型框架。
+
+### 11.3 本轮风险面（交给下一个接手者）
+
+1. **工作区有 20 个文件未提交**（含 `canvas-server/src/pipeline.js`、`test/pipeline.test.mjs`、`pilot-issues.md`、7 个前端新文件）——测试 206/206 与 tsc 均绿，属「已验证可提交」状态；建议按主题分批落盘（原文导入 / styleAnchor / 过程时间线）。
+2. **出片长跑仍在进行**：`run-murpt28o-46f5q`（项目 `prj_01M3ZK27NYPXRPBVRAT0SSJ2B5`）script/storyboard/design/keyframe ✅，assembly `running`（已 9 个片段产物）。重启网关会打断它——这是 `/v1/models` 修复延后的原因。
+3. **服务**：`canvas-server` systemd active，`127.0.0.1:8788`，`/api/health` ok；远端 ComfyUI `192.168.123.147:8188`(0.38.2)。
+4. **文档滞后已修正**：`pilot-issues.md` 第一轮 21 条状态此前一律写「待讨论」，与实际不符，本轮按核实结果逐条更新（见该文件）。

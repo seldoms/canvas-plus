@@ -4,6 +4,7 @@
 > 用途：记录端到端试跑（小说 → 成片）过程中暴露的缺陷与改进项。
 > 规矩：**只追加，不替换、不遗忘**；每条必须带一手证据（接口响应 / 报错原文 / 文件路径）；修复并复跑验证通过后才标 ✅。
 > 每轮试跑单开一节，便于两轮对比。
+> ⚠️ 2026-10-03 结构修正：此前 #11–#21 因登记脚本锚点失配导致位置错乱/丢失，已由主控重排补齐（内容未改，只修正归属与编号顺序）。
 
 ## 判定口径
 
@@ -17,34 +18,555 @@
 
 | # | 阶段 | 现象 | 一手证据 | 严重度 | 影响面 | 状态 |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | 01 剧本 | `episodes: []` 为空，未按 `plan.episodeCount=2` 建立两集结构，导致后面全程单集 | `GET /api/pipeline/runs/run-murnwa81-k27eq` → `stages.script.output.episodes = []`（已实测） | 严重 | 技能与提示词 | 待讨论 |
-| 2 | 02 分镜 | 只产出 1 场 4 镜、每镜 4 秒（合计 16 秒），目标 2 集×30 秒=60 秒，**时长差 3.75 倍** | `stages.storyboard.output.shots` 长度 4，`durationSec` 合计 16（已实测） | 严重 | 技能与提示词 | 待讨论 |
-| 3 | 01/02 传导 | `plan` 的 `episodeCount`/`episodeDurationSec` 未进入剧本/分镜提示词，LLM 无从得知"分两集、每集 30 秒" | 同 1、2；`plan` 回填后各阶段产物无任何集/时长约束痕迹 | 严重 | 技能与提示词 | 待讨论 |
-| 4 | 02 分镜 | 角色双形态未区分：第 3 镜 prompt 同时写"小猫白色"与"变成大姐姐后"，生成时必然打架 | `shots[2].prompt` 原文："…小猫白色，变成大姐姐后，…" | 一般 | 技能与提示词 | 待讨论 |
-| 5 | 接口 | `GET /progress` 只报"当前/最后一个阶段"，无全阶段汇总，前端要额外拉 `/runs/:id` | 响应原文 `{"progress":{"stage":"script","phase":"done",...},"inflight":false}` | 改进 | 后端 | 待讨论 |
-| 6 | 接口 | 更新项目必须用 `PATCH`，但无 API 文档/发现入口，调用方只能读源码猜（我第一把用 POST 得到 404） | `POST /api/projects/:id` → 404；改 `PATCH` → 200（已实测） | 改进 | 后端 | 待讨论 |
-| 7 | 03 资产 | **阻断**：LLM 请求打到已停用的 `127.0.0.1:1234`（LM Studio）返回 400，阶段直接 error、产物 null | `stages.design.error` 原文：`LLM 请求失败：http://127.0.0.1:1234/v1/chat/completions 返回 400 No models loaded`；`config.json` 的 `llm.fallbacks=["http://127.0.0.1:1234","http://127.0.0.1:8080"]` 两个都是死服务 | 阻断 | 后端/配置 | 已修复待验证 |
-| 8 | 03 资产 | **阻断**：LLM 响应头超时 `UND_ERR_HEADERS_TIMEOUT`。**根因是「非流式 + 生成超过 5 分钟」**：`chat()` 硬编码 `stream:false`，ollama 必须整段生成完才发响应头，而 undici 默认 `headersTimeout=300s` 先于 `timeoutMs(600s)` 触发；换用已常驻的 `qwen3.8:27b` 后**仍然复现**（证明与模型切换无关，切换只是放大因素） | ① `stages.design.error` 原文；② 实测 `n_gen=2774` 仍在生成、14.45 t/s → 单次 > 5 分钟；③ 换成常驻模型仍复现；④ `llm.js:198` 写死 `stream:false`、全仓无 undici 配置 | 阻断 | 后端 | 已修复待验证 |
-| 9 | 03 资产 | 同一模型下 OpenAI 兼容层比 ollama 原生 API 慢约 **2.3 倍**（4.4s vs 1.9s）；阶段技能要求的 `think:false` 兼容层也不认 | 本轮实测数据（见 #8 证据） | 改进 | 后端 | 待讨论 |
-| 10 | 05 片段/成片 | `stage.status=done` 与 `stage.output.assembly.status=queued` 语义冲突：片段都生成完了、阶段却显示 done，但成片根本没合成（无 url）。前端不得不自己加"done 且有 url 才算成片"的守卫 | 前端线在 `run-muprxois-wvmqq` 上实测发现；`pipeline.js` 的 `executeAssemble` 回写位置 | 一般 | 后端/契约 | 待讨论 |
+| 1 | 01 剧本 | `episodes: []` 为空，未按 `plan.episodeCount=2` 建立两集结构，导致后面全程单集 | `GET /api/pipeline/runs/run-murnwa81-k27eq` → `stages.script.output.episodes = []`（已实测） ⟶ 复核：`normalizeEpisodes` 按 `plan.episodeCount` 重排、不符即记 warnings；测试「分集数不符 plan 时按目标重排并记 warnings」通过 | 严重 | 技能与提示词 | ✅已验证 |
+| 2 | 02 分镜 | 只产出 1 场 4 镜、每镜 4 秒（合计 16 秒），目标 2 集×30 秒=60 秒，**时长差 3.75 倍** | `stages.storyboard.output.shots` 长度 4，`durationSec` 合计 16（已实测） ⟶ 复核：属 **D1** 时长档位跟模型（H3 `24×秒+3`，仅 5/10/15s）——产品已拍板、**代码未落**（用户 2026-10-03 喊停改码，`pipeline.js` 已空出） | 严重 | 技能与提示词 | 已定整改方案 |
+| 3 | 01/02 传导 | `plan` 的 `episodeCount`/`episodeDurationSec` 未进入剧本/分镜提示词，LLM 无从得知"分两集、每集 30 秒" | 同 1、2；`plan` 回填后各阶段产物无任何集/时长约束痕迹 ⟶ 复核：`buildContext` 注入 `plan`，集数/时长真进提示词；测试「plan 集数/时长真进提示词」通过 | 严重 | 技能与提示词 | ✅已验证 |
+| 4 | 02 分镜 | 角色双形态未区分：第 3 镜 prompt 同时写"小猫白色"与"变成大姐姐后"，生成时必然打架 | `shots[2].prompt` 原文："…小猫白色，变成大姐姐后，…" ⟶ 复核：未修。负向词红线校验未落（见 11.2「关键帧与分镜对不上」） | 一般 | 技能与提示词 | 待讨论 |
+| 5 | 接口 | `GET /progress` 只报"当前/最后一个阶段"，无全阶段汇总，前端要额外拉 `/runs/:id` | 响应原文 `{"progress":{"stage":"script","phase":"done",...},"inflight":false}` ⟶ 复核：`progress` 带 `steps` 多步结构且旧字段 `stage/phase/done/total/label` 保留；测试通过 | 改进 | 后端 | ✅已验证 |
+| 6 | 接口 | 更新项目必须用 `PATCH`，但无 API 文档/发现入口，调用方只能读源码猜（我第一把用 POST 得到 404） | `POST /api/projects/:id` → 404；改 `PATCH` → 200（已实测） ⟶ 复核：未修。`PATCH` 用法仍只存在于源码，未补文档/发现入口 | 改进 | 后端 | 待讨论 |
+| 7 | 03 资产 | **阻断**：LLM 请求打到已停用的 `127.0.0.1:1234`（LM Studio）返回 400，阶段直接 error、产物 null | `stages.design.error` 原文：`LLM 请求失败：http://127.0.0.1:1234/v1/chat/completions 返回 400 No models loaded`；`config.json` 的 `llm.fallbacks=["http://127.0.0.1:1234","http://127.0.0.1:8080"]` 两个都是死服务 ⟶ 复核：`config.json` 清空死亡 `llm.fallbacks`、`defaultModel=qwen3.8:27b`；`/api/health` → `llm.ok=true` | 阻断 | 后端/配置 | ✅已验证 |
+| 8 | 03 资产 | **阻断**：LLM 响应头超时 `UND_ERR_HEADERS_TIMEOUT`。**根因是「非流式 + 生成超过 5 分钟」**：`chat()` 硬编码 `stream:false`，ollama 必须整段生成完才发响应头，而 undici 默认 `headersTimeout=300s` 先于 `timeoutMs(600s)` 触发；换用已常驻的 `qwen3.8:27b` 后**仍然复现**（证明与模型切换无关，切换只是放大因素） | ① `stages.design.error` 原文；② 实测 `n_gen=2774` 仍在生成、14.45 t/s → 单次 > 5 分钟；③ 换成常驻模型仍复现；④ `llm.js:198` 写死 `stream:false`、全仓无 undici 配置 ⟶ 复核：`chat()` 改 `node:http` 绕开 undici `headersTimeout=300s`；真机复跑 design **405 秒 done** | 阻断 | 后端 | ✅已验证 |
+| 9 | 03 资产 | 同一模型下 OpenAI 兼容层比 ollama 原生 API 慢约 **2.3 倍**（4.4s vs 1.9s）；阶段技能要求的 `think:false` 兼容层也不认 | 本轮实测数据（见 #8 证据） ⟶ 复核：走 ollama 原生 `/api/chat`（`toChatCompletion` 归一返回形状）；`test/llm-ollama-native.test.mjs`(10) | 改进 | 后端 | ✅已验证 |
+| 10 | 05 片段/成片 | `stage.status=done` 与 `stage.output.assembly.status=queued` 语义冲突：片段都生成完了、阶段却显示 done，但成片根本没合成（无 url）。前端不得不自己加"done 且有 url 才算成片"的守卫 | 前端线在 `run-muprxois-wvmqq` 上实测发现；`pipeline.js` 的 `executeAssemble` 回写位置 ⟶ 复核：阶段状态以任务终态为准 `done/running/partial/error/canceled`；活证据 assembly `running` + 9 产物 | 一般 | 后端/契约 | ✅已验证 |
+| 11 | 03/04 文本阶段 | **提示词与输出持续膨胀**：design 需生成 2774+ tokens（提示词 3343 字）；keyframe 提示词达 **7987 字**，纯文本准备耗数分钟 | `/progress` 的 `label:"模型生成中（提示词 7987 字）"`；ollama 日志 `n_gen=2774, tg=14.45 t/s` ⟶ 复核：未修。上下文裁剪（G5）未落，提示词膨胀现状未变 | 一般 | 技能与提示词 | 待讨论 |
+| 12 | 后端 | `chat()` 长生成超时已修（`node:http` 替代 fetch），但**前端代理 `forwardToLlm` 仍用 fetch**，同一 headersTimeout 隐患未堵 | `src/providers/llm.js:148` 仍是 fetch ⟶ 复核：未修。`llm.js:145` 仍用 fetch，`headersTimeout` 隐患未堵 | 改进 | 后端 | 待讨论 |
+| 13 | 后端 | LLM 走 OpenAI 兼容层而非 ollama 原生 `/api/chat`：慢约 2.3 倍，兼容层也不认 `think:false` | 实测 4.4s（兼容层）vs 1.9s（原生） ⟶ 复核：同 #9，改走原生 `/api/chat`（`isOllamaBase` 判 11434），`think:false` 生效 | 改进 | 后端 | ✅已验证 |
+| 14 | 03 资产/04 关键帧 | **严重**：`plan.visualStyle=二维动画` 未传导到资产阶段提示词——生成的 `prompt` 是英文且写 `Realistic live-action character asset`（写实真人） | `stages.design.output.characters[0].prompt` 原文 ⟶ 复核：`buildContext` 注入 `styleAnchor`+`plan`，01/03/04 不再自拟写实英文风格 | 严重 | 技能与提示词 | ✅已验证 |
+| 15 | 04 关键帧 | **严重**：风格锚点自相矛盾——发往 ComfyUI 的原始 PROMPT 里同时有「二维动画」和「35mm film still / expired Kodak Gold 200 / fine grain」（互相否定）。根因：`pipeline.js buildContext` 不注入 `Project.styleAnchor` → 技能 `{{options.styleAnchor}}` 未替换 → 回落胶片默认锚点，`withPromptHead` 又把真 anchor 前置叠加 | 会诊内容质量视角逐字核对下载图与原始 prompt；`pipeline.js:341-349` ⟶ 复核：锚点唯一事实源：缺锚点用中性兜底、胶片层改**条件叠加**、`withPromptHead` 去重；见 CHANGELOG 首条 + `luster-接线说明.md` | 严重 | 后端+技能 | ✅已验证 |
+| 16 | 04 关键帧 | **阻断**：`模型未返回合法 JSON`。根因是**提示词+输出超出 `num_ctx`**：`ollama show qwen3.8:27b` → `num_ctx=8192`，而提示词 7987 字 + 需输出内容合计超限 → 输出被硬截断。canvas-plus 全程未传任何 `max_tokens`/`num_ctx` | ① `stages.keyframe.error`；② ollama 日志 `200 / 5m10s`（调用成功非超时）；③ `num_ctx 8192` ⟶ 复核：原生 `/api/chat` + `config.llm.numCtx=32768`；`test/llm-ollama-native.test.mjs`(10 例)；实测 num_ctx 32768（14.9GB/16GB） | 阻断 | 后端 | ✅已验证 |
+| 17 | 配置/前端 | **用户报**：生图模型下拉里没有「千问 2.1」。根因：配置页渠道模板库 `web/src/services/api/model-plugin.ts` 是硬编码清单，**漏了 qwen21**；后端模板 `img_qwen21_t2i`/`img_qwen21_edit` 存在且真机跑通 | `/api/providers` 含两支 qwen21 模板；前端 `modelPlugin.templates.*` 无 qwen 条目 ⟶ 复核：`model-plugin.ts` 补 qwen21 两模板 + i18n；网关 `BUILTIN_GATEWAY_SCRIPTS` 补两支；147 真机五项跑通 | 一般 | 前端 | ✅已验证 |
+| 18 | 04/资产 | **用户报**：生成的图在「资产」里看不到。① 生图产物**未自动登记**为项目 AssetRef；② 「资产」页读的是**前端本地 store**，与项目资产(AssetRef)不是同一数据源 | ① 27 个 artifacts 但 `GET /asset-refs` → `{"assetRefs": []}`；② `pages/assets/index.tsx:37` 用 `useAssetStore` ⟶ 复核：① 自动登记 ✅ `registerArtifacts`(pipeline.js:942) 幂等回写（活证据 9 产物）；② 资产页与项目 AssetRef **仍两个数据源**、无缩略图 → 未修 | 严重 | 后端+产品 | 🟡部分修复 |
+| 19 | 配置/渠道 | **用户报**：画布生成文章**疯狂弹认证弹窗**。① 选中渠道指向 `api.openai.com` **无 key** → 401 反复弹；② 前端 `POST /api/llm/providers` 会**整体覆盖写回**渠道表，冲掉服务器侧配置 | ① 用户现象；② `data/llm-providers.json` 仅剩无 key 占位渠道；③ `gateway.ts:313`；④ `pre-cleanup` 备份佐证 ⟶ 复核：死亡渠道已清、`/v1/models` 已含外部渠道；**需重启网关生效**（出片在跑故延后） | 严重 | 前端+后端 | 已修复待验证 |
+| 20 | 接口/网关 | 网关 `/v1/models` **不含外部渠道模型**：只返回 8 个本地 ollama 模型，而 `/api/providers` 含 `deepseek::*` → 用户经「一键接入网关」拿不到可用 API 文本模型 | `curl /v1/models` → 8 个；`curl /api/providers` → 含 deepseek::* ⟶ 复核：`GET /v1/models`(index.js:276-284) 挂在 `/v1/*path` 之前 + `resolveModelTarget`；`test/gateway-http.test.mjs`(5)。**需重启生效** | 严重 | 后端 | 已修复待验证 |
+| 21 | 项目工作区/产物 | **用户报**：项目里看产物「全是空白」。产物**只在「流水线」页渲染**，项目工作区**一个 artifact 都没接**。用户强调：创作是线性过程，「后台每生成出一张，前台就展示一张」 | `grep -n "artifact/产物/media" pages/projects/components/workspace-run-panel.tsx` → 零命中 ⟶ 复核：项目工作区新增「过程时间线」（`use-project-timeline.ts`/`process-timeline-model.ts`/`process-timeline.tsx`）；**未提交、未复跑验证** | 严重 | 前端+产品 | 已修复待验证 |
+
 ### 本轮会诊结论
 
-（跑完由多角色评审汇总，含整改单与优先级）
+（跑完由多角色评审汇总，含整改单与优先级 —— 见文末四个视角的会诊结论区）
 
 ---
+
+## 用户追加报告（2026-10-03，成片级）
+
+> 由产品负责人在本轮观察成片后**追加报告**，编号承第一轮（21 条）；只追加，不替换。
+> 判定：三条都属于 **「创作线性过程里该被固定的东西没有被固定」**——角色外观、角色声音、声画关系，全都没进生产链。
+
+| # | 阶段 | 现象 | 一手证据 | 严重度 | 影响面 | 状态 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 22 | 03/04 资产·关键帧 | **用户报**：**角色形象没有固定下来**——同一个人在不同镜头里长相/发型/衣服会漂。根因：角色一致性**只存在于文字**，01 输出 `characters[].appearance`（"年龄、体态、五官、发型、服装基调"）后，每镜把这段文字重复写进提示词，**没有定妆图、没有参考图锁脸、没有 seed 锁定、没有角色 ID 贯穿到生图** | ① `pipeline.js:581/586/621/627` 全是对 `appearance` 的**文本**要求；② 全仓 grep `characterLock/characterRef/voiceId` **零命中**；③ 具备锁角色能力的 `video_h3_ref2v_image`（"只需一张参考图即可锁角色"）**未被流水线接入** | 阻断 | 技能与提示词/后端 | 待讨论 |
+| 23 | 05 片段/成片 | **用户报**：**角色的音频、音色也没有固定下来**——全片没有角色配音轨。根因：`voice` 字段（"音色、语速、口音、口头禅"）**下游零消费**：无 TTS 接线、无音色库、无 `voiceId` 参数、无音频产物 | ① `skills/01-novel-to-script/SKILL.md:42/97` 只要求"写" voice；② `delivery.js` 有 `amix` 混音能力但 `plan.audio` **靠外部手工传入**（L292 `plan.audio.map(...)`），流水线**没有任何环节生产音频**；③ `pipeline.js:1439` 只有 `audio: options.audio` 透传 | 阻断 | 契约/技能与提示词 | 待讨论 |
+| 24 | 05 片段/成片 | **用户报**：**配乐与配音不一致**（成片级事故） | 根因未定位（上一轮排查被新诉求打断）。与 #23 同源：音轨既非流水线产出、也无对齐校验 → 稳定性依赖外部手工 | 阻断 | 前端+后端 | 待讨论 |
+
+### 已有方法论但未接线（可直接吸收，不必从零设计）
+
+`skills/libraries/doubao-creative-drama` 已把这两条写成方法论，**流水线没接**：
+
+- **角色形象**：`assets` 阶段"角色、场景、道具、视觉风格、参考图用途、**一致性锚点**、音色或台词锚点"，并强制顺序「主角设定图 → 用户确认 → 配角/反派设定图（逐位输出逐位确认）→ 角色总体确认 → 场景全景图…」。
+- **音色**：`references/assets.md:25` ——「项目总时长 > 15 秒则**必须生成角色高光台词视频以建立稳定的音色和动态基准**」；「输出音色描述：声线、年龄感、质感、情绪状态」；`docs/short-drama-methodology.md:383`「1 条 5-10 秒角色介绍视频（用设定图做参考，角色说一句符合人设的台词，输出音色描述）」。
+- 换句话说：**能力与路线图都在仓库里，缺的是把它接进 03/04/05 三个阶段的产物契约（角色设定图作为生图/生视频参考图 + 音频轨作为 05 的必需产物）。**
 
 ## 第二轮（猫狗微电影·复跑，新建项目）
 
 | # | 阶段 | 现象 | 一手证据 | 严重度 | 影响面 | 状态 |
 | --- | --- | --- | --- | --- | --- | --- |
-| — | — | 待跑 | — | — | — | — |
+| 22/23/24 | 04/05 | 见上节「用户追加报告」——角色形象、音色、声画关系三条成片级缺陷 | 同上 | 阻断 | 技能与提示词/后端 | 待讨论 |
+| ✅ 已修好 | 01/02/03/04 | 集数对齐 `plan.episodeCount`（#1/#3）、风格锚点唯一事实源（#14/#15）、提示词 `num_ctx` 撑开（#16）、生图模型接入（#17）、产物自动登记（#18①） | 后端 206/206；活证据 keyframe `artifacts=29` | — | — | ✅已验证 |
+| ⚠️ 仍在 | 04/05 | 关键帧与分镜对不上（负向词否定正向要求）、提示词膨胀 7987 字、无角色锁 | 见 #4/#11/#22 | 严重 | 技能与提示词 | 待讨论 |
+| ⏳ 进行中 | 05 成片 | 本轮复跑 run `run-murpt28o-46f5q`（项目 `prj_01M3ZK27NYPXRPBVRAT0SSJ2B5`）：script/storyboard/design/keyframe ✅（29 图）、**assembly `running`**（已 9 个片段产物） | `GET /api/pipeline/runs/run-murpt28o-46f5q` | — | — | 运行中 |
 
 ### 与第一轮对比
 
 （哪些修好了、哪些还在、新暴露了什么）
-| 11 | 03/04 文本阶段 | **提示词与输出持续膨胀**：design 需生成 2774+ tokens（提示词 3343 字）；**keyframe 阶段的提示词已达 7987 字**，纯文本准备就耗数分钟，且每个文本阶段串行等待。根因是各阶段把完整上游产物全量拼进提示词，没有裁剪/摘要 | ① ollama 日志 `n_gen=2774, tg=14.45 t/s`；② keyframe 的 `/progress` `label: "模型生成中（提示词 7987 字）"`；③ design 实测 405 秒完成 | 一般 | 技能与提示词 | 待讨论 |
-| 12 | 后端 | `chat()` 的长生成超时已修（`node:http` 替代 fetch，177 项测试全绿），但**前端代理 `forwardToLlm` 仍用 fetch**，同一 headersTimeout 隐患未堵 | 修复线回报：`llm.js:148` 仍是 `await fetch(...)` | 改进 | 后端 | 待讨论 |
-| 13 | 后端 | LLM 走 OpenAI 兼容层而非 ollama 原生 `/api/chat`：慢约 2.3 倍，且兼容层不认 `think:false`（无法关思考） | 本轮实测 4.4s vs 1.9s；memory 记录的既有结论 | 改进 | 后端 | 待讨论 |
-### 本轮会诊结论
 
-（同上）
+
+## 产品负责人拍板（2026-10-03）
+
+> 四条决策均为**原话口径**，作为后续整改的硬约束。评审员列的拍板点已全部有结论。
+
+### D1 时长 —— 档位**跟着模型走**（模型支持的选项相对固定），先定时长再填内容
+
+> 原话①：「时长我记得是可以跟着 minimax h3 之类的模型标准走的，它们是**按帧算**的……**先算时长，再往里面填内容，确保不遗漏**」
+> 原话②（补充，更本质）：「**时长锚点应该是跟着模型走的，模型有哪些选项应该是相对固定的**」
+
+- **核心原则**：时长档位是**模型的能力元数据**，不是用户自由填的数字。**每个模型自带一组相对固定的时长选项**，选了模型就只能从它的档位里选。
+- **已知档位（H3，已从 skill 查证）**：只有 5s / 10s / 15s 三档，帧数 = `24 × 秒 + 3`（123 / 243 / 363），24fps 封装；原生面积上限 768×1344。
+- **执行含义**：
+  1. 模型（模板）定义里要带**时长档位**字段（如 `durations: [5, 10, 15]`），与「模型清单」同源——**清单从后端接口动态取，档位随之而来**，不在前端硬编码。
+  2. 项目 plan 的时长**从档位里选**（而非自由输入）；换模型 → 可选档位跟着变。
+  3. 定完骨架后**再往每个槽位填内容**；Σ段时长必须等于骨架，缺一段都要报出来（"确保不遗漏"）。
+  4. 不允许先写内容、再让时长随意膨胀（现状 16 镜 83 秒就是反着来的）。
+- **待落实**：H3 之外的模型（Wan / Minimax 其他变体等）各自的档位需**逐个查证后登记**，不许拍脑袋。
+
+### D2 风格锚点 —— 全局唯一，单镜可改细节
+> 「风格锚点**肯定是要唯一的**，但是**每个镜头的提示词是可以改的**，也就是说有个**全局配置，但是还是可以改部分细节**」
+
+- **执行含义**：`styleAnchor` 是风格维度的**唯一事实源**，任何镜头/资产不得覆盖它（治 #15 那条自相矛盾）；但允许**单镜在锚点之上追加细节**（景别/动作/光线等），不许改写风格基调。
+- 实现上要能区分「加细节」与「改风格」——后者必须被拒绝或忽略。
+
+### D3 关键帧 —— 一次出 4 张以上，不达标就重生成
+> 「关键帧**一次生产 4 张以上**，咋可能不达标，**不达标就重新生产嘛**」
+
+- **执行含义**：单镜默认**一次生成 ≥4 个候选**（当前 `maxKeyframesPerShot=2` 需上调）；不达标**自动重新生成**，不需要停下等人挑。
+- 配合已有机制：单镜自动重试默认 2 次（此前已确认）。
+
+### D4 集数与时长 —— 按实际需要走
+> 「改成多少秒我觉得**没啥问题**啊，根据**实际需要**走」
+
+- **执行含义**：集数/时长不做硬编码限制，由内容和 D1 的骨架共同决定；项目设定里的数值是**起点**而非枷锁。
+
+---
+
+## 会诊结论 · 产品动线 / 半自动化视角
+
+> 评审员：**产品动线 / 半自动化**（只管「人用起来顺不顺、手工环节还剩多少」；架构耦合、前后端契约、内容质量由另外三位评审员出结论）。
+> 方法：**纸面推演**（未真跑生成、未碰 147 上在跑的 14 段视频）。
+> 证据：`web/src/pages/projects/**`、`pages/assets/index.tsx`、`pages/config/**`、`pages/pipeline/**`、`AGENTS.md`、`development-plan.md`、`prd.md`、`domain-contract.md`。
+
+### A. 完整动线推演（用户动作 → 系统反馈 → 摩擦）
+
+1. **项目列表 → 新建**：点「新建短剧项目」弹 `CreateProjectModal`（剧名/风格锚点/题材/基调/视觉风格/画幅/剧集数/单集时长/受众），预置标签可多选可自定义，有默认值 → ✅ 无摩擦。
+2. **填完创建**：仅落 `project.json`（title + plan）。**没有原文导入入口** → ❌ **阻断级**：产品负责人设想的「导原文」在项目 UI 里不存在。`CreateProjectModal` 无 file/TextArea；后端 `POST /api/projects/:id/sources` 存在，但**全前端 0 处调用**（`grep -E "createSource|sourceRevisionId|uploadSource" --include=*.tsx` = 0）。
+3. **项目总览**：`NextStepPanel` 按 `/gates` 指出下一步阶段 + 跳转按钮，还标注门禁来源（server/fallback） → ✅ 信息够（「下一步做什么」这一问答得不错）。
+4. **进「规划·剧本」工作区点「运行本阶段」**：`useProjectRun.start` 调 `resolveProjectSourceText(projectId, sourceRevisionId)` 取源文本，取不到 → 报 `needSource` → ❌ **走到这一步就断了**。用户被迫去 `/pipeline` 另起 run，项目页形同虚设。
+5. **（绕道 `/pipeline` 跑完 01/02）回项目「分镜」工作区**：按集选、场景→镜头铺开、就地改镜/调序 → ✅ 本项目最完整的编辑面。
+6. **「资产」工作区**：只列 AssetRef，每条 = role 标签 + bindingId 输入框 + artifact **id 短串**，**无缩略图**；「登记」= 手选 role + **手打 bindingId 字符串** → ❌ 严重摩擦：看不出资产长什么样，也接不上刚生成的图。
+7. **「关键帧」工作区**：`keyframes.tsx` 仅 12 行、无 children = **纯骨架** → ❌ 严重：25 分钟生成的 29 张图在项目里**完全看不到**。
+8. **「视频·后期」工作区**：同样纯骨架 → ❌ 片段/成片在项目里看不到。
+9. **总览页「导出交付包」**：按钮 + 进度 + 结果（episodes/files/missing）齐全 → ✅ 交互完整（前提是成片真产出）。
+
+> **一句话结论**：六阶段里项目内只有「剧本（只读跳转）/ 分镜」真能用；资产半残、关键帧/视频是空壳，且连第一步「导原文」都缺。端到端动线在项目页只通了约 **2.5/6 段**。这解释了产品负责人「你生的图为什么在资产里没看到」——项目工作区根本没有显示图的容器。
+
+### B. 摩擦点清单（按严重度排序）
+
+| # | 现象 | 用户会怎么想 | 建议 |
+| --- | --- | --- | --- |
+| M1 | 项目内无法导入原文（无入口） | 「我新建了项目，原文往哪放？」 | 新建时可选导入 + 项目页补「导入/更换原文」；调已存在的 `POST /projects/:id/sources` |
+| M2 | 关键帧/视频工作区是骨架，看不到任何产物 | 「跑了 25 分钟，我的图呢？是不是卡死了？」 | keyframes 工作区接入候选图网格 + 采用；video 接入片段列表与成片 |
+| M3 | 资产页只显示 artifact id，无缩略图、无自动入池 | 「这就是你说的'资产'？」 | 项目资产页内联缩略图；产物生成后自动/半自动进资产候选（见 C1） |
+| M4 | 资产登记 = 手打 bindingId 字符串 | 「我要记住剧本里角色叫什么才能登记？」 | bindingId 改为下拉（从剧本 characters/scenes/props 选） |
+| M5 | 项目工作区不能选模型/模板，静默用服务端默认 | 「为什么这里出的图和 /pipeline 不一样？」 | 项目内显式展示「继承配置默认：X」，高级覆盖收折叠区 |
+| M6 | 生成型阶段进度无 done/total/ETA，只有一句「生成中」 | 「29 张到底出了几张？」 | 后端补 done/total/label/etaMs（见 D） |
+| M7 | 项目 run 列表只显示裸 runId，无标题/时间 | 「哪个 run 是这部片的成片？」 | 用 `listPipelineRuns` 的 title/createdAt 渲染；提供默认「当前生产 run」概念 |
+| M8 | 工作区固定跑 `runIds[0]`，无 run 选择器 | 「我想重跑但怕覆盖现在这条」 | 增加「当前 run」选择器 + 新建 run 入口 |
+| M9 | 每阶段选模型分散（/pipeline 逐阶段、项目页无），且 `stageModels` 存 localStorage 全局 | 「我第 2 集改了模型，第 1 集怎么跟着变了？」 | `stageModels` 按 projectId 命名空间；与 plan §4「跨项目串台」同源 |
+
+### C. 半自动化缺口盘点（该不该自动化 + 成本 + 收益）
+
+| 优先级 | 环节 | 现状 | 自动化后用户省了什么 | 成本 |
+| --- | --- | --- | --- | --- |
+| **P0** | 项目内导入原文 | 无入口，必须绕 `/pipeline` | 少一次页面跳转 + 少一次重复粘贴；项目成为唯一入口 | 小（后端已有） |
+| **P0** | 产物→项目资产候选 | 生成物只登记为 Artifact，AssetRef 全手工 | 29 张关键帧不再需要逐张手登记；直接可选用 | 中（后端投影已做一半） |
+| **P0** | 关键帧候选展示 + 采用 | 项目内看不到图 | 25 分钟等待变可监督、可挑选 | 中 |
+| **P0** | 成片合成执行体（ffmpeg） | `assembly` 只是规划，无执行体（见 #10/P1-d） | 从「片段排队中」到能导出交付包 | 大（P1-d 本就要做） |
+| **P1** | 生成型阶段进度 done/total/ETA | 只有 phase:"running" | 长任务不再「以为卡死」，可判断还要多久 | 小（复用 script 的 progress 形状） |
+| **P1** | 模型选择统一 + 项目内默认继承 | /pipeline 逐阶段选；项目页无 | 五个阶段不再各选一次，配置页一处定默认 | 小 |
+| **P1** | 多 run 选择 / 命名展示 | 固定 runIds[0]、裸 id | 「这部片的成片在哪」可回答 | 小 |
+| **P2** | 一键铺到画布（run 产物 → 画布） | 无 | 手工另存/重传 60 次归零 | 中（底座已有 `applyCanvasAgentOps`） |
+| **P2** | 从素材库登记到项目 | 两个资产世界互不相通 | 已有素材可复用进项目 | 小 |
+| **P2** | 交付包/候选批量下载 | 交付包已有；候选无批量下载 | 多候选归档一次搞定 | 小 |
+
+**明确「不该自动化」**：逐阶段人工确认门禁（D11）保留；改稿/过审（AGENTS.md 内容规范）不由系统代做。
+
+### D. 进度与反馈（对齐全阶段后端能力）
+
+- **已有**：`progress.json`（轻量、几十字节）+ `GET /progress`；字段 `stage/phase/done/total/label/reused/avgMsPerChunk/etaMs/error/startedAt/finishedAt`（见 domain-contract §9）；01 剧本额外有 `steps[]`（analyze→outline→script 多步可见，产品负责人已认可）。
+- **缺口**：
+  1. **生成型阶段（关键帧/片段）只写 `phase:"running"`，无 done/total/label/etaMs** → 前端 `StageProgress` 只能显示「生成中」，**没有「第 12/29 张」也没有 ETA**。这正是 #171（job.progress 只填 0/0）在流水线层的表现。
+  2. **项目工作区（`useProjectRun`）只轮询 `/progress`，不轮询 jobs** → 关键帧阶段在项目页连「有几张在跑」都看不到（`/pipeline` 页靠轮询 jobs + CandidateStrip 才勉强可见）。
+  3. **长任务「以为卡死」风险确实存在**：25 分钟出 29 张期间，项目页只有一句「生成中」，且无断点/心跳/已出图数。`/pipeline` 页稍好（候选条陆续出现），但项目页是盲盒。
+- **建议**：生成型阶段的后端投影补 `done/total/label/etaMs`（total=本阶段 item 数，done=落终态 job 数）；前端项目工作区接入候选图轮询。
+
+### E. 多项目 / 多集 / 多 run
+
+- **多项目**：列表/详情/归档齐，✅ 基本可用。
+- **多集**：`plan.episodeCount` 驱动后端 `createEpisodes` 确定性分集；但**只有 /storyboard 工作区有集选择器**，资产/关键帧/视频/规划工作区都是项目级、不分集 → 用户「我第 2 集的资产在哪」无落点。
+- **多 run**：`project.runIds[]` 可存多条，但工作区 `runId = createdRunId || context.runIds[0]`，**默认永远跑第一条，无切换入口**；总览页 run 列表只显示裸 id。
+- **心智模型撞墙点**：「我这个项目的成片在哪？」——① 视频工作区是空壳；② run 列表只有裸 id；③ `stage.status=done` 与 `assembly.status=queued` 语义冲突（#10）会让用户以为成片好了。这三者叠加，用户无法定位成片。
+- **建议**：引入明确的「当前生产 run」概念并让工作区、总览页、交付按钮读同一个 run；集级视图至少在关键帧/资产工作区补一级集筛选。
+
+### F. 拍板点（必须产品负责人定）
+
+1. **资产页归并方案（问题 #18 前端一半）** — 三选一：
+   - **(推荐)** 项目资产页为**主视图**（AssetRef 按 role 分组 + 缩略图 + 「从产物/素材库登记」），全局 `/assets` 降级为**个人素材来源**，用「登记到项目」桥接。**不合并成单一视图**——因为 AssetRef 是项目语义引用（role/bindingId），全局 Asset 是跨项目通用素材（无 projectId），生命周期不同，合并会污染「这部剧的资产」。
+   - 合并成一张表（不推荐：语义混杂）。
+   - 两个页签并列（可接受，但需明确默认落在项目资产）。
+2. **成片「完成」的判定口径**：stage.status=done / 有 url / 有交付包，三者取哪个为准？直接影响交付按钮的绿/灰。
+3. **多 run 策略**：一个项目只跑一条主线 run，还是允许多 run 并存并让用户选？（决定 `runIds[0]` 默认行为是否要改）
+4. **原文导入形态**：新建项目时导入，还是项目内单列「导入/更换原文」步骤。
+5. **项目内是否允许逐阶段选模型**：与「配置页一处定默认」有张力，需定「项目内只继承」还是「可覆盖」。
+
+### G. 可直接做（不需要拍板）
+
+- 项目资产页渲染缩略图（`artifactIds`/`selectedArtifactId` → `/api/artifacts/...`）、关键帧工作区补候选图网格。
+- 生成型阶段后端补 `done/total/label/etaMs`（沿用 script 的 progress 形状，仅追加字段）。
+- bindingId 由手打字符串改为从剧本 characters/scenes/props 生成的下拉。
+- 总览页 run 列表显示 `title + createdAt` 而非裸 id。
+- 项目工作区补「继承配置默认模型：X」的只读提示。
+- `stageModels` 按 projectId 命名空间隔离（修 plan §4「跨项目串台」）。
+
+---
+
+## 会诊结论 · 架构/耦合视角（评审员：架构与耦合）
+
+> 评审范围：代码结构、职责边界、可演化性。**不看**产品动线、前后端字段契约、内容质量（另三位评审员负责）。
+> **口径校准（重要）**：本文落盘时 `pilot-issues.md` 实存 **#1–#13 共 13 条**（第一轮 10 条 + 第二轮 3 条），**没有 #16 / #18 / #20**；引用它们的任务描述与本文件不符。下文按**主题**对齐，不按编号：LLM 层三轮修改 = #7/#8/#12/#13；产物自动登记 = 代码里的 `registerArtifacts`（pipeline.js:942）；接口设计 = #5/#6。若后续补登到 20 条，请以主题定位。
+
+### 一、结构诊断（位置 → 问题 → 为何会痛 → 证据）
+
+**D1. `pipeline.js` 已是一个 1456 行的「全能编排器」，承担 ≥4 个可由文件名区分的职责。**
+- 位置：`canvas-server/src/pipeline.js:1-1456`。
+- 问题：同一文件里并列着工具层（`parseJsonLoose:84`、`fillTemplate:114`、`extractSection:101`、`snap32:51`、`frameCountFor:44`、`dimensionsForRatio:60`）与业务层（`composeScriptSteps:747`、`attachGeneration:1148`、`projectJob:1181`、`registerArtifacts:942`、`beginAssemble:1339`）：五段式编排 + 分块 map-reduce + 提示词模板解析 + Job 投影 + 资产登记 + ffmpeg 编排全在一个模块。
+- 为何会痛：改任意一处（加一步、改一条契约）都在同一文件内，回归面=全文件；`AGENTS.md:24`「一个文件只干一件事」已被越过，且这正是"先堆成一坨再指望以后重构"的形态。
+- 证据：文件规模 1456 行 / 84KB，远超其余业务模块（episodes 303、delivery 343、jobs 278、assets 113、gates 74）。
+
+**D2. 通用编排器里硬编码各阶段 id 与上游产物形状，形成隐形跨模块契约。**
+- 位置：`pipeline.js:816`（`def.id === "script"`）、`1001-1042`（`def.id === "keyframe"` 分支）、`1118-1119`、`1152-1153`、`1188`、`1193-1195`（`run.stages.storyboard.output.shots` / `run.stages.keyframe.output.frames`）、`1287`（`GENERATIVE_STAGES`）。
+- 问题：`const shots = run.stages?.storyboard?.output?.shots || [];` 这类直读在 4 处重复，且**全部用可选链吞掉结构错误**。
+- 为何会痛：这是不受契约保护的隐式耦合——分镜/关键帧产物结构一变，pipeline 静默读 `undefined`，不报错只降级（缺模板 token、条目永久不入队）。#1/#3「plan 未传导」与此同源：pipeline 从不回报"上游读丢了什么"。
+- 证据：`pipeline.js:1118-1119`、`1152-1153`、`1193-1195` 四处同型直读，无一处写 warning。
+
+**D3. `createPipeline` 依赖注入已达 10 项，且混装三类语义。**
+- 位置：`index.js:133-146`（唯一装配点）↔ `pipeline.js:129`（`createPipeline({ config, skillsDir, jobs, comfy, llm, runJob, assemble = assembleEpisode, getProject, applyPlanSuggestion, registerAssetRef })`）。
+- 问题：入参混了 (a) 能力依赖（`jobs/comfy/llm/runJob`）、(b) 项目存储回调（`getProject/applyPlanSuggestion/registerAssetRef`）、(c) 后期执行体（`assemble`）——而 `assemble` **同时被默认 `import`（`pipeline.js:6`）与参数注入两条接法并存**，读者要同时看默认值和 index.js 才知道谁生效。
+- 为何会痛：入参表成了"万能插座"；每新增一个项目侧能力就再塞一个回调，没有边界信号。
+- **判据校准**：按 `AGENTS.md:27`「只有出现第二个实现才抽接口」——当前只有 index.js 一个装配点、每个回调只有一个实现，**此刻不该抽接口**；但"注入项 > 5 且都源自项目存储"已是"应收成一个对象"的信号（见整改 A5）。
+
+**D4. `files.js` 反向 import `http.js`，是 `AGENTS.md` 自己点名的错误分层，至今未改。**
+- 位置：`files.js:6` `import { guessContentType } from "./http.js"`，并在 `:8` re-export。
+- 问题：存储层依赖 HTTP 层。MIME 判断的根在 http.js，files.js 只做路径/落盘，却把整个 HTTP 模块拖进依赖图。
+- 为何会痛：任何在非 HTTP 场景（脚本、单测、CLI）复用 files.js 都会连带加载 http.js；分层一旦开口就会接着开。
+- 证据：`AGENTS.md:21` 逐字写「files.js 为了拿 MIME 去 import http.js 的 guessContentType 就是错误分层，内容类型判断属于 HTTP 层」，代码与之冲突。
+
+**D5. LLM 层是「fetch / node:http 双实现」，#12 未闭环——但这不是死代码。**
+- 位置：`llm.js:112`（getJson，fetch）、`231`（forwardToLlm，fetch）、`269`（postJson，node:http，供 chat）。
+- 问题：三轮修改后同时存在两套发送实现。`#12` 指出 `forwardToLlm` 非流式 chat 仍走 fetch，同一 `UND_ERR_HEADERS_TIMEOUT`（300s）隐患未堵。
+- 为何**部分**会痛：chat()/postJson 走 node:http 已解 #8 根因；但探活（getJson）与 /v1 透传（forwardToLlm）仍 fetch。好消息是三者用途本就不同（长非流式 POST / 短探活 / 流式透传），**不是死代码也不是重复实现**；缺的是**一条规则**，不是统一实现（见"不该动"）。
+
+**D6. `jobs.js` 与 `pipeline.js` 构成"双写者"，且投影在队列关键路径上同步跑磁盘。**
+- 位置：`jobs.js` 的 `update()` 内 `emit("change")` ↔ `pipeline.js:1206 bindJobs()` 订阅后跑 `projectJob`（pipeline.js:1181）。
+- 问题：`jobs.update` 在 worker 主循环里同步 emit；listener 里做 `readFileSync`/`writeFileSync`（`projectJob → recomputeStage → registerArtifacts → saveRun`，终点 `pipeline.js:1199`）。
+- 为何会痛：run.json 仍内嵌整本小说，**每个 job 终态一次全量重写**；163 块 / 几十镜规模下即 MB 级写放大。（progress.json 已拆出是正确先例，run.json 本体未拆。）
+
+**D7. `registerArtifacts` 是 `recomputeStage` 里的隐式副作用，且每次重算全量读项目。**
+- 位置：`pipeline.js:886-890`（`recomputeStage` 内调 `registerArtifacts`）、`942-977`（实现）、`:948` `projectOf(run)` 读盘。
+- 问题：名为"重算阶段状态"的函数里偷偷写项目资产；每次调用 `projectOf(run)` 读盘 + 重建 `seen` 集合（`:952`）。
+- 为何会痛：状态计算与存储写入无法分离测试；且它在每个 job 终态必经路径上，复杂度 O(已有 refs × 本次 artifacts)。当前规模可忍，条目上千时变成回写热点。「#18 产物自动登记」的结构风险正在此：**登记时机隐式耦合在重算里**，而非显式的"产物就绪"事件。
+
+**D8. 前端 `model-plugin.ts` 1435 行硬编码脚本库 vs `gateway.ts` 动态生成。**
+- 位置：`model-plugin.ts:227-1435`（15 个脚本模板：image 7 / video 4 / audio 2 / text 2）↔ `gateway.ts:361-540`。
+- 现状**不是简单重复**：`gateway.ts:371-376` 通过 `BUILTIN_GATEWAY_SCRIPTS`（`:361-369`）复用 model-plugin 里的脚本字符串，只有无内置脚本的模板才用 `buildGatewayTemplateScript`（`:444`）动态生成。这是有效的去重。
+- 为何仍会痛：脚本以**字符串字面量**存在，每个脚本内部各抄一份 `resolveSize` / `absoluteUrl` / `waitForJob`（见 `model-plugin.ts:453-496`）。改一条通用逻辑要在 N 个字符串里同步改；字符串无类型检查、无 lint。演化方向：模板只增不减，行数线性增长。
+
+**D9. 无 ESM 环形 import，但有"逻辑环"：`projects.js` 兼作子模块的微型框架。**
+- 位置：`projects.js` 把内部原语（`ulid` / `httpError` / `badRequest` / `requireArray` / `requireProject` / `persistProject` / `readJson` / `writeJsonAtomic`）打包成 `entityStore` 注入给 `episodes` / `sources` / `assets`。
+- 为何可接受：规避了真正的 ESM 环（episodes 不 import projects），是最低成本解。
+- 为何仍是隐患：`projects.js` 从"存储内核"膨胀成"存储内核 + 微型框架 + 服务定位器"，子模块依赖父模块的实现细节而非显式契约。
+
+### 二、表态：看着乱但健康的局部代价，**不该动**
+
+- **`llm.js` 的 fetch/node:http 双栈——不该统一。** 三处用途不同（长非流式 POST=node:http；短探活=可接受 fetch；流式透传=fetch 的 `body` 迭代最省事）。强行统一要么逼探活用 node:http（多写），要么逼流式透传用 node:http（自己实现背压）——为一致性付无收益成本。只需补规则注释（见 A6）。
+- **`model-plugin.ts` 的脚本字符串——不该抽公共函数/工厂。** 这些脚本是给用户看、可编辑、可复制进"自定义模型脚本"的**自包含产物**；抽成 import 会让脚本不再自包含，直接违背该设计初衷。当前重复 helper 是清醒的局部代价。
+- **`projects.js` 的 `entityStore` 注入——不该改成 import。** 现写法是规避 ESM 环的最低成本解；改成接口层/工厂正是 `AGENTS.md:27` 反对的过度抽象。
+- **`createPipeline` 现在不该抽接口。** 每个注入只有一个真实实现（仅 runJob 有 local/runninghub 两实现、已合理）。符合"第二个实现才抽"。
+- **300 行左右的各模块（episodes/delivery/jobs/assets/gates）——都不该动。** 边界清楚、单职责，是 6 模块里最健康的部分。
+
+### 三、整改建议（分级 · 成本 · **明确触发条件**）
+
+| 编号 | 级别 | 成本 | 动作 | **触发条件（什么时候做）** |
+| --- | --- | --- | --- | --- |
+| A1 | P0 | 小 | `files.js` 停止 import/re-export `guessContentType`；需要它的调用方（http.js、index.js）直接从 http.js 取，MIME 表留 http.js。 | **随时**。因 `AGENTS.md:21` 明文点名，可作一次独立小修；或下次动 files.js/http.js 的 MIME 相关行时顺手做。 |
+| A2 | P1 | 中 | 把 `pipeline.js` 的阶段无关纯函数（`parseJsonLoose/fillTemplate/extractSection/snap32/frameCountFor/dimensionsForRatio`）抽到 `pipeline-util.js`；尺寸吸附直接复用 `generate.js:90` 已有实现（消除第二份）。 | **下一次要新增或修改任一文本阶段时**（就近小步做，不为抽而抽）。 |
+| A3 | P1 | 小 | D2：5 处 `run.stages.X.output.Y` 直读收成一个 `upstreamOf(run, stageId, key)`，结构缺失时给 `stage.warning` 而非静默 `|| []`。 | **下一次再出现"某阶段产物没被下游读到"的试跑问题时**（#1/#3 传导问题同源，很可能会再出现）。 |
+| A4 | P1 | 中 | D6/D7：把整本小说从 `run.json` 拆成独立 `novel.txt`（progress.json 已是先例），切断"每 job 终态一次全量 MB 级写"。 | **当单 run 条目 > 约 50 或 run.json > 2MB 时**——即第二轮试跑若上量就触发，不必现在改。 |
+| A5 | P2 | 中 | D3：**不抽接口**，只把 `getProject/applyPlanSuggestion/registerAssetRef` 三个项目存储回调收成一个 `projectStore` 对象传入。 | **出现第二个 `createPipeline` 装配点时**（如批量/测试脚手架需要另一套注入）；只有一个装配点就不动。 |
+| A6 | P2 | 小 | D5/#12：给 `forwardToLlm` 与其调用点补一条明确规则注释（"非流式 chat 不得经 /v1 转发；透传只服务流式"），或对非流式透传加最大 headersTimeout 保护。 | **前端复现"聊天长时间无响应最后报超时"时**；否则仅补注释，不改实现。 |
+
+### 四、与其它视角的边界
+
+- #1–#4、#11（内容质量/提示词）不在本结论内。
+- 但 **#1/#3「plan 未传导」与 D2 同源**：编排器吞掉结构错误、无 warning 回传。建议由内容质量视角定"该传什么"，我这边只定"传丢了要能看见"（A3）。
+- #5/#6（接口）属契约视角；本视角的补充仅一句：`index.js` 的 `submitGeneration`/`backends` 已在路由层做了少量业务判定（能力校验、job 构造），尚在 `AGENTS.md:22` 容忍边界内，**不构成欠债，不必动**。
+
+## 会诊结论 · 前后端契约 / 数据流视角（评审员：接口契约与数据流）
+
+> 视角：接口清单、契约文档与实现的偏差、数据源与命名、错误语义、配置/进度两条数据流的所有权。**只读评审**，未改代码、未跑任务、未重启服务。
+> 一手证据：`canvas-server/src/index.js`(路由表 712 行)、`contracts.js`、`projects.js`、`pipeline.js`、`providers/llm.js`、`providers/comfy.js`、`http.js`、`web/src/services/api/gateway.ts`、`web/src/stores/use-config-store.ts`、`web/src/pages/pipeline/use-pipeline-run.ts`、`web/src/types/domain.ts`、`canvas-server/README.md`、`p0a-project-kernel-plan.md`、`data/llm-providers*.json`（引用格式：文件:行）。
+
+### 一、接口清单（全量路由，来自 `index.js`）
+
+| 方法 | 路径 | 用途 | 请求形状 | 响应形状 | 标记 |
+| --- | --- | --- | --- | --- | --- |
+| GET | `/` | 前端入口/服务信息 | — | HTML 或 serviceInfo | — |
+| GET | `/api` | 服务自描述 | — | serviceInfo | ⚠ endpoints 列表过期（C9） |
+| GET | `/api/health` | 健康探测 | — | `{ok,llm,comfy,runninghub,queue}` | llm/comfy 失败降级 `ok:false` |
+| GET | `/api/backends` | 生成后端清单 | — | `{backends,defaultBackend,allowRunningHub}` | 与 `/api/providers.backends` 重复 |
+| GET | `/api/providers` | 能力清单 | — | `{llm:{baseUrl,models},comfy:{templates,models,error?},backends}` | llm 失败静默空，comfy 失败带 error（不对称） |
+| GET | `/api/skills` | 阶段/技能清单 | — | `{skills: stages}` | ⚠ 与 `/api/pipeline/stages` **同源、键名不同** |
+| GET | `/api/llm/models` | 模型清单 | — | `{models:string[]}` | ⚠ 与 `/v1/models`、`/api/providers.llm.models` 同源 |
+| GET | `/api/llm/providers` | 外部渠道清单（脱敏） | — | `{providers:[{name,baseUrl,hasKey}]}` | — |
+| POST | `/api/llm/providers` | 外部渠道写入 | `{providers:[{name,baseUrl,apiKey?}]}` | `{providers}(脱敏)` | **⚠ 全量替换、无版本/无合并 → 覆盖事故（C2）** |
+| GET | `/v1/models` | OpenAI 兼容模型清单 | — | `{object,data:[{id,object,owned_by}]}` | 与上同源 |
+| ANY | `/v1/*` | LLM 透传 | 原样 | 原样 / 502 | 透传**不走**注册表（只打 baseUrl/fallbacks） |
+| POST | `/api/generate/image`、`/api/generate/video` | 提交生成 | `{template,params,name?,backend?}` | `201{job}` | 失败 400 |
+| POST | `/api/uploads` | 上传素材 | multipart 或 raw | `201{name,comfyName}` | — |
+| GET | `/api/jobs` | 任务列表 | `?status&limit` | `{jobs}` | — |
+| GET | `/api/jobs/:id` | 任务详情 | — | `{job}` / 404 | — |
+| POST | `/api/jobs/:id/cancel` | 取消任务 | — | `{job}` / 404 | — |
+| GET | `/api/artifacts/:jobId/:filename` | 产物字节流 | `?download=1` | 文件 / 400 / 404 | — |
+| GET | `/api/pipeline/stages` | 阶段定义 | — | `{stages}` | 与 `/api/skills` 同源 |
+| GET | `/api/pipeline/runs` | 运行列表 | — | `{runs: 完整 run[]}` | **⚠ 内嵌 novel，可达数 MB（C6）** |
+| POST | `/api/pipeline/runs` | 建 run | `{novel,title?,options?}` | `201{run}` | 缺 novel→400 |
+| GET | `/api/pipeline/runs/:id` | run 详情 | — | `{run}` / 404 | ⚠ 内嵌 novel |
+| GET | `/api/pipeline/runs/:id/progress` | 轻量进度 | — | `{progress,inflight}` | **⚠ 仅单阶段、无全阶段汇总（#5 / C6）** |
+| POST | `/api/pipeline/runs/:id/steps/:stage/run` | 跑阶段 | `{model?,provider?,resume?}` | `202{run,inflight}` | 同步校验 400 |
+| POST | `/api/pipeline/runs/:id/steps/:stage/cancel` | 取消阶段 | — | `{canceled,stage,jobs,ranMs}` / 404 / 409 | 409 用于"无可取消" |
+| POST | `/api/pipeline/runs/:id/steps/:stage/input` | 改阶段输入/产物 | `{inputs?,output?}` | `{run}` | — |
+| POST | `/api/pipeline/runs/:id/steps/assembly/assemble` | 合成成片 | `{order?,transition?,quality?,force?}` | `200{reused}` / `202` | 门禁失败 400 |
+| POST | `/api/pipeline/runs/:id/steps/:stage/regenerate` | 逐条重跑候选 | `{itemId,template?,params?}` | `202{run,jobId,itemId}` | 400 / 409 |
+| GET | `/api/projects` | 项目列表 | `?includeArchived=1` | `{projects:ProjectSummary[]}` | ⚠ 与 plan 的 `?status&q` 不一致 |
+| POST | `/api/projects` | 建项目 | `{title,plan?,styleAnchor?,source?,canvasId?}` | `201{project}` | — |
+| GET | `/api/projects/:id/context` | 工作区聚合 | `?include=refs` | 上下文对象 / 404 | ⚠ 与 plan 的 query 集/形状不一致；**runIds 恒空（C3）** |
+| GET | `/api/projects/:id` | 项目详情 | — | `{project}` / 404 | — |
+| **PATCH** | `/api/projects/:id` | 项目元数据更新 | `{title?,plan?,…,expectedVersion?}` | `{project}` / 409 | **⚠ plan 写的是 POST；POST→404（#6 / C1）** |
+| POST | `/api/projects/:id/archive` | 归档 | — | `{project}` | — |
+| GET/POST | `/api/projects/:id/episodes` | 集列表/新建 | — / `{title,index?,logline?,plan?}` | 200 / 201 | — |
+| GET/POST | `/api/projects/:id/episodes/:episodeId` | 集详情/更新 | — / `{…}` | 200 | — |
+| POST | `/api/projects/:id/episodes/:episodeId/scenes` | 建场 | `{locationId,time,intent,…}` | 201 | — |
+| POST | `/api/projects/:id/episodes/:episodeId/reorder` | 重排 | `{sceneIds,shotIds?}` | 200 | 只改 index 不改 id |
+| POST | `/api/projects/:id/scenes/:sceneId` | 更新场 | `{…}` | 200 | — |
+| POST | `/api/projects/:id/scenes/:sceneId/shots` | 建镜 | `{…}` | 201 | — |
+| POST | `/api/projects/:id/shots/:shotId` | 更新镜 | `{…}` | 200 | — |
+| GET/POST | `/api/projects/:id/sources`(`/:revisionId`) | 源版本 | — / `{kind,title,content}` | 200 / 201 | — |
+| GET/POST | `/api/projects/:id/asset-refs` | 资产引用 | `?role=` / `{…}` | 200 / 201 | ⚠ plan 路径是 `/assets`，已改名 |
+| **PATCH/POST** | `/api/projects/:id/asset-refs/:refId` | 更新引用 | `{…}` | `{assetRef}` | **双方法同处理器**（C5） |
+| POST | `/api/projects/:id/asset-refs/:refId/select` | 选候选 | `{artifactId}` | `{assetRef}` | — |
+| POST | `/api/projects/:id/asset-refs/:refId/unlink` | 解绑 | `{artifactId}` | `{assetRef}` | — |
+| GET | `/api/projects/:id/gates` | 阶段门禁 | — | `{gates}` / 404 | — |
+
+> 说明：路由实际注册方法只有 `get`/`post`/`any`/`add`，**无 PUT/DELETE**；`add` 仅用于 PATCH。
+
+### 二、契约诊断（按严重度排序）
+
+**C1｜严重｜三套"契约"文档并存，HTTP 面没有唯一权威源，写方法选择无据可依 → #6**
+- 现象：调用方按文档用 `POST /api/projects/:id` 得 404，改 `PATCH` 才 200（#6 已实测）。
+- 根因：① `domain-contract.md` §7-2 **明确把"HTTP 方法、URL、请求/响应体"排除在契约之外**；② `p0a-project-kernel-plan.md` §2 规定"一律 GET 读、POST 写"（理由是当时 `createRouter` 只有 get/post/any），其 §2.2 表写 `POST /api/projects/:id`；③ `canvas-server/README.md`"接口契约（冻结）"只覆盖 gateway/generate/pipeline，**整个 `/api/projects` 面缺失**。而实现新增了 `router.add` 并改用 PATCH。
+- 后果：任何不读源码的调用方只能猜，猜错得通用 404、无法自纠。
+- 证据：`domain-contract.md` §7 第 2 条；`p0a-project-kernel-plan.md` §2 导语 + §2.2 表；`index.js:528` `router.add("PATCH", "/api/projects/:id", …)`；README 各小节无 Project。
+
+**C2｜严重｜渠道注册表双写者 + 全量替换，无版本/无合并 → 服务器侧配置被前端静默覆盖**
+- 现象：`data/llm-providers.pre-cleanup.json` 有 `gpt`(ai.input.im)/`deepseek`/`kimi`/`本地网关` 4 条真渠道；现 `llm-providers.json` 只剩 1 条占位「默认渠道 / https://api.openai.com / 空 Key」。
+- 根因：`use-pipeline-run.ts:140-143` 页面挂载即用浏览器 `config.channels` 过滤出 openai+文本渠道并 `POST /api/llm/providers`；后端 `index.js:254-274` 对该 body 做 `writeFileSync` **整表替换**。浏览器默认渠道恰是占位「默认渠道」（`use-config-store.ts:97-108`），于是把服务器注册表冲掉。README 把 POST 定义为"全量替换"——语义是文档化的，但客户端把它当单向同步用，且无任何防误覆盖。
+- 后果：网关侧 `渠道名::模型名` 路由全部失效，波及 #19/#20 与流水线模型下拉；只能靠外部遗留 `.bak` 手工回滚。
+- 证据：上述两文件 + `pre-cleanup`/`.bak` 三份文件对比。
+
+**C3｜严重｜Project↔Run 反向索引 `runIds` 从不写入 → 项目上下文查不到自己的 run**
+- 现象：`GET /api/projects/:id/context` 的 `runIds` 恒为 `[]`，即使 `run.options.projectId` 指向该项目。
+- 根因：正向链接靠 `run.options.projectId`（`pipeline.js:906`，契约 §6.2 过渡位）；反向 `Project.runIds[]` 仅在 `create` 初始化为 `[]`（`projects.js:193`），全仓无写入点（grep `runIds` 只见 init / MUTABLE_FIELDS / PATCH / context 读取）。`p0a` §2.7 设计的 `POST /api/projects/:id/runs` 未实现。
+- 后果：前端无法从项目维度导航到关联 run；"工作区统一入口"形同虚设。
+- 证据：`projects.js:193/243/305`；`grep runIds canvas-server/src` 无 create 之外写入。
+
+**C4｜一般｜同一语义多入口 / 同源多端点，命名与形状不统一**
+- 模型清单**三入口**：`/v1/models`、`/api/llm/models`、`/api/providers.llm.models`——三者都走 `listLlmModels`（**同源**，含 `渠道名::模型名`）。#20 若曾观测到"不同源"，现状已收敛为同源；但仍缺"三入口等价"的显式声明。
+- 阶段清单**两入口**：`/api/skills`(`{skills}`) 与 `/api/pipeline/stages`(`{stages}`) **同源**。
+- 后端清单**两入口**：`/api/backends` 与 `/api/providers.backends`。
+- 证据：`index.js:232/245-247/281-284`、`235-243` vs `362-364`。
+
+**C5｜一般｜无 405、错误码体系名存实亡、404 语义含糊**
+- 现象：错方法 → 通用 404 `未找到路由：POST /api/projects/:id`，与"资源不存在"不可区分；无 `Allow` 头。
+- 根因：`http.js:159-171` 只按 method 精确匹配，未命中即落 `index.js:654` 兜底 404。
+- 后果：调用方无法区分路径错/方法错/资源不存在，也无法自发现正确方法（#6 的第二半）。
+- 证据：`http.js:159-171`、`index.js:648-654`。
+- 附加：`sendError` 的 `code` 大多未传（`index.js` 仅 `532` 一处 `version_conflict`，且小写）；`p0a` §2.1 规划的 `INVALID_INPUT/PROJECT_NOT_FOUND/VERSION_CONFLICT/DANGLING_REFERENCE` 等结构化 code 均未落地；404 文案在"项目不存在/流水线不存在/集不存在/源版本不存在/未找到路由"间不统一。
+
+**C6｜一般｜列表/详情拖重对象，进度无全阶段汇总 → #5**
+- 现象：#5 progress 只报单阶段；`GET /api/pipeline/runs` 返回完整 run 数组（每项内嵌 novel，222 万字≈6.4MB）。
+- 根因：`pipeline.js:234-242` `list()` 直接回 `readJsonFile` 全对象；`writeProgress` 把 progress.json 覆盖为"单阶段"（`pipeline.js:175-186`、`1428`）。
+- 后果：轮询/列表带宽浪费；前端为拿阶段状态被迫 `getPipelineRun` 拉 novel（`gateway.ts:296-311` 已自做摘要收敛，治标）。
+- 证据：`pipeline.js:234-242/1428`、`gateway.ts:296-311`、#5。
+
+**C7｜改进｜前端硬编码清单与后端真实清单并存 → #17**
+- `FALLBACK_STAGES`（`use-pipeline-run.ts:43-49`）与后端 `registry.stages` 并存，后端加阶段前端看不到。
+- `BUILTIN_GATEWAY_SCRIPTS`（`gateway.ts:361-369`）硬编码模板→脚本映射。
+- `gatewayDefaultModels` 偏爱列表（qwen / `img_krea2_artistic` / `video_h3_i2v`）硬编码（`gateway.ts:424-438`）。
+- `domain.ts` ↔ `contracts.js` ↔ `domain-contract.md` **三处手抄同一枚举**（StageStatus/JobStatus/AssetRole…），无生成、无校验。
+- 证据：上述行号。
+
+**C8｜改进｜读接口静默降级，调用方分不清"没有"与"不可达"**
+- 现象：`/v1/models`、`/api/llm/models`、`/api/providers`(llm) 在 `listLlmModels` 抛错时 `.catch(()=>[])` 回 200 空表、**无 error 字段**；而同一 `/api/providers` 的 comfy 分支失败会带 `error`。
+- 后果：模型下拉为空时无法判断"确实无模型"还是"LLM 挂了"（与 #7 死服务场景叠加放大）。
+- 证据：`index.js:228-231/245-247/281-284`。
+
+**C9｜改进｜服务自描述过期**
+- `GET /api` 的 `serviceInfo.endpoints`（`index.js:196`）漏列 `/api/projects`、`/api/pipeline/stages`、`/api/uploads`、`/api/artifacts`、`/api/llm/*`、`/api/skills` 等，不能当发现入口。
+- 证据：`index.js:192-199`。
+
+### 三、整改建议（分级 / 成本 / 验证）
+
+| 级别 | 项 | 内容 | 成本 | 验证方式 |
+| --- | --- | --- | --- | --- |
+| **P0** | 渠道单写者+防误覆盖 | ①停止页面挂载自动 POST，改用户显式「同步到网关」；②`POST /api/llm/providers` 改为**按 name upsert 合并**（未提及的渠道保留），删除走显式 `?mode=replace`/DELETE；③注册表非空而提交为空/缺 Key 时拒绝 400；④写前旋转 `.bak` | 小 | POST 空 `/[]`→期望 400 且文件未变；GET 原渠道仍在；跑一次流水线确认 `渠道名::模型名` 可路由 |
+| **P0** | 补全唯一 HTTP 契约源 | 二选一并回写文档：保留 PATCH（更新 `p0a` plan 与 README）或退回 POST。倾向**保留 PATCH + 在 README 增"Project API（冻结）"整节**（含 PATCH/POST 双写法、409 `version_conflict`、400/404 语义、错误码表） | 中 | README 每条路径逐条 curl，状态码/形状与文档一致 |
+| **P0** | 修 Project↔Run 反向索引 | `createPipelineRun` 落 run 后若 `options.projectId` 存在，则把 runId 幂等追加进 `Project.runIds[]`（走 `projects.update`）；或实现 `POST /api/projects/:id/runs` 并在建 run 时调用 | 小 | 建带 projectId 的 run 后 `/context.runIds` 含该 runId，重复调用不重复追加 |
+| **P1** | 消除同源多入口 | 模型清单保留 `/v1/models`+`/api/providers`，`/api/llm/models` 标为别名；阶段清单合并为 `/api/pipeline/stages`（`/api/skills` 二选一：废弃或改为技能目录信息）；README 声明三模型入口等价 | 小 | 两两对比内容一致/职责互补；前端只保留一个调用点 |
+| **P1** | progress 增补全阶段汇总 + 收敛重对象 | `writeProgress` 附带轻量 `stages:[{id,status,phase?}]`；run 列表/详情支持 `?include=` 或新增 summary 端点，不内嵌 novel | 中 | 仅凭 `/progress` 即可渲染全部阶段状态（复现 #5）；`getPipelineRun` 仅终态/取产物时调用 |
+| **P1** | 统一错误语义 | `createRouter` 区分"路径存在、方法不符"→ **405 + `Allow` 头**；关键端点统一带 `code`（对齐 `p0a` §2.1，大小写统一） | 小 | 对 `/api/projects/:id` 发 POST 期望 405 且 `Allow: GET,PATCH`；各 404 带稳定 code |
+| **P2** | 前端清单去硬编码 | 阶段/模板/默认模型改从 `/api/pipeline/stages`、`/api/providers` 派生，`FALLBACK_*` 仅作离线兜底 | 中 | 后端加一阶段/模板，前端不改代码即可见（复现 #17） |
+| **P2** | 契约校验护栏 | 见"契约治理取舍" | 中 | 故意改 `contracts.js` 枚举 → 契约测试变红 |
+| **P2** | 自描述补全 | `serviceInfo.endpoints` 由路由表生成或逐项补齐 | 小 | `GET /api` 列表与实际路由逐条对齐 |
+
+### 四、数据所有权建议（渠道配置以谁为准、怎么避免再被覆盖）
+
+1. **网关 LLM 渠道注册表**（`data/llm-providers.json` / `config.llm.providers`）
+   - 所有权：**服务端单写者 = 网关**。它是"网关往哪里路由模型"的唯一事实，属服务器运行配置，不属于任一浏览器。
+   - 写入口：仅①运维改文件（启动读取）或②**显式管理动作**；禁止任何页面在挂载/轮询中自动写。
+2. **浏览器渠道配置**（`use-config-store.channels`，localStorage 键 `infinite-canvas:ai_config_store`）
+   - 所有权：**浏览器**。它是"本机用户自己的渠道凭据与 UI 偏好"（含网关没有的 apiKey 明文）。
+   - 与网关的关系：**不是副本，而是"待注册候选"**。用户要把某渠道交给网关路由时，走显式「注册/同步」动作。
+3. **覆盖裁决**：合并以 `name` 为键，同名以新提交值更新、**未提及的渠道一律保留**（不得因未出现而被删）；确需删除走显式 DELETE 或 `?mode=replace` 并在 README 写明。
+4. **防误覆盖护栏**：注册表非空时拒绝"空/缺 Key 的整表替换"（400）；写前保留上一版（旋转 `.bak`，项目已有此实践）以便回滚。
+5. **敏感边界**：`apiKey` 只出现在浏览器侧与注册表文件（0600）；GET 一律脱敏（现状已正确，保持）。
+6. **写入审计**：注册表可加可选 `updatedBy`/`updatedAt`，便于排查"谁把渠道冲了"。
+
+> 一句话：**网关路由表以服务端为唯一写者；浏览器渠道表以浏览器为唯一写者；两者之间用"显式、按名合并、可回滚"的注册动作桥接，任何"自动全量替换"都禁止。**
+
+**进度/产物数据流归属（对应第 3 问）**
+
+| 端点 | 职责 | 前端应何时拉 |
+| --- | --- | --- |
+| `/progress` | 运行中的轻量轮询；增补全阶段汇总后兼"全阶段概览" | 阶段 running 时按 3s 轮询 |
+| `/api/pipeline/runs/:id` | run 权威全量（含 novel 与产物） | 仅终态确定后 / 需要产物时；建议支持裁剪 |
+| `/api/projects/:id/context?include=refs` | 项目工作区聚合（project+episodes+runIds+canvasIds[+assetRefs+gates]） | 工作区页面统一入口，不要各页自拼 |
+| `/api/projects/:id/asset-refs` | 资产引用的检索/CRUD | 仅"资产"视图 |
+
+- 取值规则：**状态用 `/progress`、聚合用 `/context`、产物用 `/runs/:id`、引用用 `/asset-refs`**，避免"拉大 run 取小信息"。
+- 前置依赖：修好 C3（`runIds` 写入）后，`/context.runIds` 才能真正承担 run 导航。
+
+### 五、契约代码生成 / 校验的取舍（对应第 4 问）
+
+- 现状：契约机器可读部分以"手抄三份"存在（`domain-contract.md` 文本 / `contracts.js` 常量 / `domain.ts` 类型），**无生成、无校验、无测试**（全仓无契约测试）。
+- 建议分两步，**不引入 OpenAPI/tRPC/代码生成框架**（与 AGENTS.md "零依赖、最少机制、不新增接口层"冲突，且接口面仍在动）：
+  1. **短期（成本小、收益立竿见影）**：立"契约测试"护栏——用签入的 JSON fixture 断言：路由存在性、各路径允许的方法集合、关键响应形状、`domain.ts` 与 `contracts.js` 枚举一致性。
+  2. **中期（接口面稳定后）**：以 `contracts.js` 为单一源导出 JSON Schema（枚举/实体），前端类型由 Schema 生成或测试比对。
+- 判据：若"同源多入口 / 手抄枚举漂移"再次致事故，则升级到生成；否则**手写 + 测试**已足够。
+
+### 六、与本轮其它条目的关联
+
+- #5 → C6（progress 无全阶段汇总）之根因，建议 P1-2 一并解决。
+- #6 → C1 + C5（文档无权威源 + 无 405）双重根因。
+- #17 → C7（前端硬编码）；#19 → C2（全量替换覆盖）；#20 → C4（三模型入口同源但未声明等价）。
+- #10（`stage.status=done` 与 `assembly.status=queued` 语义冲突）属状态机投影口径，归架构视角；本视角仅提示其**接口表现**为同一 stage 对象内两字段语义不一致，前端需自定义守卫。
+
+---
+
+
+## 会诊结论 · 内容 / 成片质量视角（评审员：内容与成片质量）
+
+> 视角：**做出来的东西好不好、哪里本质不行**。只看生成质量、提示词工程与创作方法论；产品动线、架构耦合、前后端契约由另三位评审员负责。
+> 方法：**真看了产物**——下载了本轮 run 的剧本/分镜/资产 JSON 与 **16 张关键帧 start 图逐张过 vision**；`curl` 只读接口，未改代码、未重启服务、未跑生成。
+> 一手证据：`GET /api/pipeline/runs/run-murpt28o-46f5q`（API 版）与 `run-murnwa81-k27eq`（早期本地模型版）、`/api/projects/prj_01M3ZK27NYPXRPBVRAT0SSJ2B5/context`、`skills/01..05/SKILL.md`、`skills/libraries/luster-接线说明.md`、`canvas-server/src/pipeline.js`、`docs/.../domain-contract.md`（引用格式：文件:行 / 接口字段）。
+>
+> **口径校准（与架构视角一致）**：本文落盘时 `pilot-issues.md` 实存 **#1–#13 共 13 条**，**没有 #14/#15**；任务描述里「#14/#15 视觉形式被无视」「20 条」与本文件不符。下文**按主题定位**，不按编号：集式结构与时长传导 = #1/#2/#3；提示词膨胀 = #11；视觉形式被无视 = 下文 Q1（我实机复现了该现象）；角色双形态 = #4。
+
+### 0. 一句话结论
+
+**当前试跑的「坏」主要不在工程，而在「风格锚点没成为唯一事实源」和「集/时长预算没有下沉到分镜」这两条主线上。** 代码里 01 的多步编排 + 集数硬对齐已写好，但**从未跑到过**（9 个 run 全部 `stage.steps` 缺失、`episodes=[]`）；视觉风格则出现了**同一条 prompt 里「二维动画」与「35mm 胶片」互相打架**的硬矛盾。出图侥幸（本次生图模型按首词出了二维动画），但方法论上已经「本质不行」。
+
+---
+
+### 1. 质量诊断（按严重度排序）
+
+#### Q1｜严重｜风格锚点没有成为唯一事实源：同一条 prompt 里「二维动画」与「35mm 胶片」自相矛盾
+- **现象**：关键帧最终发给 ComfyUI 的 `PROMPT` 逐字如下（删节）：
+  `二维动画，治愈系暖色调，柔光，圆润可爱的角色造型，干净线条。二维动画，治愈，都市奇幻。35mm film still, expired Kodak Gold 200. … overexposure melting contours golden rim on hair, grey-blue shadows, fine grain, light leak upper right. 1/100s shutter, subjects tack-sharp. warm nostalgic tone, soft film grain.`
+  即：**前段声明「二维动画」，后段又声明「35mm 胶片实拍 + 颗粒 + tack-sharp」**——两套互相否定的视觉形式挤在一条 prompt 里。
+- **根因层级**：**工程 + 方法 双因**。
+  - 工程：`buildContext`（`pipeline.js:341-349`）只注入 `novel/title/options/pipeline+上游产物`，**不注入 `Project.styleAnchor`**；`run.options` 里也确实没有 styleAnchor（本轮 `options={projectId}`）。于是 04 技能模板的 `{{options.styleAnchor}}` 未被替换 → 模型按技能「一、默认风格锚点」**回落**到 `35mm film still, expired Kodak Gold 200`，并无条件叠加了 Luster 冻结胶片层（`04/SKILL.md:87,93,102,107,109`）。
+  - 生成层：`withPromptHead`（`pipeline.js:74-77`）又把真正的项目 anchor（`productionDefaults` 拼出的 `二维动画…`，`pipeline.js:983-997`）**前置拼到 LLM 写的 prompt 之前**（`pipeline.js:1016/1036`）→ 两套风格头同时进 prompt。
+  - 方法：04 技能的默认锚点 + 胶片层是按「日系青春写实」单一口味写死的，其「条件叠加」规则（`04/SKILL.md:97-103`、`luster-接线说明.md` §3）**依赖 styleAnchor 作为判定输入，但编排器不给这个输入**，规则必然失效、退化为无条件叠加。
+- **证据**：`stages.keyframe.output.frames[0].prompt` 与 `candidates[0].params.PROMPT` 原文；`04/SKILL.md:87/93/102/107/109`；`luster-接线说明.md` §3；`pipeline.js:74-77/341-349/983-997/1016/1036`。
+- **影响**：本次缩略图侥幸是二维动画（因 z-image 按首词走 + 先验），但**换底模/换模型即可能出写实或糊成一团**；且 storyboard（英文尾缀 `2D animation style`）、keyframe（胶片层）、clip（`二维动画…`）三个阶段三种风格处理，**跨镜头/跨集风格漂移无护栏**。这是「本质不行」类，不是体验问题。
+
+#### Q2｜严重｜关键帧与分镜对不上：变身镜头与场景切换没拍出来
+- **现象**：逐张看图（16 张 start 图 md5 全不同，排除取错文件）：
+  - `sh5-start`（应「小猫剪影拉长变成年轻女性」）→ 实际仍是**猫**（坐纸箱上，无变身、无白光）。
+  - `sh6-start`（应「大姐姐低头看自己双手」）→ 实际是**猫+狗室内**，**画面里没有女性**。
+  - `sh12-start`（应「公园草地抛彩球，小狗追球」）→ 实际是**室内门口抱狗**，无球、无草地（内容更像 sh11）。
+  - 对照组 `sh16-start`（公园长椅黄金时刻抱狗）→ **对得上**。
+- **根因层级**：**方法（主）+ 提示词 + 缺工程护栏**。
+  - 提示词级硬伤：`shots[5].negativePrompt` 逐字含 **`costume change, unnatural transformation`**——**把本镜正向要求的「变身」用负向词否定掉了**，正向 `prompt` 说「transforms into a young woman」而负向说「no transformation」，模型按负向抑制（`shots[5].negativePrompt` 原文）。
+  - 方法缺失：04 技能只要求「人工质量校验」，**流水线没有任何「图↔分镜」自动比对**；变身/换场这类「一次状态翻转」镜头，02/04 都没有专门规则（一镜只锁一个形态、翻转必须独占一镜）。
+  - 工程缺失：分镜校验（02 校验规则）只查字段非空/英文，**不查 negativePrompt 是否与 action 冲突**，也不查图是否兑现 prompt。
+- **证据**：`shots[5].negativePrompt` 原文；`sh5/sh6/sh12/sh16` 关键帧图（vision 逐张核）；`02/SKILL.md` 校验规则；`04/SKILL.md:21`。
+- **影响**：**成片的核心剧情点（小猫变大姐姐、出门去公园）拍丢/错位**——这是「做出来的东西本质不对」，且当前系统**自己发现不了**。
+
+#### Q3｜严重｜「2 集 × 30 秒」没有跨阶段传导，时长/集数只在纸面上
+- **现象**：
+  - 剧本 `episodes=[]`；**全部 9 个 run 的 `stages.script` 都没有 `steps`**（多步编排从未执行过）。
+  - 分镜产出 **16 镜 / 合计 83 秒**（目标 2×30=60 秒，**超 38%**），且 **shot 不带 `episodeId`**，无法按集归集时长。
+  - 02/03/04/05 四个阶段技能的「输入」表里**都没有 `episodeCount`/`episodeDurationSec`**（`02/SKILL.md`、`03/SKILL.md`、`04/SKILL.md`、`05/SKILL.md`）。
+- **根因层级**：**工程（结构未落地）+ 方法（预算未下沉）**。
+  - 工程：`pipeline.js` 已写 `composeScriptSteps` 多步 + `normalizeEpisodes`（集数硬对齐、时长只写 warning，`pipeline.js:487-518/747-799`）与 `planConstraints`（`:419-427`），但**没有一条 run 跑过**；且 `buildContext` 不注入 plan，02 拿不到约束。
+  - 方法/契约：`domain-contract.md` §3.3/§3.4 要求 Scene/Shot 带 `episodeId`，但**代码没实现**（§7 迁移表自认「episodes[] 契约存在、代码零消费」「shots[].sceneId 从不校验」）；02 技能 §六 只给「单镜 3~6 秒」，**没有总量预算**，时长纯由 LLM 自由取。
+- **证据**：`/api/pipeline/runs` 全表 `steps? False`、`episodes=0`；本 run `shots` 无 `episodeId`；`pipeline.js:341-349/419-427/487-518/747-799`；`domain-contract.md` §3.3/§3.4/§7；`02/SKILL.md` §六。
+- **影响**：**「2 集 × 30 秒」当前没有任何一环真正负责**——产出几集、多长，全靠模型即兴，且偏差不阻断、只（在 01 内部）写一句 warning，下游根本看不到。
+
+#### Q4｜一般｜单镜塞多动作，违反「一镜=一次生成」原则
+- **现象**：16 镜里 **5 镜**（sh2/sh3/sh9/sh11/sh14）prompt 用 `then` 串联多动作，如 sh2「rolling on the floor **then** flipping over **and** swatting the puppy's nose」。
+- **根因层级**：**方法缺失**（02 技能 §二.1 定了「一镜一条运镜、一个动作落点」原则，但无可执行判据，校验规则不查动作数）。
+- **证据**：`shots[].prompt` 原文（5 镜含 `then`）；`02/SKILL.md` §二.1 与校验规则。
+- **影响**：图生视频片段动作超载、首尾帧对不上，与 Q2 的「对不上」同源放大。
+
+#### Q5｜一般｜提示词与产物持续膨胀（登记为 #11）
+- **现象**：keyframe 提示词 **7987 字**（把整份 storyboard 16 镜 + 整份 design 全量塞进一次调用）；design 生成 2774 tokens / 405 秒。
+- **根因层级**：**方法 + 工程**——各阶段把完整上游产物全量拼进模板，无裁剪/投影/摘要。
+- **证据**：`/progress` 的 `label:"模型生成中（提示词 7987 字）"`；`buildContext` 直接 `context[produces]=output` 全量（`pipeline.js:343-347`）。
+- **影响**：除慢与贵外，**一次性输出 29 帧的大 JSON，越长越易截断/解析失败重试**，属正确性隐患（不止效率）。
+
+#### Q6｜一般｜跨集/跨镜一致性只靠模型复述文字，没有角色锁机制；双形态未根治（#4）
+- **现象**：全片一致性 = 每镜 prompt 重复「beautiful young woman with long dark brown hair and light blue dress」；`design` 的 c1 把**猫形态 + 人形态写在同一个 `appearance`/同一条 prompt**（`A character with two forms: cat form and human form`）。
+- **根因层级**：**方法 + 缺机制**——有稳定的 `characters[].id`，但下游**没有把「角色 id → 参考图」接起来**（无常驻参考图/角色锁），更没有「同一镜不得混写同一角色两种形态」的红线（#4 的本质）。
+- **证据**：`design.output.characters[0]`；`shots[].prompt`；`03/SKILL.md` §二；#4 登记项（早期 run `shots[2]` 原文「小猫白色，变成大姐姐后」同镜混写）。
+- **影响**：跨镜/跨集漂移；变身前后若被写进同一镜仍会打架（本轮靠「拆成独立镜头」偶然缓解，非规则保证）。
+
+#### Q7｜改进｜画质词与「二维动画」不匹配
+- **现象**：分镜/资产 prompt 收尾统一是 `high quality, high detail, 2D animation style`——`high detail` 对二维动画是无意义乃至反向（易被拉向写实细节）。
+- **根因层级**：**方法**（画质词未按 `visualStyle` 分档）。
+- **证据**：`shots[].prompt` 尾缀；`design` prompt 尾缀。
+
+---
+
+### 2. 整改建议（分级 / 成本 / 验证）
+
+| 编号 | 对应 | 级别 | 成本 | 动作 | **改了以后怎么验证** |
+| --- | --- | --- | --- | --- | --- |
+| G1 | Q1 | **P0** | 中 | 让 `styleAnchor` 成为**唯一**风格源：① `buildContext` 注入 `Project.styleAnchor` + `plan`（visualStyle/genre/tone/ratio/episodeDurationSec/episodeCount）；② 04 技能「默认风格锚点」改为「仅在 styleAnchor 缺失时按 `visualStyle` 推导」，胶片层**条件叠加必须有可判定输入**；③ 明确「首句锚点只由一层负责」，去掉 `withPromptHead` 与 LLM prompt 的重复/冲突声明 | 跑 1 集，断言 **keyframe 最终 PROMPT 首句 == styleAnchor 原句**；且**「二维动画」项目全片 prompt 不出现 `film/grain/tack-sharp/light leak`** 等冲突介质词（可正则断言） |
+| G2 | Q2 | **P0** | 中 | ① 02 加硬规则：**`negativePrompt` 不得含本镜正向要求的内容**（变身/换装/道具/人数），变身类「状态翻转」镜头独占一镜、一镜只锁一个形态；② 04 出图后加「图↔分镜」校验（先半自动：关键帧工作区把 prompt 与图并排，人工一眼可判；自动版列为后续） | 修掉 `shots[5]` 的 `costume change, unnatural transformation` 后重生成，断言**变身镜头出现女性**；抽查 5 镜图与 prompt 语义一致 |
+| G3 | Q3 | **P0** | 中-大 | 把「2 集 × 30 秒」做成**四级预算**：① 01 outline 定每集时长预算（已写，但需真跑）；② 02 输入加 `episodeCount/episodeDurationSec`，**每镜带 `episodeId`**，按「每集预算 ÷ 目标单镜时长」定镜头数，产出后校验**每集时长合计**；③ 落地契约 `shot.episodeId`/`scene.episodeId`（domain-contract §3.3/§3.4）；④ 05/交付前**按集时长 + 总时长终检**（超差 warning/block） | 2×30s 跑完，断言**每集时长合计 ∈ [27,33]s、总时长 ≈60s**、`shot.episodeId` 全覆盖 |
+| G4 | Q4 | **P1** | 小 | 02 加「单镜动作数」校验：prompt/action 出现 `then/然后` 串联多动作即判违规、要求拆镜 | 重跑分镜，**无镜头含多动作串联** |
+| G5 | Q5 | **P1** | 中 | 文本阶段上下文**按需投影**（只给该阶段要用的字段/摘要），不再全量 dump 上游产物 | keyframe 提示词字数降到阈值内（如 < 3000 字），**产物质量不降、JSON 不再截断** |
+| G6 | Q6 | **P1** | 中-大 | 角色资产↔镜头引用：用 `characters[].id` + 定妆图作**角色锁参考图**，下游按 id 引用而非复述文字；02 加「同一镜不得混写同一角色两形态」红线 | 跨镜/跨集同一角色外观一致；变身镜头不再混写（复验 #4） |
+| G7 | Q7 | **P2** | 小 | 画质词按 `visualStyle` 分档：二维动画用 `clean lines, cel shading, flat colors, animation style`，去掉 `high detail`/胶片系 | 抽查 prompt 尾缀与 visualStyle 匹配 |
+
+---
+
+### 3. 拍板点（必须产品负责人定，不替他决策）
+
+1. **时长口径**：「2 集 × 30 秒」是**硬指标还是目标**？允许浮动带多少（如 ±10%）？**超差是 warning 还是 block（是否卡门禁）**？——直接决定 G3 的 ④ 怎么落地。
+2. **风格锚点是否绝对唯一**：是否要求「`styleAnchor` 一字不差贯穿全片、任何阶段自拟风格词都算缺陷」？若是，则 **Luster 胶片层在非胶片项目默认应关闭**（影响 04 技能取向）。
+3. **集间要求**：每集是否要独立「开场钩子/结尾留扣」？集与集之间角色/资产是否共享同一套（契约说共享）？**集级视觉一致性**要保证到什么程度？
+4. **关键帧不达标时的处置**：自动重试/自动换候选，还是**停下等人挑**？——决定要不要建「图↔分镜」自动 QA（G2②）。
+5. **原著体量与目标时长的矛盾**：本次原著只有一句话（novel 仅 40 字），是否允许模型**放大/续写**到 2×30s？这决定 01「忠于原著少改」与「补足到目标时长」之间怎么权衡（AGENTS.md 内容红线明确：不擅自改原著）。
+
+### 4. 纯技术可直接做（不需拍板）
+
+- `buildContext` 注入 `styleAnchor` + `plan`（G1①）——契约边界内的小改，风险低。
+- 02 分镜接入 `episodeCount/episodeDurationSec` 并给每镜带 `episodeId`（G3②），同步落 §3.3/§3.4 契约（G3③）。
+- 02 加 `negativePrompt` 红线校验（G2①）与「单镜动作数」校验（G4）——纯规则、可单测。
+- 文本阶段上下文裁剪（G5）、画质词分档（G7）——局部、可回归。
+
+### 5. 与其它视角的边界
+
+- #1/#2/#3、#11、#4、Q1（视觉形式）**属本视角**，整改以 G1–G7 为准。
+- **与架构视角的交界**：Q1 的工程半边（`buildContext` 不注入 styleAnchor）与架构 D2（编排器用可选链吞掉结构错误、无 warning 回传）同源——「该传什么」由本视角定（styleAnchor + plan），「传丢了要能看见」由架构 A3 兜底。
+- #5/#6/#10 属契约/状态机视角，不在本结论内。
+
