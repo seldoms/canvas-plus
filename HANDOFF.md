@@ -24,7 +24,20 @@
 
 ## 当前状态
 
-**最后更新**：2026-10-02（Qwen 接手 Kimi 被限额中断处；Kimi 原记录保留在下方表格）
+**最后更新**：2026-10-03（开发计划维护 + 试跑问题清单复核。**进度细节的唯一入口**：`docs/content/docs/progress/development-plan.md` §11「进度快照与问题台账」+ `pilot-issues.md`）
+
+**2026-10-03 本轮结论（先读这段，再往下看历史表格）**
+
+| 结论 | 指针 |
+| --- | --- |
+| **进度快照**：对着开发计划 §8 工作包逐项对账 —— ✅6 项达成（P0-0/P0-b/P0-d/P1-b/P1-d）／🟡4 项有明确缺口（P0-a/P0-c/P1-a/P1-c）／⬜1 项未开工（P2） | `development-plan.md` §11.1 |
+| **问题台账**：试跑清单第一轮 21 条状态全部复核更新（此前一律记「待讨论」、与实际不符），另追加 **#22–#24** | `pilot-issues.md` |
+| 🔴 **三条成片级缺陷（产品负责人新报，均未解决）**：① 角色**形象**未固定 —— 一致性只存在于文字，**无定妆图/参考图锁脸/seed 锁定/角色 ID**；② 角色**音色**未固定 —— `voice` 是纯文本、**下游零消费**（无 TTS、无音色库、无音频产物）；③ **配乐与配音不一致**（根因未定位） | `pilot-issues.md` #22/#23/#24。**路线图其实已在仓库**（`skills/libraries/doubao-creative-drama`：主角设定图→确认→配角逐位→一致性锚点；总时长>15s 必须出角色台词视频建音色基准），**缺的只是接进 03/04/05 产物契约** |
+| 🔴 **产品拍板 D1/D3 两条硬约束未落**：D1 时长档位跟模型（H3 `24×秒+3`，仅 5/10/15s，档位字段与模型清单同源）；D3 关键帧单镜 **≥4 张** + 不达标自动重生成（现配置 2）。2026-10-03 用户喊停改码，`pipeline.js` 已空出待做 | `pilot-issues.md` §「产品负责人拍板」D1/D3 |
+| **测试基线**：后端 `node --test` → **206 tests / 206 pass / fail 0**（本轮实测）；前端此前 `tsc --noEmit` 0 错、`npm run build` 通过 | `cd canvas-server && node --test test/*.test.mjs` |
+| ⚠️ **工作区仍有 20 个文件未提交**（含 `canvas-server/src/pipeline.js`、`test/pipeline.test.mjs`、`pending-test.mdx`、`skills/04-keyframes/SKILL.md`、7 个前端新文件如 `process-timeline.tsx` / `source-import-modal.tsx`）—— 测试与 tsc 均绿、属"已验证待落盘"，接手者按主题分批提交即可 | `git status --short` |
+| ⏳ **出片 run 仍在跑**：`run-murpt28o-46f5q`（项目 `prj_01M3ZK27NYPXRPBVRAT0SSJ2B5`）script/storyboard/design/keyframe ✅（29 张图）／assembly `running`（已 9 个片段产物）。**重启网关会打断它** —— 这也是 `/v1/models` 修复（已改代码）延后生效的原因 | `GET /api/pipeline/runs/run-murpt28o-46f5q` |
+| **本轮 git**：`b3874d5`（文档：§11 + 21 条复核 + #22–#24）、`d601800`/`639508a`/`154e0d3`/`2f85b4e`（上一轮） | `git log --oneline` |
 
 **本轮新增（已浏览器实测）**
 
@@ -82,21 +95,24 @@
 
 **进行中 / 未完成**
 
-- **流水线阶段尚未引用导入的 skill 库**。目前 `skills/01-* ~ 05-*` 用的是骨架期给的默认提示词，`skills/libraries/` 里的两个库还没接上。这是下一步最大的一块。
-- **片段合成只有「生成」没有「后期」**：`assembly` 阶段只规划 clips 与拼接顺序并生成片段，**没有拼接/转场执行体、没有视频超分、没有音轨混流**。盘点报告建议拼接直接用本机 ffmpeg（不占 GPU）。
+- ~~**流水线阶段尚未引用导入的 skill 库**~~ → **已完成**：五个阶段技能已接管 `script-writing-studio` 与 `Luster-iwai-aesthetic-prompt`，每阶段新增「内容创作红线（硬约束）」，逐条对照见 `skills/libraries/` 下两份接线说明。
+- ~~**片段合成只有「生成」没有「后期」**~~ → **已大部分完成**：`canvas-server/src/delivery.js` 已实现 ffmpeg concat/xfade 拼接 + 外部音轨 `amix` 混音 + 字幕烧入 + 抽封面 + 可复现拼接清单 + 独立合成接口。**仍缺**：**音频无人产生**（`plan.audio` 靠外部手工传入）——即 `pilot-issues.md` #23/#24，以及视频超分。
 - **视频速度是最大体验瓶颈**：当前节点图上 H3 480×864 / 56 帧就要 8.2 分钟（【实测】），5s 短剧单镜会更久；上游现成的 `video_h3_i2v_sla` / `_blockcache` 加速模板**未实测**。
 - 前端**还没有 RunningHub 的 UI**（本轮只做了后端接口，`/api/backends`、`/api/runninghub/models`）。
 - 换装精确性不足：`img_boogu_outfit_edit` 已跑通但属**语义重绘**（领口袖型与参考图不一致），精确换装需要 SAM3 遮罩链路（SAM3 在盘，无模板）。
-- `video_h3_ref2v` 只接了 1 张参考图，多图锁角色需要补 `ref_image_1/2` 之类输入。
+- `video_h3_ref2v` 只接了 1 张参考图，多图锁角色需要补 `ref_image_1/2` 之类输入 —— **这正是产品负责人报的「角色形象没有固定下来」的技术底座**（`video_h3_ref2v_image` 一张参考图即可锁角色，但**流水线根本没把角色定妆图接进去**）。见 `pilot-issues.md` #22。
 
 ## 下一步（按优先级）
 
-1. **接线 skill 库**：让 `01-novel-to-script` 走 `script-writing-studio` 的 `01 → 01b`（可选 `02` 会诊、`03` 台词精修），`02-storyboard` 走 `04-ai-video-storyboard`，`03-costume-props` 走 `05-asset-library`，`04-keyframes` 注入 `Luster` 的冻结风格层，`05-clip-assembly` 参考 `06` 的段落结构与 `07` 的声音设计。
-   ⚠️ 两个库都面向**云端生成器**（Seedance 2.0 / Midjourney），我们走本地 ComfyUI，所以是**分层**不是替换：库管内容与风格，阶段技能负责翻译成 ComfyUI 模板 token，并剥掉 MJ 专用尾参。详见 `skills/libraries/README.md` 末尾。
-2. **补片段合成的后期链路**：拼接/转场用本机 ffmpeg（不占 GPU）；视频超分（SEEDVR2 权重与节点都在盘，只差模板）；音轨混流。
-3. **解决视频速度**：实测上游 `video_h3_i2v_sla` / `video_h3_i2v_blockcache` 加速模板；先降分辨率出草稿也是零成本方案。
-4. **RunningHub 真机验证**：需要用户提供**新的有效 API Key**（旧 Key 已失效，见「坑」）。拿到后跑一次最小生图任务，确认 submit/query/upload 三条链路。
-5. 前端补 RunningHub 配置与后端切换入口（如果用户要求把它做成可选 UI）。
+> 2026-10-03 重排。1–2 条（skill 库接线、后期拼接链路）已完成，见上节；顶上来的四条是产品负责人当面报的成片级缺陷与拍板约束。
+
+1. **角色形象固定（最高优先，阻断成片）**：把角色**定妆图**变成流水线的真实产物，并让它作为参考图喂给生图/生视频（`video_h3_ref2v_image` 已具备一张参考图锁角色的能力）。路线图已在 `skills/libraries/doubao-creative-drama/references/assets.md`（主角设定图 → 用户确认 → 配角逐位确认 → 一致性锚点），要做的是**接进 03「服化道」/04「关键帧」的产物契约**（角色 ID → 定妆图 → 参考图槽位）。见 `pilot-issues.md` #22。
+2. **角色音色固定（阻断成片）**：`voice` 字段目前无人消费。要补**音色锚点 + TTS 生成 + 音频轨作为 05 阶段必需产物**；方法论（总时长 > 15s 必须先出 1 条 5–10 秒角色台词视频建立音色基准）已在 `doubao-creative-drama/references/assets.md:25`。见 `pilot-issues.md` #23。同源解决 #24「配乐与配音不一致」。
+3. **产品拍板 D1 / D3**：D1 时长档位跟模型（H3 `24×秒+3`，仅 5/10/15s；**档位是模型能力元数据**、与模型清单同源、plan 从档位里选）；D3 关键帧单镜一次出 **≥4 张**候选、不达标自动重生成。代码位置已空出（`pipeline.js`）。见 `pilot-issues.md` §「产品负责人拍板」。
+4. **项目 ↔ run 双向绑定**：`Project.runIds[]` 从头到尾没被写过，项目页找不回自己的 run；同批还有渠道注册表双写者（前端 `POST /api/llm/providers` 整车覆盖，曾冲掉服务端配置）。见 `development-plan.md` §11.2。
+5. **解决视频速度**：turbo（8 步 LoRA + BlockCache@0.3）与 QuantFunc INT4 均已实测（见下方两份实录），当前瓶颈是 **147 的物理内存**而非引擎；先降分辨率出草稿是零成本方案。
+6. **RunningHub 真机验证**：需要用户提供**新的有效 API Key**（旧 Key 已失效，见「坑」）。拿到后跑一次最小生图任务，确认 submit/query/upload 三条链路。
+7. 前端补 RunningHub 配置与后端切换入口（如果用户要求把它做成可选 UI）。
 
 ## 已踩过的坑（别再踩）
 
