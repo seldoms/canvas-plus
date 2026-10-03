@@ -6,6 +6,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { createPipeline } from "../src/pipeline.js";
+import { createProjects } from "../src/projects.js";
 import { extractTokens, renderTemplate } from "../src/providers/comfy.js";
 import { loadRegistry, loadSkills, readSkill } from "../src/skills.js";
 
@@ -139,7 +140,7 @@ function fakeLlm(reply = SCRIPT) {
 function build(env, options = {}) {
     const jobs = options.jobs || fakeJobs();
     const llm = options.llm || fakeLlm();
-    const pipeline = createPipeline({ config: env.config, skillsDir: env.skillsDir, jobs, comfy: {}, llm, runJob: options.runJob });
+    const pipeline = createPipeline({ config: env.config, skillsDir: env.skillsDir, jobs, comfy: {}, llm, runJob: options.runJob, getProject: options.getProject, applyPlanSuggestion: options.applyPlanSuggestion });
     return { pipeline, jobs, llm };
 }
 
@@ -987,3 +988,253 @@ test("regenerate：连续两次各追加一条候选，不会合并成一条", a
     assert.equal(start.artifactUrl, "/api/artifacts/job/re1.png");
     assert.equal(start.candidates.find((candidate) => candidate.jobId === first.jobId).status, "done");
 });
+
+// ——— 半自动一：plan 驱动制作参数 ———
+
+const TEST_PROJECT = {
+    id: "prj_test",
+    styleAnchor: "冷调赛博朋克，霓虹夜景，电影质感",
+    plan: { ratio: "16:9", episodeDurationSec: 7, visualStyle: "写实真人", genre: "都市", tone: "悬疑" },
+};
+
+/** 项目化模式跑一条到 keyframe 的流水线（注入 getProject），返回可控任务源。 */
+async function toProjectKeyframe(env, project, { reply = stageReply } = {}) {
+    const jobs = fakeJobQueue();
+    const llm = fakeLlm(reply);
+    const { pipeline } = build(env, { llm, jobs, runJob: async () => ({ outputs: [] }), getProject: (id) => (id === project.id ? project : null) });
+    pipeline.bindJobs();
+    const run = pipeline.create({ novel: "很久以前", title: "短篇", options: { projectId: project.id } });
+    await pipeline.runStage(run.id, "script");
+    await pipeline.runStage(run.id, "storyboard");
+    await pipeline.runStage(run.id, "keyframe");
+    return { pipeline, jobs, llm, run, startJob: jobs.get(`${run.id}-sh1-start`) };
+}
+
+test("plan 驱动：ratio 推导 32 倍数尺寸、styleAnchor 与设定进生图首句", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    const { jobs, run, startJob } = await toProjectKeyframe(env, TEST_PROJECT);
+
+    // 16:9 → 短边沿用 config 短边 768，长边 768*16/9≈1365.33 吸附到 32 倍数 1376
+    assert.equal(startJob.params.WIDTH, 1376);
+    assert.equal(startJob.params.HEIGHT, 768);
+    assert.equal(startJob.params.WIDTH % 32, 0);
+    assert.equal(startJob.params.HEIGHT % 32, 0);
+
+    // 生图提示词首句一字不差是 styleAnchor，其后接 visualStyle/genre/tone 创作上下文与原始 prompt
+    const prompt = startJob.params.PROMPT;
+    assert.equal(prompt.split("。")[0], TEST_PROJECT.styleAnchor);
+    assert.match(prompt, /写实真人/);
+    assert.match(prompt, /都市/);
+    assert.match(prompt, /悬疑/);
+    assert.ok(prompt.endsWith("少女走进老屋，中景"), prompt);
+
+    assert.equal(jobs.list().length, 1, "只有参数与提示词变化，入队行为不变");
+    assert.equal(run.options.projectId, "prj_test");
+});
+
+test("plan 驱动：生视频同样带 styleAnchor，episodeDurationSec 作片段默认时长", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    const noDurationClips = { clips: [{ id: "sh1-clip", shotId: "sh1", keyframeId: "sh1-start" }], assembly: { order: [], transition: "cut" } };
+    const reply = (content) => (content.includes("片段合成师") ? noDurationClips : stageReply(content));
+    const { pipeline, jobs, run, startJob } = await toProjectKeyframe(env, TEST_PROJECT, { reply });
+
+    jobs.finish(startJob.id, "done", { outputs: [{ url: "/api/artifacts/job/s.png" }] });
+    jobs.finish(jobs.get(`${run.id}-sh1-end`).id, "done", { outputs: [{ url: "/api/artifacts/job/e.png" }] });
+    const assembled = await pipeline.runStage(run.id, "assembly");
+    const clip = assembled.stages.assembly.output.clips[0];
+
+    // 片段未自带 durationSec → 用 plan.episodeDurationSec=7（不是 config.videoSeconds=5）
+    assert.equal(clip.durationSec, 7);
+    const clipJob = jobs.get(clip.jobId);
+    assert.equal(clipJob.params.WIDTH, 1376);
+    assert.equal(clipJob.params.HEIGHT, 768);
+    assert.equal(clipJob.params.PROMPT.split("。")[0], TEST_PROJECT.styleAnchor);
+    // LENGTH 走 17n+5 帧网格：7s*24=168 帧 → 不小于 168 的网格点 175
+    assert.equal(clipJob.params.LENGTH, 175);
+});
+
+test("不传 getProject：生成参数与失败行为逐字不变（不自动重试）", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    const { pipeline, jobs, run, startJob } = await toKeyframe(env); // 不带 getProject
+
+    // 提示词与尺寸保持旧值（无 styleAnchor 前缀、无 ratio 推导）：整份 params 逐字段不变
+    assert.deepEqual(startJob.params, { WIDTH: 768, HEIGHT: 1344, BATCH: 1, PROMPT: "少女走进老屋，中景" });
+
+    // 失败即止：不追加任何候选
+    jobs.finish(startJob.id, "error", { error: "GPU 挂了" });
+    const frame = pipeline.get(run.id).stages.keyframe.output.frames.find((entry) => entry.id === "sh1-start");
+    assert.equal(frame.candidates.length, 1);
+    assert.equal(frame.candidates[0].autoRetry, undefined);
+    assert.equal(pipeline.get(run.id).stages.keyframe.status, "error");
+});
+
+// ——— 半自动二：单镜失败自动重试 ———
+
+test("单镜失败自动重试：最多 2 次、保留全部旧候选、用尽后落 error", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    const { pipeline, jobs, run, startJob } = await toProjectKeyframe(env, TEST_PROJECT);
+    const frameOf = () => pipeline.get(run.id).stages.keyframe.output.frames.find((entry) => entry.id === "sh1-start");
+    assert.equal(frameOf().candidates.length, 1);
+
+    jobs.finish(startJob.id, "error", { error: "第 1 次失败" });
+    assert.equal(frameOf().candidates.length, 2, "首次失败 → 自动重试 1 次");
+    const retry1 = frameOf().candidates.at(-1);
+    assert.equal(retry1.autoRetry, true);
+    assert.equal(retry1.status, "queued");
+    assert.equal(retry1.template, "img-test", "重试沿用同一模板");
+    assert.notEqual(retry1.jobId, startJob.id, "重试用新 jobId");
+    assert.equal(pipeline.get(run.id).stages.keyframe.status, "running", "有重试在跑 → 阶段 running");
+
+    jobs.finish(retry1.jobId, "error", { error: "第 2 次失败" });
+    assert.equal(frameOf().candidates.length, 3, "预算内再重试 1 次");
+    const retry2 = frameOf().candidates.at(-1);
+    assert.equal(retry2.autoRetry, true);
+
+    jobs.finish(retry2.jobId, "error", { error: "第 3 次失败" });
+    assert.equal(frameOf().candidates.length, 3, "预算用尽 → 不再追加候选");
+    assert.equal(pipeline.get(run.id).stages.keyframe.status, "error", "用尽后阶段自然落 error");
+
+    // 三次 attempt 全部保留（含失败的），各自 jobId 唯一
+    const candidates = frameOf().candidates;
+    assert.deepEqual(candidates.map((candidate) => candidate.status), ["error", "error", "error"]);
+    assert.equal(new Set(candidates.map((candidate) => candidate.jobId)).size, 3);
+    assert.ok(candidates.every((candidate) => candidate.artifactUrl === null));
+});
+
+test("自动重试次数可配：maxItemRetries=1 只重试一次", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    env.config.pipeline.maxItemRetries = 1;
+    const { pipeline, jobs, run, startJob } = await toProjectKeyframe(env, TEST_PROJECT);
+    const frameOf = () => pipeline.get(run.id).stages.keyframe.output.frames.find((entry) => entry.id === "sh1-start");
+
+    jobs.finish(startJob.id, "error", { error: "挂了" });
+    assert.equal(frameOf().candidates.length, 2);
+    jobs.finish(frameOf().candidates.at(-1).jobId, "error", { error: "又挂" });
+    assert.equal(frameOf().candidates.length, 2, "maxItemRetries=1 用尽后不再重试");
+    assert.equal(pipeline.get(run.id).stages.keyframe.status, "error");
+});
+
+test("自动重试计数幂等：同一失败事件重复投递 / 重启重放不多算", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    const { pipeline, jobs, run, startJob } = await toProjectKeyframe(env, TEST_PROJECT);
+    const frameOf = (pipe = pipeline) => pipe.get(run.id).stages.keyframe.output.frames.find((entry) => entry.id === "sh1-start");
+
+    jobs.finish(startJob.id, "error", { error: "挂了" });
+    assert.equal(frameOf().candidates.length, 2);
+
+    // 同一失败事件重复投递两次：latest 已是 queued 重试候选，不得再追加
+    pipeline.projectJob(jobs.get(startJob.id));
+    pipeline.projectJob(jobs.get(startJob.id));
+    assert.equal(frameOf().candidates.length, 2);
+
+    // 模拟进程重启：新实例 bindJobs 重放 jobs.list() 全部终态任务，仍不得多算
+    const rebuilt = createPipeline({
+        config: env.config,
+        skillsDir: env.skillsDir,
+        jobs,
+        comfy: {},
+        llm: fakeLlm(stageReply),
+        runJob: async () => ({ outputs: [] }),
+        getProject: (id) => (id === TEST_PROJECT.id ? TEST_PROJECT : null),
+    });
+    rebuilt.bindJobs();
+    assert.equal(frameOf(rebuilt).candidates.length, 2, "重放不追加候选：重试次数只由候选列表导出");
+    assert.equal(frameOf(rebuilt).candidates.filter((candidate) => candidate.autoRetry).length, 1);
+});
+
+test("自动重试：canceled 不触发重试，取消阶段不被重跑", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    const { pipeline, jobs, run } = await toProjectKeyframe(env, TEST_PROJECT);
+
+    const result = pipeline.cancelStage(run.id, "keyframe");
+    assert.equal(result.canceled, 1);
+    const frame = pipeline.get(run.id).stages.keyframe.output.frames.find((entry) => entry.id === "sh1-start");
+    assert.equal(frame.candidates.length, 1, "取消不追加重试候选");
+    assert.equal(frame.candidates.at(-1).status, "canceled");
+    assert.equal(pipeline.get(run.id).stages.keyframe.status, "canceled");
+    assert.equal(jobs.list().length, 1, "取消后没有多出重试任务");
+});
+
+// ——— 半自动三：01 设定建议回填项目 plan ———
+
+test("planSuggestion 回填：只填空字段、不覆盖用户已填、ratio/styleAnchor 不碰、重复投递幂等", async (t) => {
+    const env = makeEnv();
+    const projectsRoot = mkdtempSync(join(tmpdir(), "canvas-plan-suggestion-"));
+    t.after(() => {
+        rmSync(env.root, { recursive: true, force: true });
+        rmSync(projectsRoot, { recursive: true, force: true });
+    });
+
+    const projects = createProjects({ dataDir: projectsRoot });
+    // genre 用户已填、ratio 有值（不在建议范围）；其余保持 PLAN_DEFAULTS（未填写）
+    const project = projects.create({ title: "甲", styleAnchor: "冷调", plan: { genre: "都市", ratio: "9:16" } });
+    const suggestion = { genre: "悬疑", tone: "冷硬", visualStyle: "写实真人", dramaMode: "微电影向", audience: "年轻女性", episodeCount: 24, episodeDurationSec: 90 };
+    const scriptReply = { ...SCRIPT, planSuggestion: suggestion };
+
+    const { pipeline } = build(env, {
+        llm: fakeLlm(() => scriptReply),
+        jobs: fakeJobQueue(),
+        getProject: (id) => projects.get(id),
+        applyPlanSuggestion: (id, value) => projects.applyPlanSuggestion(id, value),
+    });
+    const before = projects.get(project.id);
+    const run = pipeline.create({ novel: "很久以前", title: "短篇", options: { projectId: project.id } });
+
+    await pipeline.runStage(run.id, "script");
+    const after = projects.get(project.id);
+    assert.equal(after.plan.genre, "都市", "用户已填 genre 一律不动");
+    assert.equal(after.plan.tone, "冷硬", "空 tone 被回填");
+    assert.equal(after.plan.visualStyle, "写实真人");
+    assert.equal(after.plan.dramaMode, "微电影向");
+    assert.equal(after.plan.audience, "年轻女性");
+    assert.equal(after.plan.episodeCount, 24);
+    assert.equal(after.plan.episodeDurationSec, 90);
+    assert.equal(after.plan.ratio, "9:16", "ratio 不在建议范围，不碰");
+    assert.equal(after.styleAnchor, "冷调", "styleAnchor 不在建议范围，不碰");
+    assert.equal(after.version, before.version + 1, "回填走 update：原子写 + version 自增一次");
+
+    // 幂等：rebuild 后重放同一剧本阶段（同 suggestion），不再写盘、version 不变
+    const rebuilt = createPipeline({
+        config: env.config,
+        skillsDir: env.skillsDir,
+        jobs: fakeJobQueue(),
+        comfy: {},
+        llm: fakeLlm(() => scriptReply),
+        getProject: (id) => projects.get(id),
+        applyPlanSuggestion: (id, value) => projects.applyPlanSuggestion(id, value),
+    });
+    await rebuilt.runStage(run.id, "script");
+    assert.equal(projects.get(project.id).version, after.version, "重复投递/重启重放不反复覆盖");
+});
+
+test("planSuggestion：未注入 applyPlanSuggestion 时不回填（保持旧行为）", async (t) => {
+    const env = makeEnv();
+    const projectsRoot = mkdtempSync(join(tmpdir(), "canvas-plan-nohook-"));
+    t.after(() => {
+        rmSync(env.root, { recursive: true, force: true });
+        rmSync(projectsRoot, { recursive: true, force: true });
+    });
+    const projects = createProjects({ dataDir: projectsRoot });
+    const project = projects.create({ title: "乙" });
+    const { pipeline } = build(env, {
+        llm: fakeLlm(() => ({ ...SCRIPT, planSuggestion: { tone: "冷硬" } })),
+        jobs: fakeJobQueue(),
+        getProject: (id) => projects.get(id),
+        // 故意不注入 applyPlanSuggestion
+    });
+    const before = projects.get(project.id);
+    const run = pipeline.create({ novel: "很久以前", title: "短篇", options: { projectId: project.id } });
+    await pipeline.runStage(run.id, "script");
+    const after = projects.get(project.id);
+    assert.equal(after.plan.tone, "", "未接线时不回填");
+    assert.equal(after.version, before.version, "未接线时不写盘");
+});
+
+

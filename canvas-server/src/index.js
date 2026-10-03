@@ -130,7 +130,18 @@ async function runJob(job, ctx) {
     return local.runJob(job, ctx);
 }
 
-const pipeline = createPipeline({ config, skillsDir: config.skillsDir, jobs, comfy, llm, runJob });
+const pipeline = createPipeline({
+    config,
+    skillsDir: config.skillsDir,
+    jobs,
+    comfy,
+    llm,
+    runJob,
+    // 项目化模式：run.options.projectId → Project 读取器，供 plan 驱动生成参数与单镜失败自动重试。
+    getProject: (projectId) => projects.get(projectId),
+    // 剧本阶段完成后把 01 的 planSuggestion 回填到项目 plan（只填未填写字段、幂等）。
+    applyPlanSuggestion: (projectId, suggestion) => projects.applyPlanSuggestion(projectId, suggestion),
+});
 // 订阅一次任务队列的 change 事件：Job 落终态时把产物回写流水线条目；并重放 jobs.json 里的终态任务，
 // 让服务重启后能从任务队列重建流水线状态（幂等）。
 pipeline.bindJobs();
@@ -489,8 +500,9 @@ router.post("/api/projects", async (req, res) => {
     }
 });
 
-router.get("/api/projects/:id/context", (req, res, { params }) => {
-    const context = projects.context(params.id);
+router.get("/api/projects/:id/context", (req, res, { params, url }) => {
+    // 默认轻量形状（保持既有契约）；?include=refs 追加 assetRefs 与 gates（阶段门禁）。
+    const context = projects.context(params.id, { includeRefs: url.searchParams.get("include") === "refs" });
     if (!context) return sendError(res, 404, "项目不存在");
     sendJson(res, 200, context);
 });
@@ -517,6 +529,109 @@ router.post("/api/projects/:id/archive", (req, res, { params }) => {
         sendError(res, error.status || 400, error.message);
     }
 });
+
+// ——— P0-a 深水区：集/场/镜、源版本、资产引用、阶段门禁 ———
+// 存储层不碰 HTTP、路由层不写业务：这里只解析请求、调 projects 下的实体存储、回响应。
+// 错误码沿用：不存在 404、非法引用/参数 400、版本冲突 409；错误对象带 status，由 routeHandler 统一映射。
+const routeHandler = (handler) => async (req, res, ctx) => {
+    try {
+        await handler(req, res, ctx);
+    } catch (error) {
+        sendError(res, error.status || 400, error.message);
+    }
+};
+
+// 集 / 场 / 镜
+router.get("/api/projects/:id/episodes", routeHandler((req, res, { params }) => {
+    sendJson(res, 200, { episodes: projects.episodes.list(params.id) });
+}));
+
+router.post("/api/projects/:id/episodes", routeHandler(async (req, res, { params }) => {
+    const { episode } = projects.episodes.save(params.id, await readJson(req));
+    sendJson(res, 201, { episode });
+}));
+
+router.get("/api/projects/:id/episodes/:episodeId", routeHandler((req, res, { params }) => {
+    const episode = projects.episodes.get(params.id, params.episodeId);
+    if (!episode) return sendError(res, 404, "集不存在");
+    sendJson(res, 200, { episode });
+}));
+
+router.post("/api/projects/:id/episodes/:episodeId", routeHandler(async (req, res, { params }) => {
+    const { episode } = projects.episodes.update(params.id, params.episodeId, await readJson(req));
+    sendJson(res, 200, { episode });
+}));
+
+router.post("/api/projects/:id/episodes/:episodeId/scenes", routeHandler(async (req, res, { params }) => {
+    const { scene } = projects.episodes.addScene(params.id, params.episodeId, await readJson(req));
+    sendJson(res, 201, { scene });
+}));
+
+router.post("/api/projects/:id/episodes/:episodeId/reorder", routeHandler(async (req, res, { params }) => {
+    const { episode } = projects.episodes.reorder(params.id, params.episodeId, await readJson(req));
+    sendJson(res, 200, { episode });
+}));
+
+router.post("/api/projects/:id/scenes/:sceneId", routeHandler(async (req, res, { params }) => {
+    const { scene } = projects.episodes.updateScene(params.id, params.sceneId, await readJson(req));
+    sendJson(res, 200, { scene });
+}));
+
+router.post("/api/projects/:id/scenes/:sceneId/shots", routeHandler(async (req, res, { params }) => {
+    const { shot } = projects.episodes.addShot(params.id, params.sceneId, await readJson(req));
+    sendJson(res, 201, { shot });
+}));
+
+router.post("/api/projects/:id/shots/:shotId", routeHandler(async (req, res, { params }) => {
+    const { shot } = projects.episodes.updateShot(params.id, params.shotId, await readJson(req));
+    sendJson(res, 200, { shot });
+}));
+
+// 源版本（不可变）
+router.get("/api/projects/:id/sources", routeHandler((req, res, { params }) => {
+    sendJson(res, 200, { sources: projects.sources.list(params.id) });
+}));
+
+router.post("/api/projects/:id/sources", routeHandler(async (req, res, { params }) => {
+    sendJson(res, 201, { source: projects.sources.save(params.id, await readJson(req)) });
+}));
+
+router.get("/api/projects/:id/sources/:revisionId", routeHandler((req, res, { params }) => {
+    const source = projects.sources.get(params.id, params.revisionId);
+    if (!source) return sendError(res, 404, "源版本不存在");
+    sendJson(res, 200, { source });
+}));
+
+// 资产引用（AssetRef）：路径与契约/前端一致，统一 /asset-refs（不再保留旧的 /assets 别名）。
+router.get("/api/projects/:id/asset-refs", routeHandler((req, res, { params, url }) => {
+    sendJson(res, 200, { assetRefs: projects.assets.list(params.id, { role: url.searchParams.get("role") ?? undefined }) });
+}));
+
+router.post("/api/projects/:id/asset-refs", routeHandler(async (req, res, { params }) => {
+    sendJson(res, 201, { assetRef: projects.assets.create(params.id, await readJson(req)) });
+}));
+
+// 改引用：前端走 PATCH，契约同时保留 POST；同一条路径共用同一个处理器。
+const updateAssetRef = routeHandler(async (req, res, { params }) => {
+    sendJson(res, 200, { assetRef: projects.assets.update(params.id, params.refId, await readJson(req)) });
+});
+router.add("PATCH", "/api/projects/:id/asset-refs/:refId", updateAssetRef);
+router.post("/api/projects/:id/asset-refs/:refId", updateAssetRef);
+
+router.post("/api/projects/:id/asset-refs/:refId/select", routeHandler(async (req, res, { params }) => {
+    sendJson(res, 200, { assetRef: projects.assets.select(params.id, params.refId, await readJson(req)) });
+}));
+
+router.post("/api/projects/:id/asset-refs/:refId/unlink", routeHandler(async (req, res, { params }) => {
+    sendJson(res, 200, { assetRef: projects.assets.unlink(params.id, params.refId, await readJson(req)) });
+}));
+
+// 阶段门禁（纯推导）
+router.get("/api/projects/:id/gates", routeHandler((req, res, { params }) => {
+    const gates = projects.gates(params.id);
+    if (!gates) return sendError(res, 404, "项目不存在");
+    sendJson(res, 200, { gates });
+}));
 
 const server = createServer(async (req, res) => {
     applyCors(res);

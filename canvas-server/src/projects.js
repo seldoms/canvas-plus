@@ -4,6 +4,10 @@ import { dirname, join } from "node:path";
 
 import { ID_PREFIX } from "./contracts.js";
 import { ensureDir, safeJoin } from "./files.js";
+import { createEpisodes } from "./episodes.js";
+import { createSources } from "./sources.js";
+import { createAssets } from "./assets.js";
+import { deriveGates } from "./gates.js";
 
 /**
  * Project 服务端存储内核（P0-a）。
@@ -18,10 +22,15 @@ import { ensureDir, safeJoin } from "./files.js";
 const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 /** 26 位 ULID 的正则：10 位时间戳 + 16 位随机。 */
 const ULID_PATTERN = /^[0-9A-HJKMNP-TV-Z]{26}$/;
-const EPISODE_ID = new RegExp(`^${ID_PREFIX.episode}\\d{4}$`);
 
 /** Plan 必填字段默认值（D8：项目级默认）。 */
 const PLAN_DEFAULTS = Object.freeze({ genre: "", tone: "", visualStyle: "", ratio: "9:16", episodeDurationSec: 60, dramaMode: "短剧向", audience: "", episodeCount: 1 });
+
+/**
+ * 01 剧本阶段 planSuggestion 可回填的字段白名单。
+ * ratio / styleAnchor 不在 01 建议范围内，绝不在此列表里 —— 防止回填越权改动画幅与风格锚点。
+ */
+const PLAN_SUGGESTION_FIELDS = Object.freeze(["genre", "tone", "visualStyle", "dramaMode", "audience", "episodeCount", "episodeDurationSec"]);
 
 function nowIso() {
     return new Date().toISOString();
@@ -87,11 +96,6 @@ function requireArray(value, name) {
     return value;
 }
 
-/** project.json 里只存集索引（id/index/title/status），详情在 episodes/<id>.json。 */
-function episodeIndex(episode) {
-    return { id: episode.id, index: episode.index, title: episode.title, status: episode.status };
-}
-
 export function createProjects({ dataDir } = {}) {
     const projectsDir = ensureDir(join(dataDir, "projects"));
     const archiveDir = ensureDir(join(dataDir, "projects-archive"));
@@ -139,6 +143,19 @@ export function createProjects({ dataDir } = {}) {
         return { project, dir };
     }
 
+    // —— 实体存储模块的共享原语（存储层内部依赖，不含 HTTP 概念）——
+    // 写回 project.json：统一重算 updatedAt / version 自增 + 原子写。
+    const persistProject = (dir, project) => {
+        project.updatedAt = nowIso();
+        project.version += 1;
+        writeJsonAtomic(projectFile(dir), project);
+        return project;
+    };
+    const entityStore = { dataDir, ulid, nowIso, httpError, badRequest, requireArray, requireProject, persistProject, readJson, writeJsonAtomic };
+    const episodes = createEpisodes(entityStore);
+    const sources = createSources(entityStore);
+    const assets = createAssets(entityStore);
+
     /** 列表摘要：不吐 project.json 全文（风格锚点、剧本正文都不进列表响应）。 */
     function summarize(project) {
         const episodes = Array.isArray(project.episodes) ? project.episodes : [];
@@ -170,6 +187,7 @@ export function createProjects({ dataDir } = {}) {
             styleAnchor: String(input.styleAnchor ?? "").trim(),
             plan: normalizePlan(input.plan),
             script: input.script ?? null,
+            sourceRevisionId: null,
             episodes: [],
             assetRefs: [],
             runIds: [],
@@ -202,7 +220,7 @@ export function createProjects({ dataDir } = {}) {
     }
 
     /** 可更新字段白名单；expectedVersion 是控制位，不落盘。 */
-    const MUTABLE_FIELDS = new Set(["title", "styleAnchor", "plan", "script", "assetRefs", "runIds", "canvasIds", "checklist", "reviewNotes", "ownerUserId"]);
+    const MUTABLE_FIELDS = new Set(["title", "styleAnchor", "plan", "script", "sourceRevisionId", "assetRefs", "runIds", "canvasIds", "checklist", "reviewNotes", "ownerUserId"]);
 
     function update(id, patch = {}) {
         const { project, dir } = requireProject(id);
@@ -226,11 +244,38 @@ export function createProjects({ dataDir } = {}) {
         if (body.canvasIds !== undefined) project.canvasIds = requireArray(body.canvasIds, "canvasIds");
         if (body.checklist !== undefined) project.checklist = requireArray(body.checklist, "checklist");
         if (body.reviewNotes !== undefined) project.reviewNotes = requireArray(body.reviewNotes, "reviewNotes");
+        if (body.sourceRevisionId !== undefined) project.sourceRevisionId = body.sourceRevisionId === null ? null : String(body.sourceRevisionId);
         if (body.ownerUserId !== undefined) project.ownerUserId = String(body.ownerUserId);
         project.updatedAt = nowIso();
         project.version += 1;
         writeJsonAtomic(projectFile(dir), project);
         return project;
+    }
+
+    /**
+     * 把 01 剧本阶段产出的 planSuggestion 回填到项目 plan，只填「用户尚未填写」的字段：
+     * 未填写 = 仍是 PLAN_DEFAULTS 的占位值（或空串/缺省）；已有值一律不动。ratio / styleAnchor 不在建议范围内，不碰。
+     * 回填走 update()：原子写 + version 自增。幂等：建议值与现值相同则跳过，重启重放不会反复覆盖。
+     */
+    function applyPlanSuggestion(id, suggestion) {
+        const project = get(id);
+        if (!project) return { project: null, applied: false };
+        const source = suggestion && typeof suggestion === "object" ? suggestion : {};
+        const plan = project.plan && typeof project.plan === "object" ? project.plan : {};
+        const patch = {};
+        for (const key of PLAN_SUGGESTION_FIELDS) {
+            const raw = source[key];
+            if (raw === undefined || raw === null) continue;
+            const numeric = key === "episodeCount" || key === "episodeDurationSec";
+            const next = numeric ? Number(raw) : String(raw).trim();
+            if (numeric ? !(next > 0) : next === "") continue;
+            const current = plan[key];
+            const unfilled = current === undefined || current === null || current === "" || current === PLAN_DEFAULTS[key];
+            // 未填写且建议值与现值不同才回填：已填（含被本函数填过）或建议与现值相同时跳过 → 幂等。
+            if (unfilled && next !== current) patch[key] = next;
+        }
+        if (Object.keys(patch).length === 0) return { project, applied: false };
+        return { project: update(id, { plan: patch }), applied: true };
     }
 
     /** 归档：项目目录移出活动区（列表不再出现，get/context 仍可读）；project.json 字段不变。 */
@@ -246,71 +291,41 @@ export function createProjects({ dataDir } = {}) {
         return project;
     }
 
-    /** Project Context API：项目页 / 画布 / 流水线 / 素材库统一取同一份上下文。 */
-    function context(id) {
+    /**
+     * Project Context API：项目页 / 画布 / 流水线 / 素材库统一取同一份上下文。
+     * 默认回轻量形状（project + episodes 索引 + runIds + canvasIds）；includeRefs 时追加 assetRefs
+     * 与 gates（阶段门禁纯推导），供总览/工作区按需取，避免列表接口背负大对象。
+     */
+    function context(id, { includeRefs = false } = {}) {
         const project = get(id);
         if (!project) return null;
-        return {
+        const base = {
             project,
             episodes: project.episodes || [],
             runIds: project.runIds || [],
             canvasIds: project.canvasIds || [],
         };
+        if (!includeRefs) return base;
+        return { ...base, assetRefs: project.assetRefs || [], gates: deriveGates({ project, episodes: episodes.listDetails(id) }) };
     }
 
-    /** 写一集：详情落 episodes/<id>.json，索引并入 project.episodes。 */
-    function saveEpisode(projectId, input = {}) {
-        const { project, dir } = requireProject(projectId);
-        const id = String(input.id ?? "");
-        if (!EPISODE_ID.test(id)) throw badRequest("集 id 必须是 ep_ + 4 位序号");
-        const indexed = Number(input.index);
-        const episode = {
-            id,
-            projectId: project.id,
-            index: indexed > 0 ? indexed : (project.episodes?.length || 0) + 1,
-            title: String(input.title ?? "").trim() || id,
-            sceneIds: requireArray(input.sceneIds ?? [], "sceneIds"),
-            canvasIds: requireArray(input.canvasIds ?? [], "canvasIds"),
-            status: String(input.status ?? "pending"),
-            deliverableIds: requireArray(input.deliverableIds ?? [], "deliverableIds"),
-        };
-        if (input.logline !== undefined) episode.logline = String(input.logline);
-        if (input.plan !== undefined) episode.plan = input.plan;
-        writeJsonAtomic(safeJoin(dir, "episodes", `${id}.json`), episode);
-        project.episodes = [...(project.episodes || []).filter((item) => item.id !== id), episodeIndex(episode)].sort((a, b) => a.index - b.index);
-        project.updatedAt = nowIso();
-        project.version += 1;
-        writeJsonAtomic(projectFile(dir), project);
-        return { episode, project };
+    /** 阶段门禁：据 Project + 各集详情纯推导（不落盘）；项目不存在返回 null。 */
+    function gates(id) {
+        const project = get(id);
+        if (!project) return null;
+        return deriveGates({ project, episodes: episodes.listDetails(id) });
     }
 
-    function getEpisode(projectId, episodeId) {
-        const { dir } = requireProject(projectId);
-        return readJson(safeJoin(dir, "episodes", `${String(episodeId)}.json`));
-    }
+    // 集/场/镜与源版本由独立存储模块实现；这里只做转发，保持「一个实体一个模块」。
+    const saveEpisode = (projectId, input) => episodes.save(projectId, input);
+    const getEpisode = (projectId, episodeId) => episodes.get(projectId, episodeId);
+    const saveSource = (projectId, input) => sources.save(projectId, input);
+    const getSource = (projectId, revisionId) => sources.get(projectId, revisionId);
 
-    /** 写一份源版本；已存在的 revisionId 不可覆盖（sources 不可变）。 */
-    function saveSource(projectId, input = {}) {
-        const { project, dir } = requireProject(projectId);
-        const id = String(input.id ?? "") || `src_${ulid()}`;
-        const file = safeJoin(dir, "sources", `${id}.json`);
-        if (existsSync(file)) throw httpError(409, `源版本不可覆盖：${id}`);
-        const revision = {
-            id,
-            projectId: project.id,
-            kind: String(input.kind ?? "novel"),
-            text: String(input.text ?? input.content ?? ""),
-            note: String(input.note ?? ""),
-            createdAt: nowIso(),
-        };
-        writeJsonAtomic(file, revision);
-        return revision;
-    }
-
-    function getSource(projectId, revisionId) {
-        const { dir } = requireProject(projectId);
-        return readJson(safeJoin(dir, "sources", `${String(revisionId)}.json`));
-    }
-
-    return { create, get, list, update, archive, context, saveEpisode, getEpisode, saveSource, getSource, ulid, ULID_PATTERN };
+    return {
+        create, get, list, update, archive, context, gates, applyPlanSuggestion,
+        saveEpisode, getEpisode, saveSource, getSource,
+        episodes, sources, assets,
+        ulid, ULID_PATTERN,
+    };
 }

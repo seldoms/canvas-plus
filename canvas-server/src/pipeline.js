@@ -33,6 +33,35 @@ function frameCountFor(seconds, fps) {
     return 17 * steps + 5;
 }
 
+/** 把像素值吸附到最近的 32 倍数：H3 节点硬性要求宽高可被 32 整除（与 generate.js 的兜底吸附同一口径）。 */
+function snap32(value) {
+    return Math.max(32, Math.round(Number(value) / 32) * 32);
+}
+
+/**
+ * 把「宽:高」比例换算成像素尺寸，两边都吸附到 32 的倍数。
+ * base 是短边基准（取 config 默认宽高的短边），保证同一画幅不同项目产出一致尺寸。
+ * 解析失败返回 null，调用方回落到 config.pipeline 的默认宽高。
+ */
+function dimensionsForRatio(ratio, base) {
+    const match = /^(\d+(?:\.\d+)?)\s*:\s*(\d+(?:\.\d+)?)$/.exec(String(ratio ?? "").trim());
+    if (!match) return null;
+    const width = Number(match[1]);
+    const height = Number(match[2]);
+    if (!(width > 0) || !(height > 0)) return null;
+    const short = Math.max(32, Number(base) || 768);
+    return {
+        WIDTH: snap32(width >= height ? (short * width) / height : short),
+        HEIGHT: snap32(height >= width ? (short * height) / width : short),
+    };
+}
+
+/** 生成提示词首句固定为项目风格锚点：把创作上下文拼在原始 prompt 前面，空上下文时原样返回（保证旧行为逐字不变）。 */
+function withPromptHead(context, text) {
+    if (!context) return text;
+    return text ? `${context}。${text}` : context;
+}
+
 function nowIso() {
     return new Date().toISOString();
 }
@@ -83,8 +112,14 @@ function fillTemplate(text, context) {
  * assemble 是「片段 → 成片」的后期执行体，默认用 delivery.js 的 assembleEpisode；
  * 编排器只负责判定何时拼接、把清单与参数交给它，ffmpeg 命令构造与执行都留在 delivery.js。
  */
-export function createPipeline({ config, skillsDir, jobs, comfy, llm, runJob, assemble = assembleEpisode } = {}) {
+export function createPipeline({ config, skillsDir, jobs, comfy, llm, runJob, assemble = assembleEpisode, getProject, applyPlanSuggestion } = {}) {
     const pipelineConfig = config?.pipeline || {};
+    // 半自动总开关：注入 getProject（项目化模式）时才启用「单镜失败自动重试」。
+    // 未注入时一律保持旧的「失败即止」行为；plan 驱动参数靠 projectOf 返回 null 自然回落，不需要额外开关。
+    const autoRetryEnabled = typeof getProject === "function";
+    // 单镜失败自动重试次数：pipeline.maxItemRetries 可配，默认 2；用尽后阶段自然落到 error/partial。
+    const maxItemRetries =
+        Number.isFinite(Number(pipelineConfig.maxItemRetries)) && Number(pipelineConfig.maxItemRetries) >= 0 ? Math.floor(Number(pipelineConfig.maxItemRetries)) : 2;
     const runsDir = ensureDir(join(config?.dataDir || "data", "runs"));
     const registry = loadRegistry(skillsDir);
     const stageDefs = new Map(registry.stages.map((item) => [item.id, item]));
@@ -529,38 +564,96 @@ ${JSON.stringify(partials, null, 2)}
         if (TERMINAL_JOB.has(stage.status)) stage.finishedAt = stage.finishedAt || nowIso();
     }
 
+    /** 取 run 绑定的项目（run.options.projectId 是契约认可的过渡位）；未注入 getProject 或查不到时返回 null。 */
+    function projectOf(run) {
+        if (typeof getProject !== "function") return null;
+        const projectId = run?.options?.projectId;
+        if (!projectId) return null;
+        try {
+            const project = getProject(projectId);
+            return project && typeof project === "object" ? project : null;
+        } catch {
+            return null;
+        }
+    }
+
+    /**
+     * 剧本阶段完成后，把 01 产出的 planSuggestion 回填项目 plan。
+     * 只填空字段的判定与写入交给注入的 applyPlanSuggestion（projects.applyPlanSuggestion，依 PLAN_DEFAULTS 判定 + 原子写 + version 自增），
+     * 这里只负责「何时调用」：仅 script 阶段、run 绑了项目、且有 planSuggestion 时才调。
+     * 未注入 / 未绑项目 / 无建议时是空操作；回填失败只告警，绝不把已成功的剧本阶段拖成 error。
+     */
+    function backfillPlanSuggestion(run, output) {
+        if (typeof applyPlanSuggestion !== "function") return;
+        const projectId = run?.options?.projectId;
+        if (!projectId) return;
+        const suggestion = output?.planSuggestion;
+        if (!suggestion || typeof suggestion !== "object") return;
+        try {
+            applyPlanSuggestion(projectId, suggestion);
+        } catch (error) {
+            console.warn(`[pipeline] planSuggestion 回填失败（不影响剧本阶段）：${error.message}`);
+        }
+    }
+
+    /**
+     * 项目级制作参数：plan.ratio / episodeDurationSec 与 styleAnchor + visualStyle/genre/tone 组成创作上下文。
+     * project 有值用 project、没有回落 config；未传 project 时全部为空 → 生成参数与旧版逐字一致。
+     */
+    function productionDefaults(run) {
+        const project = projectOf(run);
+        const plan = project?.plan && typeof project.plan === "object" ? project.plan : null;
+        const anchor = String(project?.styleAnchor ?? "").trim();
+        // 创作上下文首句固定是 styleAnchor（一字不差），其后才是视觉形式/题材/基调。
+        const flavor = [plan?.visualStyle, plan?.tone, plan?.genre]
+            .map((value) => String(value ?? "").trim())
+            .filter(Boolean)
+            .join("，");
+        return {
+            ratio: String(plan?.ratio ?? "").trim(),
+            episodeDurationSec: Number(plan?.episodeDurationSec) > 0 ? Number(plan.episodeDurationSec) : null,
+            context: [anchor, flavor].filter(Boolean).join("。"),
+        };
+    }
+
     /** 单个条目的生成参数与就绪判定：模板要求的 token 必须全给，尺寸取 config.pipeline 默认值。 */
     function generativePlan(run, def, item, frames, shots) {
         const extraParams = (def.id === "keyframe" ? run.options?.image : run.options?.video) || {};
+        const project = productionDefaults(run);
         const start = frames.find((frame) => frame.shotId === item.shotId && frame.role === "start");
         if (def.id === "keyframe") {
+            // ratio 有值时按项目画幅推导尺寸（32 倍数），无值时沿用 config 默认宽高。
+            const imageDims = dimensionsForRatio(project.ratio, Math.min(Number(pipelineConfig.imageWidth) || 768, Number(pipelineConfig.imageHeight) || 1344));
             // start / key / end 都用同一个文生图模板；end 帧要等同镜 start 帧产出后才能带参考图入队。
             return {
                 kind: "image",
                 template: pipelineConfig.imageTemplate,
                 ready: item.role !== "end" || Boolean(start?.artifactUrl),
                 params: {
-                    WIDTH: Number(pipelineConfig.imageWidth) || 768,
-                    HEIGHT: Number(pipelineConfig.imageHeight) || 1344,
+                    WIDTH: imageDims ? imageDims.WIDTH : Number(pipelineConfig.imageWidth) || 768,
+                    HEIGHT: imageDims ? imageDims.HEIGHT : Number(pipelineConfig.imageHeight) || 1344,
                     BATCH: Number(pipelineConfig.imageBatch) || 1,
-                    PROMPT: item.prompt,
+                    PROMPT: withPromptHead(project.context, item.prompt),
                     ...(item.role === "end" ? { INPUT_IMAGE: start?.artifactUrl } : {}),
                     ...extraParams,
                 },
             };
         }
-        item.durationSec = Number(item.durationSec) > 0 ? Number(item.durationSec) : Number(pipelineConfig.videoSeconds) || 5;
+        // 单集时长作片段默认时长：条目自带 durationSec 时优先用它，否则用 plan.episodeDurationSec，再回落 config.videoSeconds。
+        const videoDefaultSeconds = project.episodeDurationSec ?? (Number(pipelineConfig.videoSeconds) || 5);
+        item.durationSec = Number(item.durationSec) > 0 ? Number(item.durationSec) : videoDefaultSeconds;
         if (!item.keyframeId) item.keyframeId = start?.id ?? null;
         const shot = shots.find((entry) => entry.id === item.shotId);
+        const videoDims = dimensionsForRatio(project.ratio, Math.min(Number(pipelineConfig.videoWidth) || 768, Number(pipelineConfig.videoHeight) || 1344));
         return {
             kind: "video",
             template: pipelineConfig.videoTemplate,
             // 图生视频必须有起始帧；没拿到就保持 queued + jobId:null，等关键帧产物就绪后由回写代理入队（契约见 05 SKILL.md）。
             ready: Boolean(start?.artifactUrl),
             params: {
-                WIDTH: Number(pipelineConfig.videoWidth) || 768,
-                HEIGHT: Number(pipelineConfig.videoHeight) || 1344,
-                PROMPT: [shot?.prompt, shot?.action].filter(Boolean).join(", "),
+                WIDTH: videoDims ? videoDims.WIDTH : Number(pipelineConfig.videoWidth) || 768,
+                HEIGHT: videoDims ? videoDims.HEIGHT : Number(pipelineConfig.videoHeight) || 1344,
+                PROMPT: withPromptHead(project.context, [shot?.prompt, shot?.action].filter(Boolean).join(", ")),
                 LENGTH: frameCountFor(item.durationSec, Number(pipelineConfig.videoFps) || 24),
                 ...(start?.artifactUrl ? { INPUT_IMAGE: start.artifactUrl } : {}),
                 ...extraParams,
@@ -591,6 +684,27 @@ ${JSON.stringify(partials, null, 2)}
             if (item.jobId || !plan.ready) continue;
             enqueueAttempt(run, def, item, plan);
         }
+    }
+
+    /**
+     * 单镜失败自动重试：最新候选为 error 且自动重试预算未用尽时，用**同一份 template/params** 追加一个新候选。
+     * 幂等：预算由候选列表里 autoRetry 候选的数量导出（不依赖内存计数器），
+     * 且新候选入队后 latest 立刻变 queued，重放同一失败事件不会再触发一次；
+     * 未注入 getProject（autoRetryEnabled=false）时不启用，保持旧的「失败即止」。
+     */
+    function retryFailedItem(run, def, item) {
+        if (!autoRetryEnabled) return false;
+        const candidates = Array.isArray(item.candidates) ? item.candidates : [];
+        const latest = candidates.at(-1);
+        if (!latest || latest.status !== "error") return false;
+        const used = candidates.filter((candidate) => candidate.autoRetry).length;
+        if (used >= maxItemRetries) return false;
+        const plan = { kind: STAGE_TEMPLATE_FAMILY[def.id], template: latest.template, params: latest.params || {}, ready: true };
+        if (!enqueueAttempt(run, def, item, plan)) return false;
+        // 只在自动生成的候选上打标，作为下次「已重试几次」的唯一依据；旧候选一律保留。
+        item.candidates.at(-1).autoRetry = true;
+        item.template = latest.template;
+        return true;
     }
 
     /**
@@ -699,6 +813,8 @@ ${JSON.stringify(partials, null, 2)}
         const shots = run.stages?.storyboard?.output?.shots || [];
         if (def.id === "keyframe") enqueueReady(run, def, stage, items, items, shots);
         else if (def.id === "assembly") enqueueReady(run, def, stage, items, run.stages?.keyframe?.output?.frames || [], shots);
+        // 回写后若该条目最新候选落为 error，按预算自动重试（canceled 不在此列；未注入 getProject 时为空操作）。
+        retryFailedItem(run, def, item);
         recomputeStage(stage);
         return saveRun(run);
     }
@@ -800,6 +916,8 @@ ${JSON.stringify(partials, null, 2)}
                 stage.status = "done";
                 stage.finishedAt = nowIso();
             }
+            // 剧本阶段产出即回填 01 的设定建议（只填空字段、幂等；未绑项目时为空操作）。
+            if (def.id === "script") backfillPlanSuggestion(run, stage.output);
             if (stage.output !== undefined && stage.output !== null) saveOutput(run.id, def.id, stage.output);
             // 成功也保留一条进度：只有真正 done 才写 phase:"done"，生成型阶段等 Job 终态时写 running，
             // 否则前端会误判「跑完了」而停止轮询一个还在生成的任务。
