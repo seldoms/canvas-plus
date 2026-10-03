@@ -35,9 +35,14 @@ const readReq = (req) =>
     });
 
 // 本地 Ollama：/api/tags 出模型；/v1/chat/completions 回一个 OpenAI 形状，用于验证本地模型仍原样转发。
+// localTagsHits / extModelsHits 用来证明「模型清单只读注册表」后网关**不再向上游探测**。
 let localSeen = null;
+let localTagsHits = 0;
 const local = await startStub(async (req, res) => {
-    if (req.url === "/api/tags") return json(res, 200, { models: [{ name: "qwen3.8:27b" }] });
+    if (req.url === "/api/tags") {
+        localTagsHits += 1;
+        return json(res, 200, { models: [{ name: "qwen3.8:27b" }] });
+    }
     if (req.url === "/v1/chat/completions") {
         localSeen = JSON.parse(await readReq(req));
         return json(res, 200, { choices: [{ message: { role: "assistant", content: "local-ok" } }] });
@@ -45,10 +50,14 @@ const local = await startStub(async (req, res) => {
     json(res, 404, {});
 });
 
-// 外部渠道：/v1/models 出两个模型；/v1/chat/completions 记录收到的模型名与鉴权头。
+// 外部渠道：/v1/models 出两个模型（**不应再被请求**）；/v1/chat/completions 记录收到的模型名与鉴权头。
 let extSeen = null;
+let extModelsHits = 0;
 const ext = await startStub(async (req, res) => {
-    if (req.url === "/v1/models") return json(res, 200, { object: "list", data: [{ id: "deepseek-v4-pro" }, { id: "deepseek-flash" }] });
+    if (req.url === "/v1/models") {
+        extModelsHits += 1;
+        return json(res, 200, { object: "list", data: [{ id: "deepseek-v4-pro" }, { id: "deepseek-flash" }] });
+    }
     if (req.url === "/v1/chat/completions") {
         extSeen = { body: JSON.parse(await readReq(req)), auth: req.headers.authorization };
         return json(res, 200, { choices: [{ message: { role: "assistant", content: "ext-ok" } }] });
@@ -69,11 +78,12 @@ const deadPort = await new Promise((resolve) => {
 });
 
 // 渠道注册表：index.js 启动时从 data/llm-providers.json 载入。
+// `models` 是渠道**声明**的模型 id —— 静态清单的唯一来源；nokey / dead 不声明，因此不会出现在清单里。
 writeFileSync(
     join(dataDir, "llm-providers.json"),
     JSON.stringify({
         providers: [
-            { name: "ext", baseUrl: ext.baseUrl, apiKey: "sk-ext" },
+            { name: "ext", baseUrl: ext.baseUrl, apiKey: "sk-ext", models: ["deepseek-v4-pro", "deepseek-flash"] },
             { name: "nokey", baseUrl: nokey.baseUrl, apiKey: "" },
             { name: "dead", baseUrl: `http://127.0.0.1:${deadPort}` },
         ],
@@ -111,7 +121,7 @@ after(async () => {
 const postChat = (payload) =>
     fetch(`${base}/v1/chat/completions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) });
 
-test("/v1/models 合并本地与外部渠道模型，探测失败/无 Key 的渠道被跳过且不报错", async () => {
+test("/v1/models 只读注册表：列渠道声明的模型，且**不向上游发任何探测请求**", async () => {
     const started = Date.now();
     const res = await fetch(`${base}/v1/models`);
     assert.equal(res.status, 200);
@@ -120,17 +130,29 @@ test("/v1/models 合并本地与外部渠道模型，探测失败/无 Key 的渠
     assert.ok(Array.isArray(body.data));
 
     const ids = body.data.map((item) => item.id);
-    assert.ok(ids.includes("qwen3.8:27b"), `本地模型应在列表里：${ids.join(",")}`);
-    assert.ok(ids.includes("ext::deepseek-v4-pro"), `外部渠道模型应以「渠道名::模型名」列出：${ids.join(",")}`);
-    assert.ok(ids.includes("ext::deepseek-flash"), `外部渠道模型应全部列出：${ids.join(",")}`);
-    assert.ok(!ids.some((id) => id.startsWith("dead::")), "死渠道不应出现在列表里");
-    assert.ok(!ids.some((id) => id.startsWith("nokey::")), "无 Key 渠道不应出现在列表里");
+    assert.deepEqual(ids, ["ext::deepseek-v4-pro", "ext::deepseek-flash"], `清单应等于渠道声明的模型：${ids.join(",")}`);
+    assert.ok(!ids.some((id) => id.startsWith("dead::")), "未声明模型的死渠道不产出 id");
+    assert.ok(!ids.some((id) => id.startsWith("nokey::")), "未声明模型的无 Key 渠道不产出 id");
+    assert.ok(!ids.includes("qwen3.8:27b"), "本地 Ollama 模型不再被自动发现：要列出来就登记渠道并声明模型 id");
     assert.ok(body.data.every((item) => item.object === "model" && typeof item.id === "string"), "仍是标准 OpenAI 形状");
-    assert.ok(Date.now() - started < 5000, "探测失败不应把列表接口拖慢");
+    assert.ok(Date.now() - started < 2000, `静态清单不该有上游耗时，实际 ${Date.now() - started}ms`);
+    assert.equal(extModelsHits, 0, "不得向外部渠道探测 /v1/models");
+    assert.equal(localTagsHits, 0, "不得向本地 Ollama 探测 /api/tags");
 
-    // 与 /api/providers 的 llm.models 同源：那边列出的模型这边必须都有。
+    // 与 /api/providers、/api/llm/models 同源：三处清单必须逐字一致。
     const providers = await (await fetch(`${base}/api/providers`)).json();
-    for (const id of providers.llm.models) assert.ok(ids.includes(id), `/v1/models 缺少 /api/providers 列出的 ${id}`);
+    assert.deepEqual(providers.llm.models, ids);
+    const llmModels = await (await fetch(`${base}/api/llm/models`)).json();
+    assert.deepEqual(llmModels.models, ids);
+    assert.equal(extModelsHits, 0, "三个清单接口都不允许触发探测");
+
+    // 存活接口不再等 LLM 探测：llm 段是注册表静态事实，明确标注未探测。
+    const health = await (await fetch(`${base}/api/health`)).json();
+    assert.equal(health.ok, true, "网关能应答即存活，不因上游状态翻脸");
+    assert.equal(health.llm.probed, false);
+    assert.equal(health.llm.source, "registry");
+    assert.deepEqual(health.llm.models, ids);
+    assert.equal(extModelsHits, 0);
 });
 
 test("/v1/chat/completions 带渠道前缀的模型名路由到对应渠道，并用该渠道的 Key", async () => {

@@ -3,7 +3,7 @@ import https from "node:https";
 
 import { applyCors, readBody, sendError } from "../http.js";
 
-/** 实际生效的 LLM 地址，probe 结果对外暴露它。 */
+/** 实际生效的 LLM 地址（forwardToLlm / chat 命中哪个地址就记哪个）。 */
 let lastGood = "";
 
 function trimBase(baseUrl) {
@@ -51,11 +51,20 @@ function toChatCompletion(payload) {
     };
 }
 
-/** 网关侧注册的外部 LLM 渠道（config.llm.providers 或由 /api/llm/providers 热更新）。 */
+/**
+ * 网关侧注册的外部 LLM 渠道（config.llm.providers 或由 /api/llm/providers 热更新）。
+ * `models` 是该渠道**声明**的模型 id（静态清单，不向上游探测）；注册表 sync 时抄进 meta.models，
+ * `/v1/models` 等清单接口按「渠道名::模型名」展开。未声明模型的渠道不产出任何模型 id。
+ */
 export function externalProviders(config) {
     const list = Array.isArray(config?.llm?.providers) ? config.llm.providers : [];
     return list
-        .map((item) => ({ name: String(item?.name || "").trim(), baseUrl: trimBase(item?.baseUrl), apiKey: String(item?.apiKey || "") }))
+        .map((item) => ({
+            name: String(item?.name || "").trim(),
+            baseUrl: trimBase(item?.baseUrl),
+            apiKey: String(item?.apiKey || ""),
+            models: [...new Set((Array.isArray(item?.models) ? item.models : []).map((model) => String(model ?? "").trim()).filter(Boolean))],
+        }))
         .filter((item) => item.name && item.baseUrl);
 }
 
@@ -93,88 +102,19 @@ function timeoutMs(config) {
     return Number(config?.llm?.timeoutMs) > 0 ? Number(config.llm.timeoutMs) : 600000;
 }
 
-/** 列模型探测的超时，默认 8 秒。与 timeoutMs 分开：后者是给长思考 chat 的，不能用来卡住探活接口。 */
-function probeTimeoutMs(config) {
-    return Number(config?.llm?.probeTimeoutMs) > 0 ? Number(config.llm.probeTimeoutMs) : 8000;
-}
-
 /** 有 API Key 才带鉴权头；任何日志都不要输出它。 */
 function headers(config, contentType = "application/json") {
     const apiKey = String(config?.llm?.apiKey || "").trim();
     return { "content-type": contentType, ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}) };
 }
 
-/** 探测失败一律返回 null，由调用方决定换地址还是报错。 */
-async function getJson(url, config) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs(config));
-    try {
-        const response = await fetch(url, { headers: headers(config), signal: controller.signal });
-        return response.ok ? await response.json() : null;
-    } catch {
-        return null;
-    } finally {
-        clearTimeout(timer);
-    }
-}
-
-function pickNames(payload, listKeys) {
-    const names = [];
-    for (const key of listKeys) {
-        for (const item of payload?.[key] || []) names.push(item?.id || item?.name || item?.model);
-    }
-    return names.filter(Boolean).map(String);
-}
-
-/** 同一地址并行探测 OpenAI `/v1/models` 与 Ollama 原生 `/api/tags`，合并去重。用短超时，任一端点失败只当作没有模型。 */
-async function modelsAt(baseUrl, config) {
-    const scoped = { ...config, llm: { ...config?.llm, timeoutMs: probeTimeoutMs(config) } };
-    const [openai, ollama] = await Promise.all([
-        getJson(`${apiBase(baseUrl)}/models`, scoped),
-        getJson(`${rootBase(baseUrl)}/api/tags`, scoped),
-    ]);
-    return [...new Set([...pickNames(openai, ["data", "models"]), ...pickNames(ollama, ["models"])])];
-}
-
-export async function listLlmModels(config) {
-    const bases = candidates(config);
-    let models = [];
-    for (const baseUrl of bases) {
-        models = await modelsAt(baseUrl, config);
-        if (models.length) {
-            lastGood = baseUrl;
-            break;
-        }
-    }
-    if (!models.length && !externalProviders(config).length) {
-        throw new Error(`LLM 服务不可达或没有模型，已尝试：${bases.join("、") || "（未配置 baseUrl）"}`);
-    }
-    // 外部渠道的模型以「渠道名::模型名」命名空间列出，chat 按此前缀路由。
-    // 必须并行探测：串行时一个连不上的渠道会把 /api/health 和前端模型下拉一起拖住几十分钟。
-    const providers = externalProviders(config);
-    const remotes = await Promise.all(
-        providers.map((provider) =>
-            modelsAt(provider.baseUrl, { ...config, llm: { ...config.llm, baseUrl: provider.baseUrl, apiKey: provider.apiKey } }),
-        ),
-    );
-    providers.forEach((provider, index) => {
-        const remote = remotes[index];
-        if (!remote.length) {
-            console.warn(`[llm] 外部渠道「${provider.name}」(${provider.baseUrl}) 在 ${Math.round(probeTimeoutMs(config) / 1000)}s 内未返回模型，本次跳过`);
-        }
-        for (const name of remote) models.push(`${provider.name}::${name}`);
-    });
-    return [...new Set(models)];
-}
-
-export async function probeLlm(config) {
-    try {
-        const models = await listLlmModels(config);
-        return { ok: true, baseUrl: lastGood, models };
-    } catch (error) {
-        return { ok: false, baseUrl: trimBase(config?.llm?.baseUrl), error: error.message };
-    }
-}
+/**
+ * 模型清单**不在本模块**：产品负责人 2026-10-03 定为「只读模型注册表」——
+ * `/v1/models`、`/api/providers.llm.models`、`/api/llm/models` 一律由 `model-registry.js` 的
+ * `textModelIds()` 从注册表静态展开（渠道声明的 `models[]` → 「渠道名::模型名」），
+ * 网关不再向上游发任何 `/v1/models` / `/api/tags` 探测请求。
+ * 本模块只负责把请求路由到正确渠道：`resolveModelTarget` 按「渠道名::」前缀分流，与前缀是否被列出无关。
+ */
 
 /** `/v1/chat/completions?x=1` → `/chat/completions?x=1`，避免拼出 /v1/v1。 */
 function normalizePath(pathWithQuery) {
@@ -377,12 +317,10 @@ export async function chat(config, { messages, model, stream, temperature, provi
     throw new Error(`LLM 服务不可达，已尝试：${bases.join("、")}（${lastError || "未知错误"}）`);
 }
 
-/** 给服务端注入用：把 config 绑好后可直接挂到路由。 */
+/** 给服务端注入用：把 config 绑好后可直接挂到路由。模型清单归注册表，这里不提供 listModels/probe。 */
 export function createLlmProvider(config) {
     return {
         config,
-        probe: () => probeLlm(config),
-        listModels: () => listLlmModels(config),
         forward: (req, res, pathWithQuery) => forwardToLlm(req, res, config, pathWithQuery),
         chat: (options) => chat(config, options),
     };

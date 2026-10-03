@@ -18,7 +18,11 @@ import { loadRegistry } from "./skills.js";
 import { createComfyClient, probeComfy, listComfyCapabilities, listTemplates } from "./providers/comfy.js";
 // 时长档位（D1）与模板清单同源；/api/durations 供前端按「当前视频模型」取可选档位。
 import { durationMetaForTemplate } from "./durations.js";
-import { probeLlm, listLlmModels, forwardToLlm, chat as llmChat, externalProviders } from "./providers/llm.js";
+import { forwardToLlm, chat as llmChat, externalProviders } from "./providers/llm.js";
+// 提示词策略层的语言适配出口（DeepSeek）：流水线入队前用它把「仅英文有官方依据」的模型提示词英文化。
+import { llmCall as promptLlmCall } from "./llm-client.js";
+import { createPromptApi } from "./prompt-api.js";
+import { createImageEnqueue, filterJobs } from "./workbench-jobs.js";
 import { createLocalRunner } from "./generate.js";
 import { probeRunningHub, listRunningHubModels, runRunningHubJob } from "./providers/runninghub.js";
 import { plan as impactPlan } from "./impact.js";
@@ -58,7 +62,6 @@ const comfy = createComfyClient(config);
 const llm = {
     // 流水线不一定指定模型，这里兜底到 pipeline.llmModel / llm.defaultModel，避免把空 model 发给上游。
     chat: (options = {}) => llmChat(config, { ...options, model: options.model || config.pipeline.llmModel || config.llm.defaultModel }),
-    listModels: () => listLlmModels(config),
 };
 const uploads = ensureDir(safeJoin(config.dataDir, "uploads"));
 
@@ -140,12 +143,16 @@ async function runJob(job, ctx) {
     return local.runJob(job, ctx);
 }
 
+// 生图工作台入队入口：复用同一条本地 GPU 队列与同一执行体（不另起并行），入队前由后端编译提示词。
+const imageEnqueue = createImageEnqueue({ config, jobs, runJob, registry, llmCall: promptLlmCall });
+
 const pipeline = createPipeline({
     config,
     skillsDir: config.skillsDir,
     jobs,
     comfy,
     llm,
+    llmCall: promptLlmCall,
     runJob,
     // 项目化模式：run.options.projectId → Project 读取器，供 plan 驱动生成参数与单镜失败自动重试。
     getProject: (projectId) => projects.get(projectId),
@@ -169,14 +176,18 @@ pipeline.bindJobs();
 // 模型注册表（契约 v1）：服务端唯一持有的模型清单，落 data/model-registry.json。
 const modelRegistry = createModelRegistry({ dataDir: config.dataDir });
 
-/** 汇总「服务端实际可用」的模型源：本地 ComfyUI 模板 + 外部 LLM 渠道。sync / available 共用。 */
+/** 汇总「服务端实际可用」的模型源：本地 ComfyUI 模板 + 外部 LLM 渠道（含渠道**声明**的模型 id）。sync / available 共用。 */
 function modelRegistrySources() {
     return {
         templates: listTemplates(config.workflowsDir),
         catalog: scanTemplateDir(config.workflowsDir),
-        llmProviders: externalProviders(config).map(({ name, baseUrl }) => ({ name, baseUrl })),
+        llmProviders: externalProviders(config).map(({ name, baseUrl, models }) => ({ name, baseUrl, models })),
     };
 }
+
+// 启动即同步一次：注册表是模型清单的唯一读源（`/v1/models`、`/api/providers`、`/api/health` 都读它），
+// 若只在用户点「同步」时才补齐，静态清单会一直是空的。sync 幂等、只读本地模板目录与渠道表，不发任何网络请求。
+modelRegistry.sync(modelRegistrySources());
 
 /** 入队入口：默认本地 ComfyUI，显式传 backend:"runninghub" 时才走云端。提交前按资源类别做 canRun 校验。 */
 function submitGeneration(kind, body) {
@@ -223,7 +234,7 @@ const serviceInfo = {
     name: "canvas-server",
     description: "无限画布本地网关：内网 LLM 与 ComfyUI 生图/生视频统一出口",
     version: "0.1.0",
-    endpoints: ["/api/health", "/api/backends", "/api/providers", "/api/jobs", "/api/runninghub/models", "/api/pipeline/runs", "/api/projects", "/api/model-registry", "/v1/models", "/v1/chat/completions"],
+    endpoints: ["/api/health", "/api/backends", "/api/providers", "/api/jobs", "/api/images/enqueue", "/api/runninghub/models", "/api/pipeline/runs", "/api/projects", "/api/model-registry", "/api/prompt/compile", "/v1/models", "/v1/chat/completions"],
 };
 
 router.get("/api", (req, res) => sendJson(res, 200, serviceInfo));
@@ -235,13 +246,35 @@ router.get("/", (req, res) => {
     sendJson(res, 200, serviceInfo);
 });
 
+/**
+ * 存活 + 依赖状态。三类信息严格分开，不再用一个 `ok` 冒充「生产就绪」：
+ *   - `ok` / `service`：**本进程能应答**（存活语义），不等任何上游网络请求；
+ *   - `llm`：静态注册表事实（`probed:false`）—— 清单只读注册表，网关不探测上游，`ok` 只表示「已登记启用的文本模型」；
+ *   - `comfy` / `runninghub`：仍是真实探测结果（本轮未改）。
+ * 因此死渠道、上游慢都不会再把存活接口拖住（旧实现要等 LLM 探测，一个连不上的渠道就吃满 8s）。
+ */
 router.get("/api/health", async (req, res) => {
-    const [llmResult, comfyResult, runninghubResult] = await Promise.all([
-        probeLlm(config).catch((error) => ({ ok: false, baseUrl: config.llm.baseUrl, error: error.message })),
+    const llmModels = modelRegistry.textModels();
+    const llmResult = {
+        ok: llmModels.length > 0,
+        baseUrl: config.llm.baseUrl,
+        source: "registry",
+        probed: false,
+        models: llmModels,
+        ...(llmModels.length ? {} : { error: "注册表里没有已启用的文本模型：请在渠道表声明 models 后同步模型注册表" }),
+    };
+    const [comfyResult, runninghubResult] = await Promise.all([
         probeComfy(config).catch((error) => ({ ok: false, baseUrl: config.comfy.baseUrl, error: error.message })),
         probeRunningHub({ ...config, runninghub: { ...config.runninghub, timeoutMs: config.runninghub.probeTimeoutMs } }).catch((error) => ({ ok: false, baseUrl: config.runninghub.baseUrl, error: error.message })),
     ]);
-    sendJson(res, 200, { ok: llmResult.ok || comfyResult.ok, llm: llmResult, comfy: comfyResult, runninghub: runninghubResult, queue: jobs.counts() });
+    sendJson(res, 200, {
+        ok: true,
+        service: { ok: true, name: serviceInfo.name, version: serviceInfo.version, uptimeSec: Math.round(process.uptime()) },
+        llm: llmResult,
+        comfy: comfyResult,
+        runninghub: runninghubResult,
+        queue: jobs.counts(),
+    });
 });
 
 /** 生图/生视频后端清单。本地是默认且必须可用的那条链路。 */
@@ -255,11 +288,8 @@ router.get("/api/runninghub/models", (req, res) => {
 });
 
 router.get("/api/providers", async (req, res) => {
-    const [models, capabilities] = await Promise.all([
-        listLlmModels(config).catch(() => []),
-        listComfyCapabilities(config).catch((error) => ({ templates: listTemplates(config.workflowsDir), models: {}, error: error.message })),
-    ]);
-    sendJson(res, 200, { llm: { baseUrl: config.llm.baseUrl, models }, comfy: capabilities, backends: backends() });
+    const capabilities = await listComfyCapabilities(config).catch((error) => ({ templates: listTemplates(config.workflowsDir), models: {}, error: error.message }));
+    sendJson(res, 200, { llm: { baseUrl: config.llm.baseUrl, models: modelRegistry.textModels() }, comfy: capabilities, backends: backends() });
 });
 
 // ——— 模型注册表（契约 v1：docs/content/docs/progress/model-registry-contract.md） ———
@@ -332,13 +362,14 @@ router.get("/api/skills", (req, res) => {
     sendJson(res, 200, { skills: stages });
 });
 
-router.get("/api/llm/models", async (req, res) => {
-    sendJson(res, 200, { models: await listLlmModels(config).catch(() => []) });
+// 文本模型清单：静态读注册表（不探测上游），与 /v1/models、/api/providers.llm.models 同源。
+router.get("/api/llm/models", (req, res) => {
+    sendJson(res, 200, { models: modelRegistry.textModels() });
 });
 
-// 外部 LLM 渠道注册表：GET 返回脱敏清单（不吐 SK）。
+// 外部 LLM 渠道注册表：GET 返回脱敏清单（不吐 SK）。`models` 是该渠道声明的模型 id（静态清单的来源）。
 // 写路径按 name **增量 upsert**：不再整车替换，双方（服务端恢复的渠道 / 浏览器自带的渠道）不再互相冲掉对方。
-const serializeProviders = () => externalProviders(config).map(({ name, baseUrl, apiKey }) => ({ name, baseUrl, hasKey: Boolean(apiKey) }));
+const serializeProviders = () => externalProviders(config).map(({ name, baseUrl, apiKey, models }) => ({ name, baseUrl, hasKey: Boolean(apiKey), models }));
 
 /** 落盘 + 热更新内存里的渠道表（服务端是注册表的唯一写者）。 */
 function persistProviders(providers) {
@@ -373,14 +404,19 @@ router.post("/api/llm/providers", async (req, res) => {
             if (incomingBase && !/^https?:\/\//i.test(incomingBase)) throw new Error(`渠道 ${name} 的 baseUrl 必须是 http(s) 地址`);
             if (!incomingBase && !prev) throw new Error(`渠道 ${name} 的 baseUrl 必须是 http(s) 地址`);
             const incomingKey = String(item?.apiKey || "").trim();
-            byName.set(name, {
+            const next = {
                 ...(prev || {}),
                 name,
                 baseUrl: incomingBase || (prev?.baseUrl || ""),
                 apiKey: incomingKey || (prev?.apiKey || ""),
-            });
+            };
+            // 声明的模型 id 是静态清单的唯一来源：给了就整体替换，没给则沿用原值（脱敏回传不会清空）。
+            if (Array.isArray(item?.models)) next.models = item.models.map((model) => String(model ?? "").trim()).filter(Boolean);
+            byName.set(name, next);
         }
         persistProviders([...byName.values()]);
+        // 渠道表变了 → 注册表的 meta.baseUrl / meta.models 立刻跟上，静态清单不必等重启或手动点「同步」。
+        modelRegistry.sync(modelRegistrySources());
         sendJson(res, 200, { providers: serializeProviders() });
     } catch (error) {
         sendError(res, 400, error.message);
@@ -398,16 +434,26 @@ router.any("/api/llm/providers/:name", (req, res, { params }) => {
     const next = existing.filter((item) => String(item?.name || "").trim() !== name);
     if (next.length === existing.length) return sendError(res, 404, `渠道不存在：${name}`);
     persistProviders(next);
+    modelRegistry.sync(modelRegistrySources());
     sendJson(res, 200, { providers: serializeProviders(), removed: name });
 });
 
+// 提示词编译入口：把「模型无关的内容事实」按所选模型标准编译成该模型要的提示词（图片/视频一视同仁）。
+// 返回的 untranslated / finishReason 等元数据仅供排查运维，前端不得渲染（见 AGENTS.md 内容创作规范）。
+const promptApi = createPromptApi();
+router.post("/api/prompt/compile", promptApi.handle);
+
+// 生图工作台入队：一次提交拆成 count 个 kind=image 任务进本地 GPU 队列，提示词由后端编译。
+router.post("/api/images/enqueue", imageEnqueue.handle);
+
 /**
- * OpenAI 兼容的模型清单。与 /api/providers 的 llm.models 同源（都走 listLlmModels），
- * 因此本地 Ollama 模型与外部渠道模型（「渠道名::模型名」）都会列出；外部模型带前缀即 id。
- * 探测失败（本机不可达、渠道无 Key 或连不上）时宁可少列，也不让列表接口报错或挂住——故兜底为空数组。
+ * OpenAI 兼容的模型清单。**静态**：与 /api/providers 的 llm.models、/api/llm/models 同源，
+ * 都读模型注册表里已启用的 text 条目（渠道声明的模型 id → 「渠道名::模型名」，chat 按此前缀路由）。
+ * 网关不向上游探测 /v1/models、/api/tags —— 清单不会因为死渠道而变慢或挂住，也不会「上游没应答就少列」。
+ * 要增减模型：改渠道表的 `models` 声明（POST /api/llm/providers）或直接在注册表登记，随后自动同步。
  */
-router.get("/v1/models", async (req, res) => {
-    const models = await listLlmModels(config).catch(() => []);
+router.get("/v1/models", (req, res) => {
+    const models = modelRegistry.textModels();
     sendJson(res, 200, { object: "list", data: models.map((id) => ({ id, object: "model", owned_by: "canvas-gateway" })) });
 });
 
@@ -462,9 +508,14 @@ router.post("/api/uploads", async (req, res) => {
 });
 
 router.get("/api/jobs", (req, res, { url }) => {
-    sendJson(res, 200, {
-        jobs: jobs.list({ status: url.searchParams.get("status") || undefined, limit: url.searchParams.get("limit") || undefined }),
+    // 可选过滤：?kind=&status=(逗号分隔)&limit=&since=。不传参数时行为与旧版完全一致（向前兼容）。
+    const jobsList = filterJobs(jobs.list({}), {
+        kind: url.searchParams.get("kind") || undefined,
+        status: url.searchParams.get("status") || undefined,
+        limit: url.searchParams.get("limit") || undefined,
+        since: url.searchParams.get("since") || undefined,
     });
+    sendJson(res, 200, { jobs: jobsList });
 });
 
 router.get("/api/jobs/:id", (req, res, { params }) => {
@@ -644,7 +695,7 @@ router.post("/api/pipeline/runs/:id/steps/:stage/regenerate", async (req, res, {
         const body = await readJson(req).catch(() => ({}));
         const options = body && typeof body === "object" ? body : {};
         const begun = pipeline.beginRegenerate(params.id, params.stage, options);
-        const result = pipeline.executeRegenerate(begun);
+        const result = await pipeline.executeRegenerate(begun);
         sendJson(res, 202, { run: result.run, inflight: true, jobId: result.jobId, itemId: options.itemId });
     } catch (error) {
         sendError(res, error.status || 400, error.message);

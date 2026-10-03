@@ -17,8 +17,9 @@
  *   · qwen_image_2_1  → 官方口径是「英文长 prompt（400~500 词）+ 多参考图 <image1>~<image10>」。
  *                       官方实现是专用 PE 权重/改写器；本模块 sync 出口在**拿不到 llmCall 改写结果**时
  *                       退化为中文 + 显式 `[untranslated]` 标记（绝不假装已英文化）。
- *   · krea2_turbo / flux1_dev → 规则表明**仅英文有官方依据**：同样经改写器英文化；无 LLM 时中文 +
- *                       `[untranslated]` 标记（不得默默发中文）。FLUX 负面 = zero_out（官方反对负面）。
+ *   · krea2_turbo / flux1_dev → 规则表明**仅英文有官方依据**；当前没有厂商官方改写器资产，
+ *                       使用本项目补充的通用英文翻译路径；无 LLM 时中文 + `[untranslated]` 标记（不得默默发中文）。
+ *                       FLUX 负面 = zero_out（官方反对负面）。
  *   · 其它模板（z_image_turbo / boogu_edit / scail2 / wan22_animate / upscale …）→ 通用兜底，
  *     与既有行为**逐字一致**（兼容红线）。
  *
@@ -90,6 +91,14 @@ export function styleHead(style, text) {
     return filmLayer ? `${head} ${filmLayer}`.trim() : head;
 }
 
+/** 删除仅供排查的降级标记；该标记绝不能进入实际模型 PROMPT。 */
+export function stripUntranslatedMarker(text) {
+    return String(text ?? "")
+        .replace(/\s*\[untranslated[^\]]*\]/gi, "")
+        .replace(/[ \t]{2,}/g, " ")
+        .trim();
+}
+
 /** 归一为字符串数组（去空、去非字符串）。 */
 function asTextList(value) {
     return (Array.isArray(value) ? value : []).map((entry) => String(entry ?? "").trim()).filter(Boolean);
@@ -103,6 +112,107 @@ function stripTail(text) {
 /** 文本是否有实质内容。 */
 function hasText(value) {
     return String(value ?? "").trim().length > 0;
+}
+
+/** 项目画幅是生产事实，不能让改写器自行猜测横竖屏。 */
+function aspectRatioFact(style) {
+    const raw = String(style && typeof style === "object" ? style.ratio ?? "" : "").trim();
+    const match = /^(\d+(?:\.\d+)?)\s*:\s*(\d+(?:\.\d+)?)$/.exec(raw);
+    if (!match) return null;
+    const width = Number(match[1]);
+    const height = Number(match[2]);
+    if (!(width > 0 && height > 0)) return null;
+    const ratio = `${match[1]}:${match[2]}`;
+    if (height > width) return { ratio, orientationCn: "竖屏", orientationEn: "vertical portrait" };
+    if (width > height) return { ratio, orientationCn: "横屏", orientationEn: "horizontal landscape" };
+    return { ratio, orientationCn: "方形", orientationEn: "square" };
+}
+
+function aspectRatioClauseCn(style) {
+    const fact = aspectRatioFact(style);
+    return fact ? `画幅：${fact.ratio}（${fact.orientationCn}构图，严格保持，不得改成${fact.orientationCn === "竖屏" ? "横屏" : fact.orientationCn === "横屏" ? "竖屏" : "非方形"}）` : "";
+}
+
+/**
+ * 交给改写器的画幅约束：独立一行、标明是**不可改写的生产事实**。
+ * 改写器只能表达事实，不能猜测或覆盖画幅（画幅与 WIDTH/HEIGHT 同源于 project.plan.ratio）。
+ */
+function aspectRatioConstraint(style) {
+    const fact = aspectRatioFact(style);
+    if (!fact) return "";
+    const forbidden =
+        fact.orientationEn === "vertical portrait"
+            ? "horizontal / landscape / widescreen / 16:9"
+            : fact.orientationEn === "horizontal landscape"
+              ? "vertical / portrait / 9:16"
+              : "horizontal / landscape / vertical / portrait";
+    return `【固定生产事实·不得更改】画幅 ${fact.ratio}，${fact.orientationCn}构图；英文稿必须写成 ${fact.orientationEn} composition，禁止出现相反方向（${forbidden}）。`;
+}
+
+/**
+ * 相反方向的词与比例（按项目事实取向查表）。
+ * `words` 用于「方向词 + 构图名词紧邻」判定（可含 portrait 这类多义词）；
+ * `subjectWords` 用于「整幅画面主语 + 系动词 + 方向词」判定，只留无歧义的词 —— 否则
+ * 横屏项目里的 `The shot is a portrait of a man`（人像）会被误判成画幅断言。
+ */
+const OPPOSITE_ORIENTATION = Object.freeze({
+    "vertical portrait": { words: "horizontal|landscape|widescreen|wide-screen", subjectWords: "horizontal|landscape|widescreen|wide-screen", ratio: "16\\s*[:x×]\\s*9" },
+    "horizontal landscape": { words: "vertical|portrait|tall", subjectWords: "vertical", ratio: "9\\s*[:x×]\\s*16" },
+    square: { words: "horizontal|landscape|widescreen|wide-screen|vertical|portrait", subjectWords: "horizontal|landscape|widescreen|vertical", ratio: "16\\s*[:x×]\\s*9|9\\s*[:x×]\\s*16" },
+});
+
+/** 构图名词：与方向词紧邻时（`landscape orientation`、`frame is vertical`）才算画幅断言。 */
+const COMPOSITION_NOUN = "composition|frame|framing|format|orientation|aspect\\s*ratio|canvas|layout|screen";
+
+/** 「整幅画面」主语：只有它做主语时，句子里的方向词才可能在说画幅而不是说某个物体。 */
+const FRAME_SUBJECT = "image|picture|photo|photograph|frame|framing|shot|scene|video|composition|canvas|screen";
+
+/** 系动词/状态词：把主语和方向词连起来（`The image is a horizontal …`、`The video is shot in widescreen`）。 */
+const LINKING_VERB = "is|are|appears|looks|rendered|shot|framed|formatted|oriented|presented|in|as";
+
+/** 运镜/位移语境：`horizontal pan`、`横向移动` 是合法描述，不是画幅断言。 */
+const MOVEMENT_HINT = /\b(?:pan(?:s|ning)?|track(?:s|ing)?|mov(?:e|es|ing|ement)|sweep(?:s|ing)?|scroll(?:s|ing)?|drift(?:s|ing)?|glid(?:e|es|ing)|slid(?:e|es|ing)|travels?)\b|(?:横移|摇摄|横向移动)/i;
+
+/** 首句 = 改写稿的构图总述句（实测故障就出在这里：`The image is a horizontal ... close-up`）。 */
+function firstSentence(text) {
+    const value = String(text ?? "").trim();
+    const cut = value.search(/[.。!！?？]/);
+    return cut > 0 ? value.slice(0, cut + 1) : value;
+}
+
+function windowAround(text, index, length, span = 20) {
+    return String(text).slice(Math.max(0, index - span), index + length + span);
+}
+
+/**
+ * **检测**改写稿是否把项目画幅写成了反方向（返回可读原因；无冲突返回 null）。
+ *
+ * 只检测、不改写：正则文本手术改不干净时会留下「开头补一句竖屏、正文仍写横屏」的自相矛盾稿，
+ * 比整稿弃用更糟。判定命中后由 `compilePromptForTemplateAsync` 弃用改写稿、回落同步结构稿并记 warning。
+ *
+ * 三条判定（都要求方向词处在**画幅语境**里，避免误伤 `a horizontal band of sky`、`horizontal pan`）：
+ *   ① 出现相反的显式比例（9:16 ↔ 16:9）—— 无歧义，位置不限；
+ *   ② 方向词与构图名词紧邻：`horizontal frame` / `landscape orientation` / `aspect ratio is vertical`；
+ *   ③ 首句里「整幅画面主语 + 系动词 + 方向词」：`The image is a horizontal ... close-up`。
+ * 命中处附近若是运镜语境（pan / tracking / 横移）一律放过。
+ */
+export function aspectRatioConflict(text, style) {
+    const fact = aspectRatioFact(style);
+    const value = String(text ?? "").trim();
+    if (!fact || !value) return null;
+    const opposite = OPPOSITE_ORIENTATION[fact.orientationEn];
+    if (!opposite) return null;
+    const reason = (found) => `改写稿把画幅写成「${found}」，与项目生产事实 ${fact.ratio}（${fact.orientationCn}）冲突`;
+    const hit = (re, scope) => {
+        const match = re.exec(scope);
+        return match && !MOVEMENT_HINT.test(windowAround(scope, match.index, match[0].length)) ? match[0] : null;
+    };
+
+    const found =
+        hit(new RegExp(`\\b(?:${opposite.ratio})\\b`, "gi"), value) ||
+        hit(new RegExp(`\\b(?:${opposite.words})\\s+(?:${COMPOSITION_NOUN})\\b|\\b(?:${COMPOSITION_NOUN})\\s+(?:is\\s+|:\\s*)?(?:${opposite.words})\\b`, "gi"), value) ||
+        hit(new RegExp(`\\b(?:${FRAME_SUBJECT})\\b[^.。]{0,40}?\\b(?:${LINKING_VERB})\\b[^.。]{0,20}?\\b(?:${opposite.subjectWords})\\b`, "gi"), firstSentence(value));
+    return found ? reason(found) : null;
 }
 
 /** 秒数格式化为**两位小数**（H3 铁律：时间精确到两位小数）。 */
@@ -394,6 +504,22 @@ export function cameraSentence(shot) {
     return "";
 }
 
+/** 同步降级提示词使用中文机位描述，避免英文运镜句与中文事实混在一起。 */
+function cameraSentenceCn(shot) {
+    const spec = shot?.cameraSpec && typeof shot.cameraSpec === "object" ? shot.cameraSpec : null;
+    const movement = spec?.movement && typeof spec.movement === "object" ? spec.movement : null;
+    if (movement && hasText(movement.type)) {
+        const labels = { static: "固定机位", pan: "摇摄", tilt: "俯仰", truck: "横移", tracking: "跟拍", dolly: "推拉", push: "推进", pull: "拉远", zoom: "变焦", handheld: "手持", shake: "轻微晃动", pov: "主观视角" };
+        const type = String(movement.type).trim().toLowerCase();
+        const parts = [labels[type] || type];
+        if (hasText(movement.direction) && !/^(none|static)$/i.test(String(movement.direction).trim())) parts.push(`方向${String(movement.direction).trim()}`);
+        if (hasText(movement.amplitude)) parts.push(`幅度${String(movement.amplitude).trim()}`);
+        if (hasText(movement.speed) && type !== "static") parts.push(`速度${String(movement.speed).trim()}`);
+        return `机位与运镜：${parts.join("，")}`;
+    }
+    return hasText(shot?.camera) ? `机位与运镜：${stripTail(shot.camera)}` : "";
+}
+
 /** 景别 → 英文官方词（全景→wide shot …）；未知景别原样保留。 */
 const SHOT_SIZE_EN = Object.freeze({
     大远景: "extreme long shot",
@@ -542,10 +668,13 @@ function h3Description(shot, { scene, characters, style, mode, durationSec, over
     const { anchor: styleAnchor } = readStyleFields(style);
     // [Shot 1] 头部：风格 + 初始构图。
     const headBits = ["Live-action, cinematic"];
+    const aspect = aspectRatioFact(style);
     const size = shotSizeEn(shot);
     const place = hasText(scene?.name) ? String(scene.name).trim() : hasText(scene?.location) ? String(scene.location).trim() : "";
     const subjectClause = [size ? `a ${size}` : "a shot", place ? `set in ${place}` : ""].filter(Boolean).join(" ");
-    parts.push(`[Shot 1] ${headBits.join(", ")}, ${styleAnchor ? `${stripTail(styleAnchor)}. ` : ""}${subjectClause}.`);
+    parts.push(
+        `[Shot 1] ${headBits.join(", ")}, ${styleAnchor ? `${stripTail(styleAnchor)}. ` : ""}${aspect ? `The composition is ${aspect.orientationEn}, with a ${aspect.ratio} aspect ratio. ` : ""}${subjectClause}.`,
+    );
     // 动作过程（内容层事实原样）。
     const { process, endState } = splitEndState(shot?.action);
     if (hasText(process)) parts.push(`${stripTail(process)}.`);
@@ -679,7 +808,71 @@ function imageKindCn(image) {
 }
 
 /* ------------------------------------------------------------------ *
- * 编译器 2：Qwen-Image 2.1 系（qwen_image_2_1）—— 官方英文长 prompt 口径
+ * 分级（tier）：一级强约束 / 二级画面细节
+ * ------------------------------------------------------------------ *
+ * 产品口径：提示词工程必须分级 ——
+ *   · 一级（强约束）：风格锚点 / 画幅 / 比例 / 负面策略 / 画面内文字（textOverlays）。
+ *     由编译器**直接拼上**，绝不进入改写器的输入，也不参与其输出；与二级冲突时永远优先。
+ *   · 二级（画面细节）：主体 / 角色 / 景别 / 场景 / 动作 / 机位与运镜 / 光线 / 槽位对应关系，
+ *     可交改写器改写。
+ *   · 画面内文字（textOverlays）为什么属一级：调研口径要求它**逐字原文引用，不得翻译、改写、留空**
+ *     （config/model-prompt-rules.json · *.prompt.text_in_image）。它是与画幅同级的生产硬事实，
+ *     放进二级就给改写器改写/漏写的机会，故锁进一级、由编译器逐字拼上，改写器根本拿不到。
+ *   · 冲突时二级服从一级：`aspectRatioConflict` 只做检测；命中后**不整稿弃用**，
+ *     而是作废/纠正二级块（先纠正重写一次；仍冲突则只保留一级 + 同步结构稿的二级并记 warning）。
+ *
+ * ⚠️ 兼容红线：分级只作用于「有会消费 rewrite 的编译器」的模型
+ *   （qwen_image_2_1 / krea2_turbo / flux1_dev）。
+ *   无官方改写器的模型（z_image_turbo / boogu_edit / scail2 / wan22_animate / upscale …）
+ *   走通用兜底或 H3 口径，产物与既有行为**逐字一致**；H3 结构不动。
+ */
+
+/** 一级块（同步 / 降级产物）：风格锚点 → 画幅·比例 → 负面策略 → 画面内文字，顺序固定。 */
+function tierOneSync(input) {
+    const { style, template, overlays, shot } = input;
+    const clauses = [];
+    const { anchor } = readStyleFields(style);
+    if (anchor) clauses.push(anchor);
+    const aspect = aspectRatioClauseCn(style);
+    if (aspect) clauses.push(aspect);
+    const neg = negativeClause(template);
+    if (neg) clauses.push(neg);
+    if (stringNegativeList(shot).length) clauses.push(positiveCleanClause());
+    const overlay = overlayClauseCn(overlays);
+    if (overlay) clauses.push(overlay);
+    return clauses;
+}
+
+/**
+ * 一级块（改写成功产物）：画幅·比例 → 负面策略 → 画面内文字（英文口径）。
+ * 风格锚点仅在**存在画幅事实**时前置 —— 无画幅事实时若也前置，会破坏既有
+ * 「有效改写稿原样透传」契约（test/prompt-compile-pipeline.test.mjs 锁定）；此时风格锚点
+ * 改随二级源交付（见 tierTwoSourceText），保证产物里风格锚点恒在。
+ */
+function tierOneRewrite(input) {
+    const { style, template, overlays } = input;
+    const clauses = [];
+    if (aspectRatioFact(style)) {
+        const { anchor } = readStyleFields(style);
+        if (anchor) clauses.push(anchor);
+    }
+    const aspect = aspectRatioClauseCn(style);
+    if (aspect) clauses.push(aspect);
+    const neg = negativeClause(template);
+    if (neg) clauses.push(neg);
+    const overlay = overlayClauseEn(overlays);
+    if (overlay) clauses.push(overlay);
+    return clauses;
+}
+
+/** 拼装：一级块在前、二级块在后（分隔用「；」）。 */
+function assembleTiers(tierOne, tierTwo) {
+    const flat = (value) => (Array.isArray(value) ? value : [value]).map((entry) => String(entry ?? "").trim()).filter(Boolean);
+    return [...flat(tierOne), ...flat(tierTwo)].join("；");
+}
+
+/* ------------------------------------------------------------------ *
+ * 编译器 2：Qwen-Image 2.1 系（qwen_image_2_1）—— 官方英文长 prompt 口径（分级）
  * ------------------------------------------------------------------ */
 
 /** Qwen 参考图引用行：<image1>~<image10> 对应 INPUT_IMAGE / REF_IMAGE_N 的注入顺序（禁止「图1」式指代）。 */
@@ -717,13 +910,9 @@ function qwenTransparentClause(description) {
     return `${QWEN_TRANSPARENT_MAGIC} ${body} The image has alpha channel and the background is transparent.`.trim();
 }
 
-/**
- * Qwen 2.1 编译器。
- * 官方口径 = 英文长 prompt（400~500 词）+ <image1>~<image10> + 引号内文字逐字 + 透明图咒语。
- * sync 出口：有 `rewrite`（由 compilePromptForTemplateAsync 经官方改写器产出）才用英文；
- * 否则**明确标记 [untranslated]**，绝不假装已英文化。
- */
-export function compileQwen21ImagePrompt({ template, shot, scene, characters, style, slots, overlays, legacyBody, basePrompt, rewrite, llmCall } = {}) {
+/** Qwen 二级事实（同步 / 降级产物的中文事实句）：主体 / 景别 / 场景 / 画面内容 / 机位。 */
+function qwenTierTwoFacts(input) {
+    const { shot, scene, characters } = input;
     const names = (Array.isArray(characters) ? characters : [])
         .map((entry) => {
             const name = String(entry?.name ?? "").trim();
@@ -736,44 +925,53 @@ export function compileQwen21ImagePrompt({ template, shot, scene, characters, st
     const action = stripTail(splitEndState(shot?.action).process || shot?.action);
     const bits = [];
     if (names.length) bits.push(`主体：${names.join("、")}`);
-    if (shotSizeEn(shot)) bits.push(`景别：${shotSizeEn(shot)}`);
+    const shotSize = hasText(shot?.shotSize) ? String(shot.shotSize).trim() : "";
+    if (shotSize) bits.push(`景别：${shotSize}`);
     if (sceneName) bits.push(`场景：${sceneName}`);
     if (action) bits.push(`画面内容：${action}`);
-    const camera = cameraSentence(shot);
-    if (camera) bits.push(`机位与运镜：${stripTail(camera)}`);
-    let body = bits.length ? `${bits.join("；")}。` : "";
+    const camera = cameraSentenceCn(shot);
+    if (camera) bits.push(camera);
+    return bits.join("；");
+}
 
+/** Qwen 二级块（同步 / 降级产物）：事实 + 参考图槽位映射；无结构化事实时退回旧版快照。 */
+function qwenTierTwoSync(input) {
+    const { slots, basePrompt, legacyBody, shot } = input;
+    const facts = qwenTierTwoFacts(input);
     const refClause = qwenReferenceClause(slots);
-    if (refClause) body += refClause;
-
+    if (facts) return [facts, refClause].filter(Boolean);
+    if (refClause) return [refClause];
     const base = String(basePrompt ?? legacyBody ?? shot?.prompt ?? "").trim();
-    if (base && !body.includes(base)) body += `${stripTail(base)}。`;
+    return base ? [stripTail(base)] : [];
+}
 
-    const overlay = overlayClauseEn(overlays);
-    if (overlay) body += overlay;
+/** Qwen 同步 / 降级产物主体（一级 + 二级；透明图咒语包裹）。 */
+function qwenSyncBody(input) {
+    const body = assembleTiers(tierOneSync(input), qwenTierTwoSync(input));
+    return input.slots?.transparent ? qwenTransparentClause(body) : body;
+}
 
-    // 官方 path 负面完全无效 → 负向约束改写进正向（通用洁净句，不做逐词映射）。
-    if (stringNegativeList(shot).length) body += `${positiveCleanClause()}。`;
-
-    // 透明图咒语（仅该镜需要被抠的主体时）：作为整段开头。
-    const withTransparent = slots?.transparent ? qwenTransparentClause(body) : body;
-
-    // 有英文化改写结果 → 直接用（改写器已按官方 PE 口径输出英文长 prompt）。
-    if (hasText(rewrite)) return styleHead(style, String(rewrite).trim());
-
-    // 无改写器结果 → 中文降级 + 显式未升级标记（不得假装已英文化）。
-    const marker = `[untranslated: 需经官方 qwen-image-2.1-pe 改写器英文化]`;
-    const rendered = body ? `${withTransparent} ${marker}` : marker;
-    return styleHead(style, rendered);
+/**
+ * Qwen 2.1 编译器（分级）。
+ * 一级（画幅·比例 / 负面 / 文字 / 风格）由编译器直拼，改写器看不到；
+ * 有 rewrite → 只把它当二级块拼在一级之后；无 rewrite → 中文降级 + 显式 [untranslated] 标记。
+ */
+export function compileQwen21ImagePrompt(input = {}) {
+    const { rewrite } = input;
+    if (hasText(rewrite)) return assembleTiers(tierOneRewrite(input), [String(rewrite).trim()]);
+    const body = qwenSyncBody(input);
+    const marker = `[untranslated: 需经官方 qwen-image-2.1 pe 改写器英文化]`;
+    return body ? `${body} ${marker}` : marker;
 }
 
 /* ------------------------------------------------------------------ *
- * 编译器 3：仅英文有官方依据的模型（krea2_turbo / flux1_dev）
+ * 编译器 3：仅英文有官方依据的模型（krea2_turbo / flux1_dev）—— 分级
  * 无 LLM → 中文 + [untranslated] 标记；禁止默默发中文。
  * ------------------------------------------------------------------ */
 
-/** 通用「中文事实主体」拼装（供 Krea2/FLUX 中文降级用）。 */
-function imageFactsCn({ shot, scene, characters, style, overlays, slots, basePrompt, legacyBody }) {
+/** Krea2 / FLUX 二级事实（同步 / 降级产物的中文事实句）。 */
+function kreaFluxTierTwoFacts(input) {
+    const { shot, scene, characters, basePrompt, legacyBody } = input;
     const names = (Array.isArray(characters) ? characters : []).map((entry) => String(entry?.name ?? "").trim()).filter(Boolean);
     const sceneName = hasText(scene?.name) ? String(scene.name).trim() : hasText(scene?.location) ? String(scene.location).trim() : "";
     const action = stripTail(splitEndState(shot?.action).process || shot?.action);
@@ -784,39 +982,30 @@ function imageFactsCn({ shot, scene, characters, style, overlays, slots, basePro
     if (action) bits.push(`画面内容：${action}`);
     const camera = cameraSentence(shot);
     if (camera) bits.push(`机位与运镜：${stripTail(camera)}`);
-    const { anchor: styleAnchor } = readStyleFields(style);
-    if (styleAnchor) bits.push(`风格：${styleAnchor}`);
     const base = String(basePrompt ?? legacyBody ?? shot?.prompt ?? "").trim();
     if (base) bits.push(stripTail(base));
-    const overlay = overlayClauseCn(overlays);
-    if (overlay) bits.push(overlay);
-    if (stringNegativeList(shot).length) bits.push(positiveCleanClause());
     return bits.join("；");
 }
 
 /**
- * Krea2 编译器：官方仅英文有依据；自然语言整句、禁关键词堆叠与权重语法。
- * 有 `rewrite` 用英文；否则中文 + [untranslated] 标记。
+ * Krea2 / FLUX 分级编译器：一级直拼 + 二级可改写。
+ * 有 rewrite → 只把它当二级块拼在一级之后；否则中文降级 + [untranslated] 标记。
  */
-export function compileKrea2ImagePrompt(input = {}) {
-    const { style, rewrite } = input;
-    if (hasText(rewrite)) return styleHead(style, String(rewrite).trim());
-    const facts = imageFactsCn(input);
-    const marker = "[untranslated: Krea 2 仅英文有官方依据，需经 llmCall 翻译为英文]";
-    return styleHead(style, `${facts} ${marker}`.trim());
+function compileKreaFluxPrompt(input, marker) {
+    const { rewrite } = input;
+    if (hasText(rewrite)) return assembleTiers(tierOneRewrite(input), [String(rewrite).trim()]);
+    const body = assembleTiers(tierOneSync(input), [kreaFluxTierTwoFacts(input)]);
+    return body ? `${body} ${marker}` : marker;
 }
 
-/**
- * FLUX 编译器：官方仅英文有依据；负面走 zero_out（官方反对负面）。
- * 有 `rewrite` 用英文；否则中文 + [untranslated] 标记。
- */
-export function compileFluxImagePrompt(input = {}) {
-    const { style, rewrite } = input;
-    if (hasText(rewrite)) return styleHead(style, String(rewrite).trim());
-    const facts = imageFactsCn(input);
-    const marker = "[untranslated: FLUX.1 仅英文有官方依据，需经 llmCall 翻译为英文]";
-    return styleHead(style, `${facts} ${marker}`.trim());
+export function compileKrea2ImagePrompt(input = {}) {
+    return compileKreaFluxPrompt(input, "[untranslated: Krea 2 仅英文有官方依据，需经 llmCall 翻译为英文]");
 }
+
+export function compileFluxImagePrompt(input = {}) {
+    return compileKreaFluxPrompt(input, "[untranslated: FLUX.1 仅英文有官方依据，需经 llmCall 翻译为英文]");
+}
+
 
 /* ------------------------------------------------------------------ *
  * 编译器 4：通用兜底（其它所有模板）—— 与既有行为逐字一致（兼容红线）
@@ -901,7 +1090,7 @@ export function compilePromptForTemplate(input = {}) {
  * （rewriterForTemplate 选改写器；llmCall 由调用方注入，模块内不发请求）
  * ------------------------------------------------------------------ */
 
-/** 把模型无关事实拼成改写器输入的源文本。 */
+/** 把模型无关事实拼成改写器输入的源文本（末尾附**不可改写**的生产事实约束）。 */
 function rewriteSourceText(input) {
     const { shot, scene, characters, style, overlays } = input;
     const names = characterNames(characters);
@@ -919,39 +1108,142 @@ function rewriteSourceText(input) {
     if (hasText(shot?.dialogue)) bits.push(`台词：${String(shot.dialogue).trim()}`);
     const overlay = overlayClauseCn(overlays);
     if (overlay) bits.push(overlay);
+    // 画幅不混进内容事实串里：单独一行作为约束，改写器只能表达、不能猜测或覆盖。
+    const constraint = aspectRatioConstraint(style);
+    const facts = bits.join("；");
+    return constraint ? `${facts}\n${constraint}` : facts;
+}
+
+/**
+ * 二级源文本（分级模型专用）：主体 / 景别 / 场景 / 画面内容 / 机位与运镜 / 台词（± 风格锚点）。
+ * **绝不含任何一级强约束**（画幅·比例 / 负面 / 画面内文字）—— 改写器看不到、也改不了它们。
+ * 风格锚点：有画幅事实时改由一级块 tierOneRewrite 直拼（此处不写，避免重复）；无画幅事实时
+ * 随本源交付，保证产物里风格锚点恒在。
+ */
+function tierTwoSourceText(input) {
+    const { shot, scene, characters, style } = input;
+    const names = characterNames(characters);
+    const sceneName = hasText(scene?.name) ? String(scene.name).trim() : hasText(scene?.location) ? String(scene.location).trim() : "";
+    const action = stripTail(splitEndState(shot?.action).process || shot?.action);
+    const bits = [];
+    if (names.length) bits.push(`主体：${names.join("、")}`);
+    if (shotSizeEn(shot)) bits.push(`景别：${shotSizeEn(shot)}`);
+    if (sceneName) bits.push(`场景：${sceneName}`);
+    if (action) bits.push(`画面内容：${action}`);
+    const camera = cameraSentence(shot);
+    if (camera) bits.push(`机位与运镜：${stripTail(camera)}`);
+    const { anchor: styleAnchor } = readStyleFields(style);
+    if (styleAnchor && !aspectRatioFact(style)) bits.push(`风格：${styleAnchor}`);
+    if (hasText(shot?.dialogue)) bits.push(`台词：${String(shot.dialogue).trim()}`);
     return bits.join("；");
 }
 
-/** 无官方改写器、但模型仅英文有官方依据时的通用英文化 system（Krea2 / FLUX）。 */
+/**
+ * 无官方改写器、但模型仅英文有官方依据时的项目补充英文化 system（Krea2 / FLUX）。
+ * 这不是厂商官方资产；官方改写器只在 model-registry/research 明确登记时使用。
+ */
 const ENGLISH_TRANSLATION_SYSTEM =
     "You rewrite an image-generation brief into one fluent, natural English prompt for a text-to-image model. " +
     "Preserve every quoted on-screen text string verbatim and keep all subjects, counts, colours, and positions. " +
+    "Lines marked as fixed production facts (aspect ratio, orientation) must be carried over exactly as stated; never infer or invert them. " +
     "Output only the English prompt, no explanations.";
 
+/** 二级纠正指令（不泄露一级画幅事实，只要求别再写画幅/方向）。 */
+const TIER2_CORRECTION_NOTE = "纠正要求：只描述主体、动作、场景、机位与光线；不要提及画幅、构图方向、屏幕比例或画面宽高，也不要新增任何方向词。";
+
+/** 该模板是否走分级编译（有会消费 rewrite 的编译器：qwen_image_2_1 / krea2_turbo / flux1_dev）。 */
+function isTieredTemplate(template) {
+    const key = ruleKeyForTemplate(template);
+    return key === "qwen_image_2_1" || key === "krea2_turbo" || key === "flux1_dev";
+}
+
+/** 分级模型的同步二级块（供「仍冲突」时只保留一级 + 同步稿二级）。 */
+function tieredSyncTierTwo(input) {
+    const key = ruleKeyForTemplate(input.template);
+    if (key === "krea2_turbo" || key === "flux1_dev") return [kreaFluxTierTwoFacts(input)];
+    return qwenTierTwoSync(input);
+}
+
+/** 调一次改写器（官方改写器或项目补充的英文化路径），只喂二级源文本。 */
+async function rewriteTierTwoOnce(input, llmCall, { correction = false } = {}) {
+    const template = String(input?.template ?? "");
+    let source = tierTwoSourceText(input);
+    if (correction) source = `${source}\n${TIER2_CORRECTION_NOTE}`;
+    if (!hasText(source)) return "";
+    const rewriterId = rewriterForTemplate(template);
+    if (rewriterId) {
+        const out = await rewritePrompt({ rewriterId, text: source, targetLang: "en", context: { promptsDir: input.promptsDir }, llmCall });
+        return out && hasText(out.text) ? String(out.text).trim() : "";
+    }
+    const out = await llmCall({ system: ENGLISH_TRANSLATION_SYSTEM, user: source });
+    return hasText(out) ? String(out).trim() : "";
+}
+
 /**
- * async 编译入口：模型官方要英文时，**经 llmCall** 英文化后再编译 ——
- *   · 有官方改写器（rewriterForTemplate 命中）→ 走 rewritePrompt（Qwen / Wan / Boogu / SCAIL-2）；
- *   · 无官方改写器但仅英文有依据（Krea2 / FLUX）→ 直接经 llmCall 翻译为英文；
- * llmCall 缺失 / 改写失败 → 回落 sync `compilePromptForTemplate`（中文 + 显式 [untranslated] 标记）。
+ * async 编译入口（分级版）：模型官方要英文时，**只把二级画面细节**交给改写器 ——
+ *   · 一级强约束（画幅·比例 / 负面 / 文字，及有画幅事实时的风格锚点）由编译器直拼，
+ *     不进改写器输入、不参与其输出；
+ *   · 二级经官方改写器（rewriterForTemplate 命中）或项目补充的通用英文化路径改写；
+ *   · 二级出现相反画幅 → **不整稿弃用**：先纠正/重写二级块一次；仍冲突 → 只保留一级 + 同步结构稿的二级，
+ *     并记 warning（宁可少写二级细节，也绝不把错误的画幅方向交给生成模型）；
+ *   · 无官方改写器的模板（如 scail2 / H3）沿用既有改写流程；无改写器的模型直接回落 sync 出口。
+ * `onWarning` 收集失败原因，供 API/流水线写入排查元数据；不把异常静默吞掉。
  * @returns {Promise<string>}
  */
 export async function compilePromptForTemplateAsync(input = {}) {
     const template = String(input?.template ?? "");
     const llmCall = input?.llmCall;
     if (rewriteTargetLang(template) === "en" && typeof llmCall === "function") {
+        // —— 分级模型（qwen / krea2 / flux）：改写器只处理二级块 ——
+        if (isTieredTemplate(template)) {
+            const source = tierTwoSourceText(input);
+            if (hasText(source)) {
+                try {
+                    let rewritten = await rewriteTierTwoOnce(input, llmCall);
+                    if (rewritten) {
+                        const conflict = aspectRatioConflict(rewritten, input.style);
+                        if (conflict) {
+                            // 二级服从一级：不整稿弃用，只纠正/重写二级块一次。
+                            const corrected = await rewriteTierTwoOnce(input, llmCall, { correction: true });
+                            if (corrected && !aspectRatioConflict(corrected, input.style)) {
+                                rewritten = corrected;
+                            } else {
+                                // 仍冲突 → 只保留一级 + 同步结构稿的二级，并记 warning。
+                                if (typeof input.onWarning === "function") input.onWarning(new Error(conflict));
+                                return assembleTiers(tierOneSync(input), tieredSyncTierTwo(input));
+                            }
+                        }
+                        return assembleTiers(tierOneRewrite(input), [rewritten]);
+                    }
+                } catch (error) {
+                    if (typeof input.onWarning === "function") input.onWarning(error);
+                }
+            }
+            return compilePromptForTemplate(input);
+        }
+        // —— 兼容：无分级编译器的模板（如 scail2 / H3）沿用既有改写流程 ——
         const source = rewriteSourceText(input);
         if (hasText(source)) {
             const rewriterId = rewriterForTemplate(template);
             try {
+                let rewritten = "";
                 if (rewriterId) {
                     const out = await rewritePrompt({ rewriterId, text: source, targetLang: "en", context: { promptsDir: input.promptsDir }, llmCall });
-                    if (out && hasText(out.text)) return compilePromptForTemplate({ ...input, rewrite: out.text });
+                    if (out && hasText(out.text)) rewritten = String(out.text).trim();
                 } else {
                     const out = await llmCall({ system: ENGLISH_TRANSLATION_SYSTEM, user: source });
-                    if (hasText(out)) return compilePromptForTemplate({ ...input, rewrite: String(out).trim() });
+                    if (hasText(out)) rewritten = String(out).trim();
                 }
-            } catch {
-                /* 改写/翻译失败 → 回落 sync（显式未升级标记） */
+                if (rewritten) {
+                    const conflict = aspectRatioConflict(rewritten, input.style);
+                    if (conflict) {
+                        if (typeof input.onWarning === "function") input.onWarning(new Error(conflict));
+                    } else {
+                        return compilePromptForTemplate({ ...input, rewrite: rewritten });
+                    }
+                }
+            } catch (error) {
+                if (typeof input.onWarning === "function") input.onWarning(error);
             }
         }
     }

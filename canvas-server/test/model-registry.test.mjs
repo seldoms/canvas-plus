@@ -8,6 +8,7 @@ import {
     CATEGORIES,
     DEFAULT_ALIASES,
     DEFAULT_BASE_TASK,
+    asModelIdList,
     buildGroups,
     buildTemplateScript,
     categoryForTemplate,
@@ -16,6 +17,7 @@ import {
     createModelRegistry,
     fallbackBaseTask,
     runtimeForProvider,
+    textModelIds,
 } from "../src/model-registry.js";
 
 // 隔离环境：每条用例一个临时 dataDir，互不干扰。
@@ -481,4 +483,70 @@ test("groups：按 category → base 聚合；默认表顺序优先、表外按 
 
     // buildGroups 纯函数同构
     assert.deepEqual(buildGroups(registry.list().models), groups);
+});
+
+// ——— 静态文本模型清单（产品负责人 2026-10-03 定：模型清单只读注册表，网关不探测上游） ———
+
+const DECLARED_PROVIDERS = [
+    { name: "deepseek", baseUrl: "https://api.deepseek.com", models: ["deepseek-flash", " deepseek-v4-pro ", "", "deepseek-flash"] },
+    { name: "dead", baseUrl: "https://ai.input.im" }, // 未声明模型：连不上也不再拖住清单，直接不产出 id
+];
+
+test("asModelIdList：trim / 去空 / 去重保序；非数组一律空", () => {
+    assert.deepEqual(asModelIdList(["a", " a ", "", null, "b"]), ["a", "b"]);
+    assert.deepEqual(asModelIdList(undefined), []);
+    assert.deepEqual(asModelIdList("a"), []);
+});
+
+test("computeAvailable：渠道声明的 models 归一后落进 meta.models", () => {
+    const items = computeAvailable({ templates: [], llmProviders: DECLARED_PROVIDERS });
+    const deepseek = items.find((item) => item.name === "deepseek");
+    assert.deepEqual(deepseek.meta.models, ["deepseek-flash", "deepseek-v4-pro"]);
+    assert.deepEqual(items.find((item) => item.name === "dead").meta.models, []);
+});
+
+test("textModelIds：只展开已启用 text 条目的声明模型为「渠道名::模型名」", () => {
+    const models = [
+        { name: "deepseek", category: "text", enabled: true, channelName: "deepseek", meta: { models: ["deepseek-flash", "deepseek-v4-pro"] } },
+        { name: "dead", category: "text", enabled: true, channelName: "dead", meta: { models: [] } },
+        { name: "off", category: "text", enabled: false, channelName: "off", meta: { models: ["m"] } },
+        { name: "img_qwen21_t2i", category: "image", enabled: true, channelName: "", meta: { models: ["不该出现"] } },
+        { name: "only-id", category: "text", enabled: true, channelId: "chan", meta: { models: ["m1"] } },
+    ];
+    assert.deepEqual(textModelIds(models), ["deepseek::deepseek-flash", "deepseek::deepseek-v4-pro", "chan::m1"]);
+    assert.deepEqual(textModelIds([]), []);
+});
+
+test("registry.textModels()：sync 后即可静态读出清单，不需要任何网络探测", () => {
+    const registry = newRegistry();
+    assert.deepEqual(registry.textModels(), [], "空表 → 空清单（不抛错）");
+    registry.sync({ templates: TEMPLATES, llmProviders: DECLARED_PROVIDERS, catalog: {} });
+    assert.deepEqual(registry.textModels(), ["deepseek::deepseek-flash", "deepseek::deepseek-v4-pro"]);
+});
+
+test("sync 刷新渠道的 meta.models / meta.baseUrl（服务端事实），且不碰用户改过的 alias / enabled", () => {
+    const registry = newRegistry();
+    registry.sync({ templates: [], llmProviders: DECLARED_PROVIDERS, catalog: {} });
+    const entry = registry.list({ category: "text" }).models.find((model) => model.name === "deepseek");
+    registry.update(entry.id, { alias: "我的对话模型", enabled: false });
+
+    const changed = [{ name: "deepseek", baseUrl: "https://api.deepseek.com/v1", models: ["deepseek-v4-pro"] }];
+    const result = registry.sync({ templates: [], llmProviders: changed, catalog: {} });
+
+    assert.deepEqual(result.refreshed, ["deepseek"]);
+    const after = registry.list({ category: "text" }).models.find((model) => model.name === "deepseek");
+    assert.deepEqual(after.meta.models, ["deepseek-v4-pro"], "声明变了要跟上，否则静态清单停在旧快照");
+    assert.equal(after.meta.baseUrl, "https://api.deepseek.com/v1");
+    assert.equal(after.alias, "我的对话模型", "alias 是用户改的，sync 不得覆盖");
+    assert.equal(after.enabled, false, "enabled 是用户改的，sync 不得覆盖");
+    assert.deepEqual(registry.textModels(), [], "停用的渠道不产出模型 id");
+});
+
+test("sync 幂等：声明未变时不重复刷新（refreshed 为空）", () => {
+    const registry = newRegistry();
+    const sources = { templates: [], llmProviders: DECLARED_PROVIDERS, catalog: {} };
+    registry.sync(sources);
+    const second = registry.sync(sources);
+    assert.deepEqual(second.refreshed, []);
+    assert.deepEqual(second.added, []);
 });

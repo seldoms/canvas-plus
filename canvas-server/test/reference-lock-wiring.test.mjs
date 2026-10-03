@@ -343,10 +343,10 @@ test("③ textOverlays 逐字拼进 PROMPT；kind 全 none 不拼空串", async 
     await pipeline.runStage(run.id, "keyframe");
 
     const startPrompt = jobs.get(`${run.id}-sh1-start`).params.PROMPT;
-    assert.ok(startPrompt.includes('"老城南路公交站"'), startPrompt);
-    assert.ok(startPrompt.includes('"3路"'), startPrompt);
-    assert.ok(startPrompt.includes('"3路 末班车"'), startPrompt);
-    assert.match(startPrompt, /on-screen text rendered verbatim/);
+    assert.ok(startPrompt.includes('招牌文字「老城南路公交站」'), startPrompt);
+    assert.ok(startPrompt.includes('屏幕文字「3路」'), startPrompt);
+    assert.ok(startPrompt.includes('票据文字「3路 末班车」'), startPrompt);
+    assert.doesNotMatch(startPrompt, /on-screen text rendered verbatim/);
 
     // end 帧的 textOverlays 只有 kind:none → 不拼空串
     jobs.finish(`${run.id}-sh1-start`, "done", { outputs: [{ url: `/api/artifacts/${run.id}-sh1-start/start.png` }] });
@@ -386,7 +386,7 @@ test("③ 缺 textOverlays 字段：不报错、只产生 QC warning；kind 非�
 
     const invalidKind = jobs.list().find((entry) => entry.meta?.itemId === "sh2-start");
     assert.ok(invalidKind, "kind 非法不阻断");
-    assert.ok(invalidKind.params.PROMPT.includes('"站牌文字"'), invalidKind.params.PROMPT);
+    assert.ok(invalidKind.params.PROMPT.includes('画面文字「站牌文字」'), invalidKind.params.PROMPT);
 });
 
 // ——— ④ 产物索引 URL 断链（#40） ———

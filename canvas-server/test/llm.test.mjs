@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 
-import { chat, forwardToLlm, listLlmModels, probeLlm } from "../src/providers/llm.js";
+import { chat, forwardToLlm, externalProviders } from "../src/providers/llm.js";
 
 /** 起一个 stub 上游，返回 { server, baseUrl }。 */
 function startStub(handler) {
@@ -20,83 +20,42 @@ function json(res, status, body) {
 /** 关闭端口，用于验证 fallback 与不可达分支。 */
 const DEAD_URL = "http://127.0.0.1:1";
 
-test("listLlmModels：baseUrl 不带 /v1 时补 /v1，并兼容 OpenAI 形态", async (t) => {
-    const paths = [];
-    const stub = await startStub((req, res) => {
-        paths.push(req.url);
-        if (req.url === "/v1/models") {
-            json(res, 200, { object: "list", data: [{ id: "alpha" }, { id: "beta" }, { id: "alpha" }] });
-            return;
-        }
-        json(res, 404, { error: { message: "not found" } });
+// 回归：模型清单已改为「只读注册表」（不再探测上游），本模块只保留**发请求**那条链路。
+// 地址选择（主地址 → fallbacks）由 chat / forwardToLlm 承担，这里直接对它们取证。
+test("主地址不可达时 chat 按 fallbacks 顺序落到可用地址", async (t) => {
+    const stub = await startStub((req, res) => json(res, 200, { choices: [{ message: { role: "assistant", content: "来自 fallback" } }] }));
+    t.after(() => stub.server.close());
+
+    const result = await chat({ llm: { baseUrl: DEAD_URL, fallbacks: [stub.baseUrl], timeoutMs: 5000 } }, { messages: [], model: "m" });
+    assert.equal(result.choices[0].message.content, "来自 fallback");
+});
+
+test("全部地址不可达时 chat 抛出列出已尝试地址的中文错误", async () => {
+    await assert.rejects(
+        () => chat({ llm: { baseUrl: DEAD_URL, fallbacks: ["http://127.0.0.1:2"], timeoutMs: 5000 } }, { messages: [], model: "m" }),
+        (error) => {
+            assert.match(error.message, /LLM 服务不可达/);
+            assert.match(error.message, /127\.0\.0\.1:1/);
+            assert.match(error.message, /127\.0\.0\.1:2/);
+            return true;
+        },
+    );
+});
+
+test("externalProviders：渠道声明的 models 原样带出（静态清单来源），未声明则为空数组", () => {
+    const providers = externalProviders({
+        llm: {
+            providers: [
+                { name: "deepseek", baseUrl: "https://api.deepseek.com/", apiKey: "sk-x", models: ["deepseek-flash", " deepseek-v4-pro ", "", "deepseek-flash"] },
+                { name: "dead", baseUrl: "https://ai.input.im" },
+                { name: "", baseUrl: "https://no-name.example" },
+            ],
+        },
     });
-    t.after(() => stub.server.close());
-
-    const models = await listLlmModels({ llm: { baseUrl: stub.baseUrl, timeoutMs: 5000 } });
-    assert.deepEqual(models, ["alpha", "beta"]);
-    assert.ok(paths.includes("/v1/models"));
-    assert.ok(paths.includes("/api/tags"), "Ollama 原生接口也应被探测");
-});
-
-test("listLlmModels：baseUrl 自带 /v1 或尾斜杠都不会拼出 /v1/v1", async (t) => {
-    const paths = [];
-    const stub = await startStub((req, res) => {
-        paths.push(req.url);
-        json(res, 200, req.url === "/v1/models" ? { data: [{ id: "only" }] } : {});
-    });
-    t.after(() => stub.server.close());
-
-    const models = await listLlmModels({ llm: { baseUrl: `${stub.baseUrl}/v1/`, timeoutMs: 5000 } });
-    assert.deepEqual(models, ["only"]);
-    assert.ok(!paths.some((path) => path.includes("/v1/v1")), `不应出现 /v1/v1：${paths.join(",")}`);
-    assert.ok(paths.includes("/api/tags"), `/api/tags 应从站点根请求：${paths.join(",")}`);
-});
-
-test("listLlmModels：解析 Ollama /api/tags 形态", async (t) => {
-    const stub = await startStub((req, res) => {
-        if (req.url === "/api/tags") {
-            json(res, 200, { models: [{ name: "qwen3.8:27b", model: "qwen3.8:27b" }, { name: "gemma3:4b" }] });
-            return;
-        }
-        json(res, 404, {});
-    });
-    t.after(() => stub.server.close());
-
-    const models = await listLlmModels({ llm: { baseUrl: stub.baseUrl, timeoutMs: 5000 } });
-    assert.deepEqual(models, ["qwen3.8:27b", "gemma3:4b"]);
-});
-
-test("listLlmModels：两种形态合并去重", async (t) => {
-    const stub = await startStub((req, res) => {
-        if (req.url === "/v1/models") {
-            json(res, 200, { data: [{ id: "a" }, { id: "b" }] });
-            return;
-        }
-        json(res, 200, { models: [{ name: "b" }, { name: "c" }] });
-    });
-    t.after(() => stub.server.close());
-
-    const models = await listLlmModels({ llm: { baseUrl: stub.baseUrl, timeoutMs: 5000 } });
-    assert.deepEqual(models, ["a", "b", "c"]);
-});
-
-test("主地址不可达时按 fallbacks 顺序生效，probe 返回实际地址", async (t) => {
-    const stub = await startStub((req, res) => json(res, 200, { data: [{ id: "fallback-model" }] }));
-    t.after(() => stub.server.close());
-
-    const config = { llm: { baseUrl: DEAD_URL, fallbacks: [stub.baseUrl], timeoutMs: 5000 } };
-    const probe = await probeLlm(config);
-    assert.equal(probe.ok, true);
-    assert.equal(probe.baseUrl, stub.baseUrl);
-    assert.deepEqual(probe.models, ["fallback-model"]);
-});
-
-test("全部不可达时 probe 返回 ok:false 与可读中文错误", async () => {
-    const probe = await probeLlm({ llm: { baseUrl: DEAD_URL, fallbacks: ["http://127.0.0.1:2"], timeoutMs: 5000 } });
-    assert.equal(probe.ok, false);
-    assert.equal(probe.baseUrl, DEAD_URL);
-    assert.match(probe.error, /不可达|没有模型/);
-    assert.match(probe.error, /127\.0\.0\.1:1/);
+    assert.deepEqual(providers, [
+        { name: "deepseek", baseUrl: "https://api.deepseek.com", apiKey: "sk-x", models: ["deepseek-flash", "deepseek-v4-pro"] },
+        { name: "dead", baseUrl: "https://ai.input.im", apiKey: "", models: [] },
+    ]);
 });
 
 test("forwardToLlm：SSE 逐块透传，不缓冲整段", async (t) => {
@@ -183,87 +142,4 @@ test("chat：上游报错时抛出含地址与状态码的中文错误", async (
             return true;
         },
     );
-});
-
-// 回归：外部渠道注册表引入后，/api/health 与 /api/llm/models 会逐个探测渠道。
-// 若沿用 chat 的 600s 超时且串行探测，一个 TCP 连上就不回包的死链能把接口挂住几十分钟。
-test("外部渠道挂死时按 probeTimeoutMs 跳过，不拖住本机与其它渠道", async (t) => {
-    const local = await startStub((req, res) => {
-        if (req.url === "/api/tags") json(res, 200, { models: [{ name: "qwen3.8:27b" }] });
-        else json(res, 404, {});
-    });
-    const good = await startStub((req, res) => {
-        if (req.url === "/v1/models") json(res, 200, { data: [{ id: "deepseek-v4-pro" }] });
-        else json(res, 404, {});
-    });
-    const hang = await startStub(() => {}); // 永不回包
-    t.after(() => {
-        for (const stub of [local, good, hang]) {
-            stub.server.closeAllConnections?.();
-            stub.server.close();
-        }
-    });
-
-    const started = Date.now();
-    const models = await listLlmModels({
-        llm: {
-            baseUrl: local.baseUrl,
-            timeoutMs: 600000, // chat 用的长超时，不应影响列模型探测
-            probeTimeoutMs: 300,
-            providers: [
-                { name: "hang", baseUrl: hang.baseUrl },
-                { name: "good", baseUrl: good.baseUrl, apiKey: "sk-test" },
-            ],
-        },
-    });
-    const elapsed = Date.now() - started;
-    assert.deepEqual(models, ["qwen3.8:27b", "good::deepseek-v4-pro"], "死渠道只应丢自己的模型，不能连累本机与其它渠道");
-    assert.ok(elapsed < 3000, `探测应在 probeTimeoutMs 量级返回，实际 ${elapsed}ms`);
-});
-
-test("多个外部渠道并行探测，总耗时接近最慢的一个而非累加", async (t) => {
-    const local = await startStub((req, res) => {
-        if (req.url === "/api/tags") json(res, 200, { models: [{ name: "m0" }] });
-        else json(res, 404, {});
-    });
-    const delayed = () =>
-        startStub((req, res) => {
-            setTimeout(() => {
-                if (req.url === "/v1/models") json(res, 200, { data: [{ id: "m" }] });
-                else json(res, 404, {});
-            }, 400);
-        });
-    const stubs = [local, await delayed(), await delayed(), await delayed()];
-    t.after(() => {
-        for (const stub of stubs) {
-            stub.server.closeAllConnections?.();
-            stub.server.close();
-        }
-    });
-
-    const started = Date.now();
-    const models = await listLlmModels({
-        llm: {
-            baseUrl: local.baseUrl,
-            probeTimeoutMs: 5000,
-            providers: [
-                { name: "a", baseUrl: stubs[1].baseUrl },
-                { name: "b", baseUrl: stubs[2].baseUrl },
-                { name: "c", baseUrl: stubs[3].baseUrl },
-            ],
-        },
-    });
-    const elapsed = Date.now() - started;
-    assert.deepEqual(models, ["m0", "a::m", "b::m", "c::m"]);
-    assert.ok(elapsed < 1000, `并行应约 400ms，串行会 >=1200ms，实际 ${elapsed}ms`);
-});
-
-test("真实 Ollama 集成（不可达则跳过）", async (t) => {
-    const probe = await probeLlm({ llm: { baseUrl: "http://127.0.0.1:11434", timeoutMs: 5000 } });
-    if (!probe.ok) {
-        t.skip(`Ollama 不可达：${probe.error}`);
-        return;
-    }
-    assert.ok(probe.models.length > 0, "应至少返回一个模型");
-    assert.ok(probe.models.every((name) => typeof name === "string" && name.length > 0));
 });

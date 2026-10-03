@@ -11,7 +11,7 @@ import { artifactUrl, ensureDir, safeJoin } from "./files.js";
 import { listTemplates } from "./providers/comfy.js";
 import { buildShotBinding, missingRefsReport, resolveSelectedArtifacts, stableSeed } from "./reference-lock.js";
 // 提示词编译器：按所选模型把「模型无关的内容事实」编译成该模型要的提示词（图片/视频一视同仁）。
-import { compilePromptForTemplate, presetForTemplate } from "./prompt-compiler.js";
+import { compilePromptForTemplate, compilePromptForTemplateAsync, presetForTemplate, stripUntranslatedMarker } from "./prompt-compiler.js";
 import { normalizeShotEpisodeIds, RUN_SHOT_ID_FIELD } from "./production-contracts.js";
 import { loadRegistry, readSkill } from "./skills.js";
 import { listReferenceCapableTemplates, resolveToolForShot, scanTemplateDir } from "./tool-adapter.js";
@@ -280,7 +280,7 @@ function fillTemplate(text, context) {
  * assemble 是「片段 → 成片」的后期执行体，默认用 delivery.js 的 assembleEpisode；
  * 编排器只负责判定何时拼接、把清单与参数交给它，ffmpeg 命令构造与执行都留在 delivery.js。
  */
-export function createPipeline({ config, skillsDir, jobs, comfy, llm, runJob, assemble = assembleEpisode, getProject, applyPlanSuggestion, applyScriptProjection, applyEpisodeProjection, attachProjectRun, registerAssetRef, updateAssetRef } = {}) {
+export function createPipeline({ config, skillsDir, jobs, comfy, llm, llmCall, runJob, assemble = assembleEpisode, getProject, applyPlanSuggestion, applyScriptProjection, applyEpisodeProjection, attachProjectRun, registerAssetRef, updateAssetRef } = {}) {
     const pipelineConfig = config?.pipeline || {};
     // 半自动总开关：注入 getProject（项目化模式）时才启用「单镜失败自动重试」。
     // 未注入时一律保持旧的「失败即止」行为；plan 驱动参数靠 projectOf 返回 null 自然回落，不需要额外开关。
@@ -305,6 +305,11 @@ export function createPipeline({ config, skillsDir, jobs, comfy, llm, runJob, as
     const templateFamilies = new Map(listTemplates(config?.workflowsDir).map((template) => [template.name, template.family]));
     // 模板 → 真实输入能力（有无 LoadImage / 最多几张参考图）。tool-adapter 只看节点，不认文件名，换模板也自动识别。
     const templateCatalog = scanTemplateDir(config?.workflowsDir);
+
+    // 语言适配（按模型改写提示词）出口：由 index.js 注入 llm-client 的 llmCall；未注入时保持同步行为（测试/离线）。
+    const rewriteLlmCall = typeof llmCall === "function" ? llmCall : null;
+    // 编译快照随 stage.output 的 item 持久化，不放进进程内 Map：重启、重跑和多进程回写都必须有同一份可追溯输入。
+    // 快照只服务于本次 attempt 的入队；显式重跑会强制重新编译并生成新 job，旧 job 的 params 永不改写。
 
     const runFile = (runId) => safeJoin(runsDir, String(runId), "run.json");
     const stageFile = (runId, stageId) => safeJoin(runsDir, String(runId), `${stageId}.json`);
@@ -866,7 +871,7 @@ ${JSON.stringify(partials, null, 2)}
             return composeScriptChunked(run, def, stage, provider, maxChunkChars, ctx);
         }
         // 单次调用也写一条同形状的进度，前端不必为「有没有分块」写两套渲染
-        writeProgress(run.id, { runId: run.id, stage: def.id, phase: "single", done: 0, total: 1, label: `模型生成中（提示词 ${prompt.length} 字）`, steps: scriptStepsView(stage) });
+        writeProgress(run.id, { runId: run.id, stage: def.id, phase: "single", done: 0, total: 1, label: "模型生成中", steps: scriptStepsView(stage) });
         const messages = [
             { role: "system", content: `你是「${def.title}」阶段的执行者。严格只返回一个 JSON 对象，不要输出解释、Markdown 代码块或任何多余文字。` },
             { role: "user", content: prompt },
@@ -1074,7 +1079,7 @@ ${JSON.stringify(partials, null, 2)}
         const prompt = fillTemplate(readPromptTemplate(def), buildContext(run, def));
         try {
             // 单次调用也写一条同形状的进度，前端不必为「有没有分块」写两套渲染
-            writeProgress(run.id, { runId: run.id, stage: def.id, phase: "single", done: 0, total: 1, label: `模型生成中（提示词 ${prompt.length} 字）` });
+            writeProgress(run.id, { runId: run.id, stage: def.id, phase: "single", done: 0, total: 1, label: "模型生成中" });
             const messages = [
                 { role: "system", content: `你是「${def.title}」阶段的执行者。严格只返回一个 JSON 对象，不要输出解释、Markdown 代码块或任何多余文字。` },
                 { role: "user", content: prompt },
@@ -1115,7 +1120,10 @@ ${JSON.stringify(partials, null, 2)}
     function syncItem(item) {
         const candidates = Array.isArray(item.candidates) ? item.candidates : [];
         if (!candidates.length) return;
-        const selected = candidates[candidates.length - 1];
+        const latest = candidates[candidates.length - 1];
+        // 用户取消新 attempt 不应夺走上一版已成功的选中产物；取消是用户意图，不是阶段失败。
+        // 这样撤销一批排队候选后，已有成功帧仍可让下游继续，而没有任何成功候选的条目仍保持 canceled。
+        const selected = latest.status === "canceled" ? [...candidates].reverse().find(candidatePassed) || latest : latest;
         item.selected = selected.jobId;
         item.jobId = selected.jobId;
         item.status = selected.status;
@@ -1177,7 +1185,8 @@ ${JSON.stringify(partials, null, 2)}
             }
             return;
         }
-        const statuses = latest.map((candidate) => candidate.status);
+        // 以 item.selected 指向的候选为准；syncItem 已把用户取消的新 attempt 回退到旧成功候选。
+        const statuses = items.map((item) => (item.candidates || []).find((candidate) => candidate.jobId === item.selected) || (item.candidates || []).at(-1)).filter(Boolean).map((candidate) => candidate.status);
         // 只要有任务还在排队/运行就是 running —— 部分已完成既不代表阶段可审阅、也不代表可续跑；
         // 前端也靠 stage.status === "running" 决定要不要继续轮询阶段进度。
         if (statuses.some((status) => status === "queued" || status === "running")) stage.status = "running";
@@ -2151,6 +2160,109 @@ ${JSON.stringify(partials, null, 2)}
         return Boolean(info.slots?.INPUT_IMAGE) || (Array.isArray(info.tokens) && info.tokens.includes("INPUT_IMAGE"));
     }
 
+    /** PROMPT 带 [untranslated] 标记 → 一条 warning（该模型官方口径未生效），否则 null。 */
+    function untranslatedWarning(prompt) {
+        return typeof prompt === "string" && prompt.includes("[untranslated")
+            ? { reason: "提示词未英文化：语言适配 LLM 不可用/未生效，已按同步结构产出并显式标记 [untranslated]" }
+            : null;
+    }
+
+    /**
+     * 条目上「改写失败/画幅冲突」那几段 warning（由 compilePromptItem 的 onWarning 写入）。
+     * 单独取出来是为了让它跟着 job meta 一起留痕 —— 排查时看 job 就够，不必翻 run item。
+     * ⚠️ 只能在**读**的方向用（拼进 job meta）；绝不能回灌进 plan.warning，否则 enqueueReady 会把它
+     *    再追加回 item.warning，bindJobs 每次启动重放都自我放大（曾因此撑爆字符串长度、启动崩溃）。
+     */
+    function rewriteWarningOf(item) {
+        const raw = typeof item?.warning === "string" ? item.warning : "";
+        return raw
+            .split("；")
+            .filter((part) => part.includes("提示词改写失败"))
+            .join("；");
+    }
+
+    /** 追加一条 warning（按「；」分段去重）：投影会在启动重放时反复执行，不去重就会无限增长。 */
+    function appendWarning(item, reason) {
+        const text = String(reason ?? "").trim();
+        if (!text || !item) return;
+        const parts = String(item.warning ?? "")
+            .split("；")
+            .map((part) => part.trim())
+            .filter(Boolean);
+        if (parts.includes(text)) return;
+        item.warning = [...parts, text].join("；");
+    }
+
+    /** 编译事实指纹：排除 item 的派生字段，内容/槽位/模板变化就会得到新指纹。 */
+    function promptCompileFingerprint(compileInput) {
+        const { item: _item, ...facts } = compileInput || {};
+        return createHash("sha256").update(JSON.stringify(facts)).digest("hex");
+    }
+
+    /** 把最终稿与排查元数据落在 item 上；候选 params 另存一份，旧 job 因而保持不可变。 */
+    function savePromptSnapshot(item, compileInput, raw) {
+        const prompt = stripUntranslatedMarker(raw);
+        item.promptCompilation = {
+            version: 1,
+            template: compileInput.template,
+            fingerprint: promptCompileFingerprint(compileInput),
+            prompt,
+            rawPrompt: String(raw ?? ""),
+            compiledAt: nowIso(),
+        };
+        return { raw: String(raw ?? ""), prompt };
+    }
+
+    /** 取条目的 PROMPT：只复用与当前事实指纹一致的持久化快照；过期/缺失则同步编译。 */
+    function promptFor(run, item, template, compileInput) {
+        const snapshot = item?.promptCompilation;
+        const fingerprint = promptCompileFingerprint(compileInput);
+        if (snapshot?.template === template && snapshot?.fingerprint === fingerprint && typeof snapshot.prompt === "string") {
+            return { raw: typeof snapshot.rawPrompt === "string" ? snapshot.rawPrompt : snapshot.prompt, prompt: snapshot.prompt };
+        }
+        const raw = compilePromptForTemplate(compileInput);
+        return { raw, prompt: stripUntranslatedMarker(raw) };
+    }
+
+    /**
+     * 编译单个条目并持久化快照。显式重跑传 force=true：即使输入指纹未变，也重新请求语言适配，
+     * 通过新候选记录新的编译结果；旧 job 的 params 保持原样。LLM 失败时保留结构稿并记 warning。
+     */
+    async function compilePromptItem(run, def, item, plan, { force = false } = {}) {
+        if (plan?.blocked || !plan?.compileInput) return;
+        const input = plan.compileInput;
+        const snapshot = item?.promptCompilation;
+        const fingerprint = promptCompileFingerprint(input);
+        if (!force && snapshot?.template === plan.template && snapshot?.fingerprint === fingerprint && typeof snapshot.prompt === "string") return;
+        const syncPrompt = compilePromptForTemplate(input);
+        let raw = syncPrompt;
+        const warning = untranslatedWarning(syncPrompt);
+        if (warning && rewriteLlmCall) {
+            raw = await compilePromptForTemplateAsync({
+                ...input,
+                llmCall: rewriteLlmCall,
+                onWarning: (error) => {
+                    appendWarning(item, `提示词改写失败：${error?.message || String(error)}`);
+                },
+            });
+            if (typeof raw !== "string" || !raw.trim() || raw.includes("[untranslated")) raw = syncPrompt;
+        }
+        const result = savePromptSnapshot(item, input, raw);
+        if (warning && (!rewriteLlmCall || raw.includes("[untranslated"))) {
+            appendWarning(item, warning.reason);
+        }
+        return result;
+    }
+
+    /** 入队前预编译：模型无关事实先落快照，英文模型再异步改写；失败只降级，不阻塞任务。 */
+    async function precompilePrompts(run, def, items, frames, shots) {
+        for (const item of items) {
+            const plan = generativePlan(run, def, item, frames, shots);
+            if (plan?.blocked || !plan?.compileInput) continue;
+            await compilePromptItem(run, def, item, plan);
+        }
+    }
+
     /** 单个条目的生成参数与就绪判定：模板要求的 token 必须全给，尺寸取 config.pipeline 默认值。 */
     function generativePlan(run, def, item, frames, shots) {
         const extraParams = (def.id === "keyframe" ? run.options?.image : run.options?.video) || {};
@@ -2225,7 +2337,7 @@ ${JSON.stringify(partials, null, 2)}
             applyPresetParams(params, decision.template, templateCatalog[decision.template]?.tokens);
             // 「发起生成请求」那一刻按所选模型编译提示词：内容层给模型无关事实，编译器按模型标准产出 PROMPT。
             const keyframeShot = shots.find((entry) => String(entry?.id) === String(item?.shotId)) || {};
-            params.PROMPT = compilePromptForTemplate({
+            const compileInput = {
                 template: decision.template,
                 family: "image",
                 shot: keyframeShot,
@@ -2237,19 +2349,24 @@ ${JSON.stringify(partials, null, 2)}
                 legacyBody: promptBody,
                 basePrompt: item.prompt,
                 item,
-            });
+            };
+            const renderedPrompt = promptFor(run, item, decision.template, compileInput);
+            params.PROMPT = renderedPrompt.prompt;
             // 稳定 seed + 按 run+条目隔离的 OUTPUT_PREFIX（同项目/同镜/同资产 revision → 同 seed，换台设备也不换脸）。
             if (projectId) {
                 if (params.SEED === undefined) params.SEED = stableSeed(projectId, item.shotId, refContext.shotBinding?.assetRevision ?? null);
                 if (params.OUTPUT_PREFIX === undefined) params.OUTPUT_PREFIX = outputPrefixFor(run.id, item.id);
             }
+            const promptWarning = untranslatedWarning(renderedPrompt.raw);
+            const warningReason = [warning?.reason, promptWarning?.reason].filter(Boolean).join("；");
             return {
                 kind: "image",
                 template: decision.template,
                 ready: item.role !== "end" || Boolean(start?.artifactUrl),
                 params,
+                compileInput,
                 ...(blocked ? { blocked } : {}),
-                ...(warning ? { warning } : {}),
+                ...(warningReason ? { warning: { reason: warningReason } } : {}),
             };
         }
         // 单集时长作片段默认时长：条目自带 durationSec 时优先用它，否则用 plan.episodeDurationSec，再回落 config.videoSeconds。
@@ -2284,7 +2401,7 @@ ${JSON.stringify(partials, null, 2)}
         // 采样参数按规则表参数档回填（仅模板声明的 token；不硬编码）。
         applyPresetParams(videoParams, videoTemplate, videoTokens);
         const legacyBody = [shot?.prompt, shot?.action].filter(Boolean).join(", ");
-        videoParams.PROMPT = compilePromptForTemplate({
+        const compileInput = {
             template: videoTemplate,
             family: "video",
             shot: shot || {},
@@ -2296,13 +2413,18 @@ ${JSON.stringify(partials, null, 2)}
             legacyBody,
             durationSec: item.durationSec,
             item,
-        });
+        };
+        const renderedPrompt = promptFor(run, item, videoTemplate, compileInput);
+        videoParams.PROMPT = renderedPrompt.prompt;
+        const promptWarning = untranslatedWarning(renderedPrompt.raw);
         return {
             kind: "video",
             template: videoTemplate,
             // 图生视频必须有起始帧；没拿到就保持 queued + jobId:null，等关键帧产物就绪后由回写代理入队（契约见 05 SKILL.md）。
             ready: Boolean(start?.artifactUrl),
             params: { ...videoParams, ...extraParams },
+            compileInput,
+            ...(promptWarning ? { warning: promptWarning } : {}),
         };
     }
 
@@ -2320,9 +2442,20 @@ ${JSON.stringify(partials, null, 2)}
             variant > 0 && plan.params?.SEED !== undefined && Number.isFinite(Number(plan.params.SEED))
                 ? { ...plan.params, SEED: (Number(plan.params.SEED) + variant * 7919) % 2147483647 }
                 : plan.params;
-        const job = jobs.enqueue({ id, kind: plan.kind, template: plan.template, name: item.id, params, meta: { runId: run.id, stageId: def.id, itemId: item.id } }, runJob);
+        const promptWarning = [plan.warning?.reason, rewriteWarningOf(item)].filter(Boolean).join("；");
+        const job = jobs.enqueue({
+            id,
+            kind: plan.kind,
+            template: plan.template,
+            name: item.id,
+            params,
+            meta: { runId: run.id, stageId: def.id, itemId: item.id, ...(promptWarning ? { promptWarning } : {}) },
+        }, runJob);
         if (!job) return null;
-        item.candidates = [...(item.candidates || []), { template: plan.template, jobId: job.id, artifactUrl: null, status: "queued", params, createdAt: nowIso() }];
+        item.candidates = [
+            ...(item.candidates || []),
+            { template: plan.template, jobId: job.id, artifactUrl: null, status: "queued", params, ...(promptWarning ? { warning: promptWarning } : {}), createdAt: nowIso() },
+        ];
         item.jobId = job.id;
         item.selected = job.id;
         item.status = "queued";
@@ -2356,8 +2489,8 @@ ${JSON.stringify(partials, null, 2)}
                 item.blockedMissing = plan.blocked.missing || [];
                 continue;
             }
-            if (plan.warning) item.warning = plan.warning.reason;
-            else if (item.warning) delete item.warning;
+            if (plan.warning) appendWarning(item, plan.warning.reason);
+            else if (item.warning && !item.warning.includes("提示词改写失败")) delete item.warning;
             if (item.jobId || !plan.ready) continue;
             // D3：关键帧每条目一次入队 ≥4 个候选；视频阶段仍单次入队。
             enqueueAttemptBatch(run, def, item, plan, candidatesPerEnqueue(def.id));
@@ -2440,8 +2573,22 @@ ${JSON.stringify(partials, null, 2)}
      * 逐条重跑（regenerate）异步部分：把本次 attempt 入队并追加候选，新候选成为 selected。
      * 入队非阻塞（真实执行在任务队列后台），job 终态由 projectJob 幂等回写。
      */
-    function executeRegenerate(begun) {
+    async function executeRegenerate(begun) {
         const { run, def, stage, item, plan } = begun;
+        // 重跑永远重新编译；即使输入事实没有变化，也不复用旧快照或旧 job 参数。
+        if (plan.compileInput) {
+            plan.compileInput = { ...plan.compileInput, template: plan.template };
+            await compilePromptItem(run, def, item, plan, { force: true });
+            const refreshed = generativePlan(run, def, item, def.id === "keyframe" ? stage.output?.frames || [] : run.stages?.keyframe?.output?.frames || [], run.stages?.storyboard?.output?.shots || []);
+            refreshed.template = plan.template;
+            refreshed.compileInput = { ...(refreshed.compileInput || plan.compileInput), template: plan.template };
+            if (plan.params && typeof plan.params === "object") refreshed.params = { ...refreshed.params, ...plan.params };
+            Object.assign(plan, refreshed);
+            // 重新生成的模板可能未触发语言改写，确保最终 params 取本次快照而非旧快照。
+            const compiled = promptFor(run, item, plan.template, plan.compileInput);
+            plan.params = { ...(plan.params || {}), PROMPT: compiled.prompt };
+            plan.warning = untranslatedWarning(compiled.raw);
+        }
         const jobId = enqueueAttempt(run, def, item, plan);
         if (!jobId) throw gateError("生成任务入队失败");
         item.template = plan.template;
@@ -2598,6 +2745,11 @@ ${JSON.stringify(partials, null, 2)}
             // 五个阶段都先由 LLM 按「输出契约」产出 JSON；生成型阶段再回填生成参数并入队。
             await composeWithLlm(run, def, stage, provider, { signal: runOptions.signal, resume: Boolean(runOptions.resume), estSecondsPerChunk });
             if (GENERATIVE_STAGES.has(def.id)) {
+                // 语言适配预编译：入队前用注入的 llmCall 把「仅英文有官方依据」的模型提示词英文化（异步、失败只降级不阻塞）。
+                const genItems = def.id === "keyframe" ? stage.output?.frames : stage.output?.clips;
+                const genFrames = def.id === "keyframe" ? genItems : run.stages?.keyframe?.output?.frames || [];
+                const genShots = run.stages?.storyboard?.output?.shots || [];
+                await precompilePrompts(run, def, Array.isArray(genItems) ? genItems : [], genFrames, genShots);
                 attachGeneration(run, def, stage, prevOutput);
                 // 不再「入队即 done」：有任务就等任务终态（回写投影会重算），没有可跑任务（未接 runJob）才算完成。
                 const enqueued = (stage.output.frames || stage.output.clips || []).some((item) => (item.candidates || []).length);

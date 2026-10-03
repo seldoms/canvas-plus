@@ -39,15 +39,20 @@ async function call(pathname, init) {
 }
 const jsonInit = (method, payload) => ({ method, headers: { "content-type": "application/json" }, body: JSON.stringify(payload) });
 
-test("POST /api/model-registry/sync 首次同步补齐全部模板 + LLM 渠道", async () => {
+test("启动即完成首次同步（模板 + LLM 渠道全部登记）；显式 POST sync 幂等", async () => {
+    // 注册表是模型清单的唯一读源（网关不再探测上游），所以 index.js 启动就 sync 一次：
+    // 否则全新环境要等用户手动点「同步」，/v1/models 会一直是空的。
+    const listed = await call("/api/model-registry");
+    assert.equal(listed.status, 200);
+    assert.equal(listed.body.counts.total, templateNames.length + 1, "18 个本地模板 + 1 个 deepseek 渠道");
+    assert.ok(listed.body.models.some((model) => model.name === "deepseek"));
+
     const res = await call("/api/model-registry/sync", { method: "POST" });
     assert.equal(res.status, 200);
-    // 18 个本地模板 + 1 个 deepseek 渠道
-    assert.equal(res.body.added.length, templateNames.length + 1);
-    assert.ok(res.body.added.includes("deepseek"));
-    for (const name of templateNames) assert.ok(res.body.added.includes(name), `缺少模板 ${name}`);
+    assert.deepEqual(res.body.added, [], "启动已同步过，再 sync 不应新增");
     assert.deepEqual(res.body.staled, []);
-    assert.equal(res.body.kept, 0);
+    assert.deepEqual(res.body.refreshed, [], "渠道声明没变就不该刷新");
+    assert.equal(res.body.kept, templateNames.length + 1);
 });
 
 test("GET /api/model-registry 分类正确：image/video/audio + deepseek→text", async () => {

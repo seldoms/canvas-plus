@@ -3,6 +3,7 @@ import { test } from "node:test";
 
 import {
     COMPILER_RULES,
+    aspectRatioConflict,
     compileFluxImagePrompt,
     compileGenericPrompt,
     compileH3VideoPrompt,
@@ -82,6 +83,7 @@ const STYLE = {
     context: "写实电影感，暖色路灯与冷调夜色的对比，浅景深，细腻胶片颗粒",
     filmLayer: "overexposure melting contours, grey-blue shadows, fine grain",
 };
+const VERTICAL_STYLE = { ...STYLE, ratio: "9:16" };
 
 const scene = { id: "sc1", name: "公交车前门外的站台（夜）" };
 
@@ -104,6 +106,128 @@ test("H3 I2VA：首行是关键帧对齐指令行，时间两位小数、后空�
     assert.equal(out.split("\n")[0], I2VA_LINE);
     assert.ok(!out.includes("@图片1"), "本地口径用 <Picture 1>，不是 @图片1");
     assert.ok(out.includes("<Picture 1>"));
+});
+
+test("分级：画幅事实写进 Qwen 同步稿与 H3 稿；改写成功产物一级块在前、改写稿只作二级块", () => {
+    const qwenSync = compileQwen21ImagePrompt({ template: "img_qwen21_t2i", shot: SH1, scene, style: VERTICAL_STYLE, slots: { images: [] } });
+    assert.match(qwenSync, /画幅：9:16（竖屏构图/, "同步稿必须把画幅当事实写进去");
+    assert.ok(qwenSync.includes(VERTICAL_STYLE.anchor), "同步稿一级块含风格锚点");
+
+    // 分级：一级（风格/画幅）由编译器直拼在前，改写稿只作二级块 —— 绝不整稿替换；
+    // 编译器不对英文改写稿做正则手术（手术改不干净会留下「开头竖屏、正文横屏」的自相矛盾稿）。
+    const rewrite = "The image is a vertical portrait cinematic medium close-up of a bus at night, 9:16 aspect ratio.";
+    const out = compileQwen21ImagePrompt({ template: "img_qwen21_t2i", shot: SH1, scene, style: VERTICAL_STYLE, slots: { images: [] }, rewrite });
+    assert.ok(out.endsWith(rewrite), "改写稿原样作为二级块贴在末尾");
+    assert.ok(out.startsWith(VERTICAL_STYLE.anchor), "一级块以风格锚点起首");
+    assert.ok(out.indexOf("画幅：9:16（竖屏构图") < out.indexOf(rewrite), "一级块必须在二级块之前");
+
+    const h3 = compileH3VideoPrompt({
+        template: "video_h3_i2v",
+        shot: SH1,
+        scene,
+        style: VERTICAL_STYLE,
+        slots: { images: [{ url: "/a/first.png", kind: "first_frame" }] },
+        durationSec: 5,
+    });
+    assert.match(h3, /vertical portrait/);
+    assert.match(h3, /9:16 aspect ratio/);
+});
+
+test("aspectRatioConflict：抓住实测故障句，不误伤运镜与物体朝向", () => {
+    // 实测故障原句（竖屏项目的改写稿首句写成 horizontal）
+    assert.match(
+        aspectRatioConflict("The image is a horizontal realistic cinematic medium close-up, held entirely in a static frame, of a man in his sixties.", VERTICAL_STYLE),
+        /horizontal/,
+    );
+    // ① 显式相反比例：位置不限
+    assert.match(aspectRatioConflict("A night bus terminus, shot in 16:9 for a cinematic feel.", VERTICAL_STYLE), /16:9/);
+    assert.match(aspectRatioConflict("aspect ratio: 16 x 9", VERTICAL_STYLE), /16 x 9/);
+    // ② 方向词与构图名词紧邻
+    assert.match(aspectRatioConflict("The bus arrives at night. Keep the whole scene in a landscape frame.", VERTICAL_STYLE), /landscape frame/);
+    assert.match(aspectRatioConflict("The frame is horizontal.", VERTICAL_STYLE), /frame is horizontal/);
+    // ③ 首句「整幅画面主语 + 系动词 + 方向词」
+    assert.match(aspectRatioConflict("The video is shot in widescreen with the subject centered.", VERTICAL_STYLE), /video is shot in widescreen/);
+    // 横屏项目反向同理；方形项目两个方向都算冲突
+    const WIDE = { ...STYLE, ratio: "16:9" };
+    assert.match(aspectRatioConflict("The image is a vertical portrait composition of a bus at night.", WIDE), /portrait composition/);
+    assert.match(aspectRatioConflict("The video is shot in 9:16 with the subject centered.", WIDE), /9:16/);
+    assert.equal(aspectRatioConflict("The image is a horizontal landscape composition, 16:9 aspect ratio.", WIDE), null);
+    assert.match(aspectRatioConflict("The image is a horizontal landscape frame of a bus.", { ...STYLE, ratio: "1:1" }), /landscape frame/);
+
+    // 不得误伤：运镜、物体朝向、人像、正确画幅
+    assert.equal(aspectRatioConflict("The camera makes a slow horizontal pan across the terminus sign.", VERTICAL_STYLE), null, "运镜不是画幅断言");
+    assert.equal(aspectRatioConflict("Horizontal movement of the bus across the frame.", VERTICAL_STYLE), null);
+    assert.equal(aspectRatioConflict("A narrow horizontal band of deep navy sky runs across the very top edge of the frame.", VERTICAL_STYLE), null, "物体朝向不是画幅断言");
+    assert.equal(aspectRatioConflict("The shot is a portrait of a man in his sixties, framed tightly.", WIDE), null, "portrait 作「人像」解时不误判");
+    assert.equal(aspectRatioConflict("The image is a vertical portrait cinematic medium close-up, 9:16 aspect ratio.", VERTICAL_STYLE), null);
+    // 没有画幅事实 → 不判定（不猜测）
+    assert.equal(aspectRatioConflict("The image is a horizontal landscape composition.", STYLE), null);
+    assert.equal(aspectRatioConflict("", VERTICAL_STYLE), null);
+});
+
+test("改写稿把竖屏写成横屏 → 整稿弃用、回落同步稿并记 warning（错误方向不交给模型）", async () => {
+    const warnings = [];
+    const out = await compilePromptForTemplateAsync({
+        template: "img_qwen21_t2i",
+        family: "image",
+        shot: SH1,
+        scene,
+        characters: [{ name: "老周" }],
+        style: VERTICAL_STYLE,
+        slots: { images: [] },
+        llmCall: async () => "The image is a horizontal realistic cinematic medium close-up of a bus at night.",
+        onWarning: (error) => warnings.push(error.message),
+    });
+    assert.equal(warnings.length, 1, "冲突必须留排查 warning");
+    assert.match(warnings[0], /画幅/);
+    assert.doesNotMatch(out, /horizontal/i, "错误方向绝不能进 PROMPT");
+    assert.match(out, /画幅：9:16（竖屏构图/, "回落到同步结构稿，画幅事实仍在");
+});
+
+test("改写稿画幅正确 → 照旧采用英文稿，不记 warning", async () => {
+    const warnings = [];
+    const out = await compilePromptForTemplateAsync({
+        template: "img_qwen21_t2i",
+        family: "image",
+        shot: SH1,
+        scene,
+        characters: [{ name: "老周" }],
+        style: VERTICAL_STYLE,
+        slots: { images: [] },
+        llmCall: async () => "The image is a vertical portrait cinematic medium close-up of a bus at night, 9:16 aspect ratio.",
+        onWarning: (error) => warnings.push(error.message),
+    });
+    assert.deepEqual(warnings, []);
+    assert.match(out, /vertical portrait/);
+});
+
+test("分级：改写器拿不到一级（画幅/比例/画面内文字都不进 llmCall 输入）", async () => {
+    const calls = [];
+    const out = await compilePromptForTemplateAsync({
+        template: "img_qwen21_t2i",
+        family: "image",
+        shot: SH1,
+        scene,
+        characters: [],
+        style: VERTICAL_STYLE,
+        slots: { images: [] },
+        overlays: SH1.textOverlays,
+        llmCall: async ({ system, user }) => {
+            calls.push({ system, user });
+            return "A vertical portrait night scene.";
+        },
+    });
+    assert.equal(calls.length, 1);
+    // system 是官方改写器资产；一级约束只可能出现在我们喂进去的输入载荷 user 里 —— 断言它不在。
+    const seen = calls[0].user;
+    assert.ok(!/画幅/.test(seen), "画幅约束不得进改写器输入");
+    assert.ok(!/9\s*:\s*16/.test(seen), "比例不得进改写器输入");
+    assert.ok(!seen.includes("固定生产事实"), "一级约束行不得进改写器输入");
+    assert.ok(!seen.includes("末班车"), "画面内文字（一级）不得进改写器输入");
+    // 产物里一级块照旧在（编译器直拼），且顺序在一级在改写稿之前。
+    assert.match(out, /画幅：9:16（竖屏构图/, "产物必须含一级画幅事实");
+    assert.ok(out.includes(SH1.textOverlays[0].text), "画面内文字逐字进产物");
+    assert.ok(out.indexOf("画幅：9:16（竖屏构图") < out.indexOf("A vertical portrait night scene."), "一级块在二级块之前");
 });
 
 test("H3 T2VA：无关键帧对齐指令行，直接三字段", () => {
@@ -226,7 +350,7 @@ test("style 传字符串：H3 输出不含 native code，字符串作为风格�
     // 中文降级分支（imageFactsCn）同样经 readStyleFields。
     const krea = compileKrea2ImagePrompt({ template: "img_krea2_artistic", shot: SH1, style: ANCHOR, slots: { images: [] }, basePrompt: SH1.prompt });
     assert.ok(!krea.includes("native code"));
-    assert.ok(krea.includes(`风格：${ANCHOR}`), "Krea2 中文降级把字符串 style 当锚点");
+    assert.ok(krea.includes(ANCHOR), "Krea2 中文降级把字符串 style 当锚点（一级块含锚点原文）");
     // styleHead 出口（Qwen）同样不注入垃圾。
     const qwen = compileQwen21ImagePrompt({ template: "img_qwen21_t2i", shot: SH1, scene, characters: [], style: ANCHOR, slots: { images: [] }, legacyBody: "a bus" });
     assert.ok(!qwen.includes("native code"));
@@ -378,6 +502,33 @@ test("Qwen 2.1：无改写器结果 → 显式 [untranslated] 标记（不得假
     assert.match(out, /\[untranslated/);
 });
 
+test("Qwen 2.1：同步降级只保留结构化事实，去掉重复风格、英文尾巴和英文混排", () => {
+    const shot = {
+        ...SH5,
+        shotSize: "中近景",
+        action: "老周把车票放进女孩手心，同时说话，女孩摊开手接住",
+        cameraSpec: { movement: { type: "static", direction: "none", speed: "slow" } },
+        textOverlays: [{ text: "末班车", kind: "ticket", position: "女孩手心中的旧车票票面", style: "黄底黑字" }],
+    };
+    const out = compileQwen21ImagePrompt({
+        template: "img_qwen21_edit",
+        shot,
+        scene: { name: "终点站站牌下" },
+        characters: [{ name: "老周" }, { name: "女孩" }],
+        style: STYLE,
+        slots: { images: [] },
+        basePrompt: "the man placing an old paper ticket into the woman's open palm",
+        legacyBody: "the man placing an old paper ticket into the woman's open palm",
+        overlays: shot.textOverlays,
+    });
+    assert.equal(out.split(STYLE.anchor).length - 1, 1, "风格锚点只能出现一次");
+    assert.ok(!out.includes(STYLE.filmLayer), "同步降级不得拼入旧版英文画质尾巴");
+    assert.ok(!out.includes("the man placing"), "旧版英文 prompt 快照不能与结构化 action 重复");
+    assert.ok(!out.includes("on-screen text rendered verbatim"), "同步降级不得混入英文文字层句式");
+    assert.match(out, /固定机位/);
+    assert.match(out, /票据文字/);
+});
+
 test("Qwen 2.1：有改写器英文结果 → 直接采用（不再带标记）", () => {
     const out = compileQwen21ImagePrompt({ template: "img_qwen21_t2i", shot: SH5, scene, characters: [{ name: "老周" }], style: {}, slots: { images: [] }, overlays: [], rewrite: "A long English prompt describing the finished image." });
     assert.equal(out, "A long English prompt describing the finished image.");
@@ -390,10 +541,11 @@ test("Qwen 2.1：透明背景 → 官方 RGBA 咒语", () => {
     assert.match(out, /alpha channel and the background is transparent/);
 });
 
-test("Qwen 2.1：图上文字英文双引号逐字（走 pipeline 同口径 clause）", () => {
+test("Qwen 2.1：同步降级的图上文字保持中文事实并逐字保留原文", () => {
     const out = compileQwen21ImagePrompt({ template: "img_qwen21_t2i", shot: SH1, scene, characters: [], style: {}, slots: { images: [] }, overlays: SH1.textOverlays, legacyBody: "x" });
-    assert.match(out, /on-screen text rendered verbatim/);
-    assert.ok(out.includes('"末班车"'));
+    assert.match(out, /画面中必须清晰呈现以下文字/);
+    assert.ok(out.includes("「末班车」"));
+    assert.ok(!out.includes("on-screen text rendered verbatim"));
 });
 
 /* ————————————————————— Krea2 / FLUX：强制英文（无 LLM 显式标记） ————————————————————— */

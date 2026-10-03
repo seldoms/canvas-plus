@@ -338,10 +338,38 @@ export function computeAvailable({ templates = [], llmProviders = [], catalog = 
             channelId: name,
             channelName: name,
             alias: defaultAliasFor(name),
-            meta: { baseUrl: String(provider?.baseUrl || ""), title: name },
+            // `models` 是渠道**声明**的模型 id（静态清单，不探测上游）；清单接口按它展开「渠道名::模型名」。
+            meta: { baseUrl: String(provider?.baseUrl || ""), title: name, models: asModelIdList(provider?.models) },
         });
     }
     return items;
+}
+
+/** 渠道声明的模型 id 归一：只留非空字符串，去重保序。 */
+export function asModelIdList(value) {
+    return [...new Set((Array.isArray(value) ? value : []).map((item) => String(item ?? "").trim()).filter(Boolean))];
+}
+
+/**
+ * 文本模型清单（**静态**，唯一出口）。产品负责人 2026-10-03 定：模型清单只读注册表，
+ * 网关不再向上游探测 `/v1/models`、`/api/tags` —— 死渠道既拖不住 `/api/health`，也不需要缓存兜底。
+ *
+ * 展开规则：已启用（`enabled`）的 `category === 'text'` 条目 → 每个声明模型产出一个 `渠道名::模型名`
+ * （与 `providers/llm.js` 的 `resolveModelTarget` 前缀路由同口径）。
+ * 渠道没声明具体模型 id 时**不产出任何条目**：宁可少列，也不把渠道名当模型名发给上游换一个含糊 404。
+ *
+ * @param {object[]} models 注册表条目（`list().models` 或 `readDoc().models`）
+ * @returns {string[]} 例如 `["deepseek::deepseek-flash", "deepseek::deepseek-v4-pro"]`
+ */
+export function textModelIds(models = []) {
+    const ids = [];
+    for (const model of Array.isArray(models) ? models : []) {
+        if (model?.category !== "text" || !model?.enabled) continue;
+        const channel = String(model.channelName || model.channelId || model.name || "").trim();
+        if (!channel) continue;
+        for (const id of asModelIdList(model.meta?.models)) ids.push(`${channel}::${id}`);
+    }
+    return [...new Set(ids)];
 }
 
 /** 由可用项描述构造一条 ModelEntry（缺省 enabled=true、alias 取默认别名表）。 */
@@ -574,6 +602,7 @@ export function createModelRegistry({ dataDir } = {}) {
      * 从服务端「实际可用」同步：缺失的补登记（enabled 默认 true、base/task/alias 取默认表）；
      * 已消失的置 stale:true（**不删**）；回归的清除 stale。
      * 同时**幂等回填**存量条目缺失的 base/task（只补字段，绝不覆盖用户改过的 alias/enabled）。
+     * 渠道条目的 `meta.baseUrl` / `meta.models` 是服务端事实，每次 sync 刷新（计入返回值 `refreshed`）。
      * 手工登记项不由 sync 判定 stale。
      */
     function sync(sources = {}) {
@@ -587,8 +616,23 @@ export function createModelRegistry({ dataDir } = {}) {
         const byName = new Map(doc.models.map((model) => [String(model.name), model]));
         const now = nowIso();
         const added = [];
+        const refreshed = [];
         for (const item of available) {
-            if (byName.has(item.name)) continue;
+            const existing = byName.get(item.name);
+            if (existing) {
+                // 渠道的 baseUrl 与声明模型是**服务端事实**（不是用户改的 alias/enabled），每次 sync 刷新，
+                // 否则静态清单会一直停在首次登记时的快照上。
+                if (item.source === "channel" && existing.source === "channel") {
+                    const baseUrl = String(existing.meta?.baseUrl ?? "");
+                    const models = asModelIdList(existing.meta?.models);
+                    if (baseUrl !== String(item.meta.baseUrl ?? "") || JSON.stringify(models) !== JSON.stringify(item.meta.models)) {
+                        existing.meta = { ...existing.meta, baseUrl: item.meta.baseUrl, models: item.meta.models };
+                        existing.updatedAt = now;
+                        refreshed.push(item.name);
+                    }
+                }
+                continue;
+            }
             const model = entryFromAvailable(item, now);
             doc.models.push(model);
             byName.set(item.name, model);
@@ -611,7 +655,7 @@ export function createModelRegistry({ dataDir } = {}) {
             }
         }
         writeDoc(doc);
-        return { added, staled, kept: doc.models.length - added.length, backfilled };
+        return { added, staled, refreshed, kept: doc.models.length - added.length, backfilled };
     }
 
     /** 服务端发现的可用模型（未登记项也含），供配置页显示「可补」差异。 */
@@ -623,5 +667,10 @@ export function createModelRegistry({ dataDir } = {}) {
         return { available: items, registered: doc.models.length, missing };
     }
 
-    return { file, readDoc, writeDoc, get, list, create, update, remove, sync, available };
+    /** 静态文本模型清单（「渠道名::模型名」）：`/v1/models`、`/api/providers`、`/api/health` 共用这一处。 */
+    function textModels() {
+        return textModelIds(readDoc().models);
+    }
+
+    return { file, readDoc, writeDoc, get, list, create, update, remove, sync, available, textModels };
 }

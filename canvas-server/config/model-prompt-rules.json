@@ -1078,5 +1078,12 @@
         "画面过程说明（按时间轴分段，每段写\"想要/不想要\"）"
       ]
     }
+  },
+  "prompt_tier_policy": {
+    "_readme": "分级口径（唯一权威在后端编译器 src/prompt-compiler.js；本块是数据化登记，供查询层/前端展示与对账）。一级=强约束（风格锚点 / 画幅·比例 / 负面策略 / 画面内文字 textOverlays）：由编译器直接拼上，绝不进改写器输入、不参与其输出，与二级冲突时永远优先。二级=画面细节（主体 / 角色 / 景别 / 场景 / 动作 / 机位与运镜 / 光线 / 槽位对应关系）：可交改写器改写。画面内文字为何属一级：调研口径要求它逐字原文引用、不得翻译/改写/留空，是与画幅同级的生产硬事实。分级仅对『有会消费 rewrite 的编译器』的模型生效；无官方改写器模型与 H3 结构不变。",
+    "tier_one": ["style_anchor", "aspect_ratio", "negative_policy", "text_overlays"],
+    "tier_two": ["subject", "character", "shot_size", "scene", "action", "camera", "lighting", "slot_mapping"],
+    "rewritable_models": ["qwen_image_2_1", "krea2_turbo", "flux1_dev"],
+    "conflict_policy": "二级服从一级：先纠正/重写二级块一次；仍冲突则只保留一级 + 同步结构稿的二级并记 warning（不整稿弃用）"
   }
 }

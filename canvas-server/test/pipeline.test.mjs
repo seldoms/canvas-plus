@@ -673,6 +673,24 @@ test("P0-b：取消阶段传播到已入队 Job 并落 canceled", async (t) => {
     assert.equal(stage.output.frames[0].candidates.at(-1).status, "canceled");
 });
 
+test("P0-b：取消新 attempt 不污染已有成功阶段", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    const { pipeline, jobs, run } = await toKeyframeDone(env);
+    const frameBefore = pipeline.get(run.id).stages.keyframe.output.frames.find((frame) => frame.id === "sh1-start");
+    const previousJobId = frameBefore.selected;
+    const retry = await pipeline.executeRegenerate(pipeline.beginRegenerate(run.id, "keyframe", { itemId: "sh1-start" }));
+    assert.notEqual(retry.jobId, previousJobId);
+    assert.equal(pipeline.get(run.id).stages.keyframe.status, "running");
+    const canceled = pipeline.cancelStage(run.id, "keyframe");
+    assert.equal(canceled.canceled, 1);
+    const frameAfter = pipeline.get(run.id).stages.keyframe.output.frames.find((frame) => frame.id === "sh1-start");
+    assert.equal(frameAfter.candidates.at(-1).status, "canceled");
+    assert.equal(frameAfter.selected, previousJobId, "取消用户新 attempt 后回退到原成功候选");
+    assert.equal(frameAfter.status, "done");
+    assert.equal(pipeline.get(run.id).stages.keyframe.status, "done", "阶段仍以已有成功候选为准");
+});
+
 test("P0-b：服务重启后从终态任务重放重建投影", async (t) => {
     const env = makeEnv();
     t.after(() => rmSync(env.root, { recursive: true, force: true }));
@@ -857,7 +875,7 @@ test("regenerate：只给指定 item 追加一个候选，旧候选与其它 ite
     const defaulted = pipeline.beginRegenerate(run.id, "keyframe", { itemId: "sh1-end" });
     assert.equal(defaulted.plan.template, "img-test");
 
-    const result = pipeline.executeRegenerate(pipeline.beginRegenerate(run.id, "keyframe", { itemId: "sh1-start", template: "img-alt" }));
+    const result = await pipeline.executeRegenerate(pipeline.beginRegenerate(run.id, "keyframe", { itemId: "sh1-start", template: "img-alt" }));
     assert.equal(result.run.stages.keyframe.status, "running", "新候选入队后阶段回到 running");
     // 轻量进度也要刷新，否则前端会一直读到上一次的 phase:"done"
     assert.equal(pipeline.stageProgress(run.id)?.phase, "running");
@@ -904,7 +922,7 @@ test("regenerate：assembly 阶段换 video 模板追加候选，错 family 模�
         (error) => error.status === 400 && /不能用于/.test(error.message),
     );
 
-    const result = pipeline.executeRegenerate(pipeline.beginRegenerate(run.id, "assembly", { itemId: "sh1-clip", template: "video-alt" }));
+    const result = await pipeline.executeRegenerate(pipeline.beginRegenerate(run.id, "assembly", { itemId: "sh1-clip", template: "video-alt" }));
     const clip = result.run.stages.assembly.output.clips[0];
     assert.equal(clip.candidates.length, 2, "是追加而非替换");
     assert.equal(clip.candidates.at(-1).template, "video-alt");
@@ -970,11 +988,11 @@ test("regenerate：连续两次各追加一条候选，不会合并成一条", a
     const { pipeline, jobs, run } = await toKeyframeDone(env);
     const baseCount = pipeline.get(run.id).stages.keyframe.output.frames.find((frame) => frame.id === "sh1-start").candidates.length;
 
-    const first = pipeline.executeRegenerate(pipeline.beginRegenerate(run.id, "keyframe", { itemId: "sh1-start", template: "img-alt" }));
+    const first = await pipeline.executeRegenerate(pipeline.beginRegenerate(run.id, "keyframe", { itemId: "sh1-start", template: "img-alt" }));
     jobs.finish(first.jobId, "done", { outputs: [{ url: "/api/artifacts/job/re1.png" }] });
     assert.equal(pipeline.get(run.id).stages.keyframe.status, "done", "第一次重跑完成后阶段回到 done");
 
-    const second = pipeline.executeRegenerate(pipeline.beginRegenerate(run.id, "keyframe", { itemId: "sh1-start", template: "img-alt2" }));
+    const second = await pipeline.executeRegenerate(pipeline.beginRegenerate(run.id, "keyframe", { itemId: "sh1-start", template: "img-alt2" }));
     assert.notEqual(first.jobId, second.jobId, "两次重跑必须是两个不同 jobId");
 
     const start = pipeline.get(run.id).stages.keyframe.output.frames.find((frame) => frame.id === "sh1-start");

@@ -16,9 +16,6 @@ const DEFAULTS = {
         baseUrl: "http://127.0.0.1:11434",
         apiKey: "",
         timeoutMs: 600000,
-        // 列模型探测专用超时。不能复用 timeoutMs（10 分钟，那是给长思考 chat 的）：
-        // /api/health 与 /api/llm/models 要逐个探测外部渠道，一个连不上的地址就能把接口挂住几十分钟。
-        probeTimeoutMs: 8000,
         defaultModel: "",
         fallbacks: [],
         // 本地 Ollama 原生 /api/chat 的上下文窗口。Modelfile 默认只有 8192，

@@ -65,6 +65,7 @@ function emptyRules(warning = null) {
         not_recommended: [],
         rewriter_assets: [],
         h3_prompt_protocols: null,
+        prompt_tier_policy: null,
         warning,
     };
 }
@@ -84,6 +85,7 @@ function readRulesFile(file) {
             not_recommended: Array.isArray(raw?.not_recommended) ? raw.not_recommended : [],
             rewriter_assets: Array.isArray(raw?.rewriter_assets) ? raw.rewriter_assets : [],
             h3_prompt_protocols: raw?.h3_prompt_protocols ?? null,
+            prompt_tier_policy: raw?.prompt_tier_policy ?? null,
             warning: null,
         };
     } catch (error) {
@@ -213,4 +215,13 @@ export function h3DefaultProtocol(options = {}) {
     if (!name) return null;
     const protocol = protocols[name];
     return protocol && typeof protocol === "object" ? { name, ...protocol } : { name };
+}
+
+/**
+ * 分级口径（原样数据）：`{ _readme, tier_one, tier_two, rewritable_models, conflict_policy }`。
+ * 一级=强约束（编译器直拼、不进改写器），二级=画面细节（可改写）。规则表缺失回 null。
+ * 权威实现仍在 `src/prompt-compiler.js`；本项只是数据化登记，供查询层/前端展示与对账。
+ */
+export function promptTierPolicy(options = {}) {
+    return loadModelRules(options).prompt_tier_policy ?? null;
 }

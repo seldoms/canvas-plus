@@ -8,14 +8,12 @@ import { test } from "node:test";
 import { createPipeline } from "../src/pipeline.js";
 
 /**
- * 提示词编译器「接线」回归：证明 generativePlan 真的在「发起生成请求」那一刻调用策略层编译器 ——
- *   · 关键帧（image）用 Qwen-Image 2.1 编译器：<imageN> 按**本次实际注入的槽位**编号，
- *     官方英文口径依赖改写器 → sync 降级只记录 warning，排查标记不得进入实际 PROMPT；
- *   · 片段（video）用 H3 **本地字段口径**编译器：首行关键帧对齐指令行（时间两位小数）、
- *     三字段固定顺序、<Picture 1>、non_diegetic_music: N/A、台词 (S1)+<d>[English]；
- *   · 参数档按规则表回填（不硬编码 steps/cfg/sampler）。
- * 用真实 workflows 目录（默认 imageTemplate=img_qwen21_t2i → 需锁角色时自动换 img_qwen21_edit；
- * videoTemplate=video_h3_i2v）；假 LLM / 假任务源，绝不真跑模型。
+ * 流水线「语言适配」接线回归（离线、假 llmCall，不真跑 DeepSeek / 模型）：
+ *   ① 关键帧（image，Qwen-Image 2.1 仅英文有官方依据）注入可用 llmCall → 入队前 precompilePrompts
+ *      英文化成功 → job.params.PROMPT 无 [untranslated]、含改写正文；片段（video / H3）结构照旧；
+ *   ② llmCall 抛错 → 只降级不阻塞：同步结构照旧产出、PROMPT 不含排查标记、item.warning 记录，
+ *      绝不假装已英文化，也绝不因 LLM 失败而放弃入队。
+ * 用真实 workflows 目录（默认 imageTemplate=img_qwen21_t2i → 需锁角色时换 img_qwen21_edit；videoTemplate=video_h3_i2v）。
  */
 
 const REAL_WORKFLOWS = fileURLToPath(new URL("../workflows/", import.meta.url));
@@ -97,12 +95,14 @@ function makeEnv(root) {
     );
     const dataDir = join(root, "data");
     mkdirSync(dataDir, { recursive: true });
-    const config = {
-        dataDir,
-        workflowsDir: REAL_WORKFLOWS,
-        pipeline: { imageTemplate: "img_qwen21_t2i", referenceImageTemplate: "img_qwen21_edit", videoTemplate: "video_h3_i2v", imageWidth: 768, imageHeight: 1344, imageBatch: 1, videoSeconds: 5, videoFps: 24 },
+    return {
+        skillsDir,
+        config: {
+            dataDir,
+            workflowsDir: REAL_WORKFLOWS,
+            pipeline: { imageTemplate: "img_qwen21_t2i", referenceImageTemplate: "img_qwen21_edit", videoTemplate: "video_h3_i2v", imageWidth: 768, imageHeight: 1344, imageBatch: 1, videoSeconds: 5, videoFps: 24 },
+        },
     };
-    return { skillsDir, config };
 }
 
 function stageReply(content) {
@@ -139,8 +139,8 @@ function fakeJobQueue() {
     };
 }
 
-function fakeProject() {
-    const project = { id: "prj_pc_wiring", styleAnchor: "写实电影感，暖色路灯与冷调夜色的对比，浅景深", plan: {}, assetRefs: [] };
+function fakeProject(ratio = "") {
+    const project = { id: "prj_pc_wiring", styleAnchor: "写实电影感，暖色路灯与冷调夜色的对比，浅景深", plan: ratio ? { ratio } : {}, assetRefs: [] };
     const register = (projectId, input) => {
         const ref = { id: `as_${project.assetRefs.length + 1}`, projectId, role: input.role, bindingId: input.bindingId, artifactIds: input.artifactIds ?? [], selectedArtifactId: input.selectedArtifactId ?? null, metadata: input.metadata ?? {} };
         project.assetRefs = [...project.assetRefs, ref];
@@ -155,16 +155,15 @@ function fakeProject() {
     return { project, register, update };
 }
 
-async function runToAssembly(t) {
-    const root = mkdtempSync(join(tmpdir(), "canvas-pc-wiring-"));
+/** 跑到「关键帧入队」，注入给定 llmCall（语言适配出口）。 */
+async function runToKeyframe(t, llmCall, { ratio = "" } = {}) {
+    const root = mkdtempSync(join(tmpdir(), "canvas-pc-pipeline-"));
     t.after(() => rmSync(root, { recursive: true, force: true }));
     const env = makeEnv(root);
-    const project = fakeProject();
+    const project = fakeProject(ratio);
     const jobs = fakeJobQueue();
     const llm = {
-        calls: [],
         async chat(options) {
-            this.calls.push(options);
             const content = String(options.messages.at(-1)?.content ?? "");
             return { choices: [{ message: { content: JSON.stringify(stageReply(content)) } }] };
         },
@@ -175,6 +174,7 @@ async function runToAssembly(t) {
         jobs,
         comfy: {},
         llm,
+        llmCall,
         runJob: async () => ({ outputs: [] }),
         getProject: (id) => (id === project.project.id ? project.project : null),
         registerAssetRef: project.register,
@@ -187,68 +187,80 @@ async function runToAssembly(t) {
     await pipeline.runStage(run.id, "storyboard");
     await pipeline.runStage(run.id, "design");
     for (const job of jobs.list().filter((entry) => entry.meta?.stageId === "design")) jobs.finish(job.id, "done", { outputs: [{ url: `/api/artifacts/${job.id}/${job.id}.png`, type: "image" }] });
-
     await pipeline.runStage(run.id, "keyframe");
-    const startJob = jobs.get(`${run.id}-sh1-start`);
-    jobs.finish(startJob.id, "done", { outputs: [{ url: "/api/artifacts/start.png", type: "image" }] });
-    const endJob = jobs.get(`${run.id}-sh1-end`);
-    jobs.finish(endJob.id, "done", { outputs: [{ url: "/api/artifacts/end.png", type: "image" }] });
-
-    await pipeline.runStage(run.id, "assembly");
-    return { run, jobs, startJob, pipeline };
+    return { run, jobs, pipeline, startJob: jobs.get(`${run.id}-sh1-start`) };
 }
 
-test("接线：关键帧（image）PROMPT 由 Qwen-Image 2.1 编译器产出（<imageN> 按实际注入槽位，降级标记不入 PROMPT）", async (t) => {
-    const { startJob } = await runToAssembly(t);
-    assert.equal(startJob.template, "img_qwen21_edit", "需锁角色 → 换参考图模板");
+test("语言适配生效：注入可用 llmCall → 关键帧 PROMPT 英文化、无 [untranslated]、不阻塞入队", async (t) => {
+    const REWRITE = "A cinematic wide shot of Lin Wan in a cream jacket stepping out of the platform shadows onto a night bus, realistic lighting.";
+    let calls = 0;
+    const llmCall = async () => {
+        calls += 1;
+        return REWRITE;
+    };
+    const { startJob, run, pipeline } = await runToKeyframe(t, llmCall);
+
+    assert.ok(startJob, "LLM 改写成功与否都不得阻塞入队");
+    assert.ok(calls >= 1, "precompilePrompts 应调用注入的语言适配 llmCall");
     const prompt = startJob.params.PROMPT;
-    assert.equal(typeof prompt, "string", "PROMPT 仍是字符串");
-    assert.match(prompt, /<image1> 为角色参考（林晚）/, "INPUT_IMAGE → <image1>，带角色名");
-    assert.match(prompt, /<image2> 为场景参考/, "REF_IMAGE_1 → <image2>（场景）");
-    assert.ok(!/图1|图片1/.test(prompt), "禁止「图1」式自然语言指代");
-    assert.match(prompt, /景别：全景/, "同步降级保持中文景别事实，避免中英混写");
+    assert.equal(typeof prompt, "string");
+    assert.ok(!prompt.includes("[untranslated"), "英文化成功后不得带未升级标记");
+    assert.ok(prompt.includes(REWRITE), "PROMPT 应包含改写器产出的英文正文");
+
+    const start = pipeline.get(run.id).stages.keyframe.output.frames.find((frame) => frame.id === "sh1-start");
+    assert.ok(!/未英文化/.test(start.warning || ""), "成功路径不该带未英文化 warning");
+});
+
+test("降级不阻塞：llmCall 抛错 → 同步结构照旧产出 + warning，仍入队", async (t) => {
+    const llmCall = async () => {
+        throw Object.assign(new Error("LLM 服务不可达"), { code: "llm_unavailable" });
+    };
+    const { startJob, run, pipeline } = await runToKeyframe(t, llmCall);
+
+    assert.ok(startJob, "LLM 失败绝不能阻塞入队");
+    const prompt = startJob.params.PROMPT;
+    assert.equal(typeof prompt, "string");
     assert.ok(!prompt.includes("[untranslated"), "排查标记不得进入实际 PROMPT");
-    assert.ok(!prompt.includes("For the target video"), "图片阶段不是 H3 字段口径");
+    assert.match(prompt, /<image1> 为角色参考（林晚）/, "同步结构（参考图槽位映射）照旧产出");
+
+    const start = pipeline.get(run.id).stages.keyframe.output.frames.find((frame) => frame.id === "sh1-start");
+    assert.match(String(start.warning || ""), /未英文化/, "降级必须记一条 warning");
 });
 
-test("接线：片段（video）PROMPT 由 H3 编译器产出**本地字段口径**，素材用 <Picture 1>", async (t) => {
-    const { jobs, pipeline, run } = await runToAssembly(t);
-    const clip = pipeline.get(run.id).stages.assembly.output.clips.find((entry) => entry.id === "sh1-clip");
-    assert.ok(clip && clip.jobId, "关键帧就绪 → 片段入队");
-    const job = jobs.get(clip.jobId);
-    const prompt = job.params.PROMPT;
-    assert.equal(typeof prompt, "string", "PROMPT 仍是字符串");
 
-    // ① 首行是关键帧对齐指令行（I2VA），时间两位小数、后空一行。
-    assert.ok(prompt.startsWith("For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\n\n"), prompt.slice(0, 150));
-    assert.ok(prompt.includes("<Picture 1>"));
-    assert.ok(!/@图片/.test(prompt), "本地口径用 <Picture 1>，不是 @图片1");
-    assert.ok(!prompt.includes("【核心创意】") && !prompt.includes("【画面过程说明】"), "旧的三段式标题不得出现");
+test("改写稿反写项目画幅 → 整稿弃用：PROMPT 无横屏断言，warning 同时留在条目与 job meta", async (t) => {
+    const llmCall = async () => "The image is a horizontal realistic cinematic medium close-up of Lin Wan stepping onto a night bus.";
+    const { startJob, run, pipeline } = await runToKeyframe(t, llmCall, { ratio: "9:16" });
 
-    // ② 三字段固定顺序 + 字段名。
-    const iDesc = prompt.indexOf("integrated_multimodal_description:");
-    const iSound = prompt.indexOf("overall_soundscape:");
-    const iMusic = prompt.indexOf("non_diegetic_music:");
-    assert.ok(iDesc >= 0 && iSound > iDesc && iMusic > iSound, "三字段必须按固定顺序");
-    assert.match(prompt, /non_diegetic_music: N\/A/, "不要 BGM → 官方字段名 + N/A");
+    assert.ok(startJob, "画幅冲突只降级，绝不阻塞入队");
+    const prompt = startJob.params.PROMPT;
+    assert.doesNotMatch(prompt, /horizontal/i, "错误的画幅方向绝不能进 PROMPT");
+    assert.ok(!prompt.includes("[untranslated"), "排查标记不得进入实际 PROMPT");
+    assert.match(prompt, /画幅：9:16（竖屏构图/, "回落到同步结构稿，画幅事实仍在");
 
-    // ③ 官方运镜词表自然句式 + 台词 (S1) + <d>[English] 逐字 + 画面文字写原文。
-    assert.match(prompt, /The camera pans right at slow speed\./);
-    assert.match(prompt, /\(S1\)/);
-    assert.ok(prompt.includes("<d>[English] 姑娘，这么晚，去哪儿？</d>"), "台词逐字保留");
-    assert.match(prompt, /reading "末班车"/, "画面文字写原文（英文双引号）");
-
-    // ④ 旧映射已拆：不出现英文负向词。
-    assert.ok(!/extra fingers|lowres|deformed face|watermark/i.test(prompt), "英文负向词不得进 H3 输出");
+    const start = pipeline.get(run.id).stages.keyframe.output.frames.find((frame) => frame.id === "sh1-start");
+    assert.match(String(start.warning || ""), /提示词改写失败：改写稿把画幅写成/, "条目上要留下冲突原因");
+    assert.match(String(startJob.meta?.promptWarning || ""), /提示词改写失败：改写稿把画幅写成/, "job meta 也要能看到，排查时不必翻 run item");
 });
 
-test("接线：参数档按规则表回填（含采样 token 的模板才回填，不硬编码）", async (t) => {
-    const { jobs, pipeline, run } = await runToAssembly(t);
-    // video_h3_i2v 不声明 STEPS/CFG/SAMPLER → 不回填采样参数（避免臆造）。
-    const clip = pipeline.get(run.id).stages.assembly.output.clips.find((entry) => entry.id === "sh1-clip");
-    const job = jobs.get(clip.jobId);
-    assert.equal(job.params.STEPS, undefined);
-    // 而 LENGTH 按帧网格推导（既有行为不变）。
-    assert.equal(typeof job.params.LENGTH, "number");
-    assert.equal(job.params.INPUT_IMAGE, "/api/artifacts/start.png", "i2v 走 INPUT_IMAGE 底图");
+test("显式重跑重新编译并保留旧 Job 参数快照", async (t) => {
+    const rewrites = [
+        "FIRST REWRITE: Lin Wan steps onto the night bus.",
+        "SECOND REWRITE: Lin Wan turns back beneath the station lights.",
+    ];
+    let calls = 0;
+    const llmCall = async () => rewrites[Math.min(calls++, rewrites.length - 1)];
+    const { startJob, run, jobs, pipeline } = await runToKeyframe(t, llmCall);
+    const initialPrompt = startJob.params.PROMPT;
+    jobs.finish(startJob.id, "done", { outputs: [{ url: "/api/artifacts/first.png" }] });
+    const end = jobs.get(`${run.id}-sh1-end`);
+    assert.ok(end, "start 完成后才入队 end 帧");
+    jobs.finish(end.id, "done", { outputs: [{ url: "/api/artifacts/end.png" }] });
+    const retry = await pipeline.executeRegenerate(pipeline.beginRegenerate(run.id, "keyframe", { itemId: "sh1-start" }));
+    const retryJob = jobs.get(retry.jobId);
+    assert.notEqual(retryJob.id, startJob.id);
+    assert.notEqual(retryJob.params.PROMPT, initialPrompt, "重跑必须重新编译当前提示词");
+    assert.equal(retryJob.params.PROMPT, rewrites.at(-1));
+    assert.equal(jobs.get(startJob.id).params.PROMPT, initialPrompt, "旧 Job 参数不可变");
+    assert.ok(pipeline.get(run.id).stages.keyframe.output.frames.find((frame) => frame.id === "sh1-start").promptCompilation);
 });
