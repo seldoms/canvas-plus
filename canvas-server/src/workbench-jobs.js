@@ -152,7 +152,10 @@ export function createImageEnqueue({ config, jobs, runJob, registry, llmCall, co
 
     /** 纯业务：入队一次提交，返回创建的 jobs。 */
     async function enqueue(body = {}) {
-        const template = String(body?.template ?? "").trim();
+        // 前端配置里的模型值可能是「渠道id::模型名」（渠道模型的标准形态），而这里要的是**裸模板名**。
+        // 旧版前端漏剥前缀会把整串发过来 → 直接报「模板不存在」。此处兜底剥掉，避免因前端缓存版本不一致而整条链路不可用。
+        const rawTemplate = String(body?.template ?? "").trim();
+        const template = rawTemplate.includes("::") ? rawTemplate.slice(rawTemplate.lastIndexOf("::") + 2).trim() : rawTemplate;
         if (!template) throw httpError(400, "缺少 template");
         const prompt = String(body?.prompt ?? "").trim();
         if (!prompt) throw httpError(400, "缺少 prompt");

@@ -12,7 +12,7 @@ import { PromptSelectDialog } from "@/components/prompts/prompt-select-dialog";
 import { AssetPickerModal, type InsertAssetPayload } from "@/components/canvas/asset-picker-modal";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { imageReferenceLabel } from "@/lib/image-reference-prompt";
-import { modelOptionLabel, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
+import { modelOptionLabel, modelOptionName, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { nanoid } from "nanoid";
 import { formatBytes, formatDuration } from "@/lib/image-utils";
@@ -273,7 +273,10 @@ export default function ImagePage() {
         try {
             const referenceUrls = await resolveReferenceUrls(references);
             const result = await enqueueImages({
-                template: model,
+                // 配置里的模型值可能是「渠道id::模型名」（渠道模型的标准形态），
+                // 但后端要的是**裸模板名**（用来找 workflows/<name>.json）。
+                // 剥前缀统一走 modelOptionName —— 与门禁判断同一口径，别再散落第二套解析。
+                template: modelOptionName(model),
                 prompt: text,
                 count: generationCount,
                 size: effectiveConfig.size,

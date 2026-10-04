@@ -141,3 +141,15 @@ test("filterJobs：kind / 逗号分隔 status / limit / since；空查询原样�
     assert.deepEqual(filterJobs(list, { limit: "2" }).map((job) => job.id), ["a", "b"]);
     assert.deepEqual(filterJobs(list, { since: "2026-01-01T00:00:06.000Z" }).map((job) => job.id), ["b", "c"]);
 });
+
+test("enqueue：模型值带「渠道id::模型名」前缀时自动剥成裸模板名（前端旧缓存兜底）", async () => {
+    // 现场事故：前端把配置里的 "9S0-XCW7tZ7dqP90WxcxZ::img_qwen21_t2i" 原样当 template 发来
+    // → 后端按 workflows/<template>.json 找不到 → 报「模板不存在」，整条提交链路不可用。
+    const queue = fakeQueue();
+    const enqueue = createImageEnqueue({ config: { workflowsDir }, jobs: queue, runJob, llmCall: fakeLlm("A cinematic photo of a cat.") });
+    const result = await enqueue.enqueue({ template: "9S0-XCW7tZ7dqP90WxcxZ::img_qwen21_t2i", prompt: "一只猫", count: 1 });
+
+    assert.equal(result.jobs.length, 1);
+    assert.equal(result.jobs[0].template, "img_qwen21_t2i");
+    assert.equal(queue.enqueued[0].spec.template, "img_qwen21_t2i");
+});
