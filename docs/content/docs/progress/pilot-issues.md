@@ -720,3 +720,56 @@
 | 75 | **TTS 未接进流水线** | 🔴 **「音色对得上」真正的缺口：流水线里压根没有音频 job**。一手证据：`GET /api/jobs?kind=audio` → `{"jobs":[]}`；现有 TTS 产物 `data/artifacts/tts-voices/*.flac`（FLAC/24kHz/mono）是手工探针产物。链路现状：模板能出音（`audio_qwen3_tts`）、`delivery.js` 已能按镜头时间轴混音轨（#74）、`audio.js:612` 已产出 `delayMs` —— **缺的是「为有台词的镜头发起 TTS 并登记 audio item」这一环**。设计稿：`docs/content/docs/progress/audio-tts-pipeline-wiring.md`（§5-6 正是 `adelay` 这条）。| 一手：/api/jobs?kind=audio 空 + 成片 ffprobe 无音轨 | 高 | 后端流水线 | ⏳待接线 |
 | 76 | 本地任务进度粒度 | 🟡 本地生图/生视频 job **无量化进度**（全程 `0/0 生成中`，完成才跳 `1/1`）。| 一手：成片闭环验收页面观测 | 低~中 | 后端进度上报 | ⏳待改（可选） |
 | 77 | 画幅一致性 | 🟡 片段 768×1376 vs 成片 768×1344 —— 拼接时二次重采样。| 一手：ffprobe 两处尺寸 | 低 | 后端画幅换算 | ⏳待核 |
+
+---
+
+## 2026-10-04 产品负责人拍板：「视频与台词」的生产路线
+
+### 拍板结论
+> 问：「视频跟台词可以分开生产吗？这个我不懂啊，我还以为是 minimaxh3 全包了呢」
+> 答（我核实后）：**可以分开，而且 H3 本来就是全包** —— 每个 H3 片段自带 aac 音轨（台词/音效），
+> 实测把音轨送去 ASR，**H3 说出来的台词与分镜逐字吻合**。真正的缺陷是**成片阶段把片段原声丢了**（见 #74）。
+
+**负责人选择：默认「独立配音」（A）** —— 视频归 H3、台词归独立 TTS。理由是核心诉求「**音色对得上**」：
+- H3 native 全包 **音色不可控**（无任何音色参数，只能靠提示词/首帧暗示）
+- **改一句台词的代价差 50 倍**：全包重跑整段视频 ≈ **270s**；分离只重跑 TTS ≈ **3~20s**（均为一手实测）
+
+### 口型怎么处理（负责人：「你想想口型咋处理吧」「不要怕麻烦，可以装 lip-sync 模型」）
+一手查到 147 的 `MiniMaxH3AudioConditioningT8` 官方 schema：
+```
+audio_mode（默认 lock_source）
+  lock_source     = preserves source latent   保留源音频（= 我们的 TTS 原声）✅
+  remix_source    = denoises it               去噪重混（音色会漂）❌ 平台旧模板用的就是这个
+  reference_only / native = 自行生成目标音频
+final_audio = "clean/stem track passed through for final mux"（成片用干净音轨通道）
+drive_audio = 驱动口型的那条音轨（optional AUDIO）
+```
+**方案（按推荐序）**：
+1. **H3 音频驱动（主路，全现成）**：`video_h3_talk` + `audio_mode: lock_source`，
+   `drive_audio` 外接我们的 TTS 产物，输出音轨走 `final_audio`
+   → **口型按我们的 TTS 音频动，成片音轨还是 TTS 原声**（口型准 + 音色准）
+   代价：视频要跟音频一起生成 → 改台词要重跑那一镜（≈270s）
+2. **本地 lip-sync 后处理（已授权安装）**：画面先出 → 台词后配 → 重对嘴
+   → 改一句台词只需重跑对齐，**不用重跑视频**。⚠️ 147 **当前没有**本地 lip-sync 模型
+   （`KlingLipSyncAudioToVideoNode` / `FL_Fal_Pixverse_LipSync` / `SyncLipSyncNode` **全是云端 API**）
+3. 只换音轨（口型对不上）/ 运镜规避（分镜不给说话正脸）/ 云端对齐（后置）
+
+**按镜头分流**：有台词镜 → 音频驱动；无台词镜 → native i2v（它的环境音/音效还真有用）。
+
+### 台词归属（负责人：「你按这个思路来啊，发起相关流程就自动调用 skill 进行最终提示词生产」）
+各模型的「归属」表示法完全不同（调研 `model-registry.md:300`）：
+| 类别 | 模型 | 归属定义 |
+|---|---|---|
+| 原生音视频 | MiniMax H3 | 说话人**稳定 ID `(S1)`** + `<d>[English] …</d>` 逐字不译 |
+| TTS | `audio_qwen3_tts` | `SPEAKER`（命名音色）+ `INSTRUCT`（音色描述），**无“谁说的”概念** |
+| 纯生视频 / 生图 | wan/scail2/ltx23/qwen/flux | **无台词概念**（对白走后期混音轨 + 字幕） |
+
+**真卡点**：`skills/02-storyboard/SKILL.md:56` 的 `dialogue` 是**单个字符串、没有说话人**，
+且**一镜可能多人开口** → 配音阶段全部台词落到第一个角色（实测）。
+**结论**：归属必须按模型走（模型能力元数据）+ 内容契约台词结构化（带说话人，向后兼容）
++ **最终提示词由后端在发起生成时按 skill 编译**（架构铁律）。
+
+### 本轮已落地的相关修复
+- `89b20ee` 成片不再丢片段原声（`includeClipAudio` 自动判定）
+- `edd24e0` 硬规则「一镜一个人声事实源」（独立对白轨与片段原声不得同时混入，防双重人声）
+- `9c37828` / `0b20cbb` 规格档位元数据 + 「选模型→再选规格」（数据取调研报告）
