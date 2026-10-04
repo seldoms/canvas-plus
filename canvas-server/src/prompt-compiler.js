@@ -51,7 +51,8 @@ import {
     loadModelRules,
 } from "./model-rules.js";
 import { rewriterForTemplate, rewritePrompt } from "./prompt-rewriter.js";
-import { splitDialogue } from "./audio.js";
+import { splitDialogue, resolveDialogueLines } from "./audio.js";
+import { dialogueMetaForTemplate } from "./dialogue-roles.js";
 
 /* ------------------------------------------------------------------ *
  * 通用小工具
@@ -568,39 +569,9 @@ function splitEndState(action) {
 }
 
 /**
- * 拆分分镜台词：**复用 audio.js 的 splitDialogue**（#50 的产物），不另写括号解析。
- *
- * 为什么要拆（验收问题②）：`shot.dialogue` 常写成
- * 「姑娘，这么晚，去哪儿？（低声、音量低、语速慢、略带关心）」——括号里是表演注解。
- * 调研口径（config/model-prompt-rules.json · minimax_h3.prompt.structure_notes，依据 sources/video-models.md:160）
- * 要求 `<d>[English] ...</d>` 内**逐字是台词正文**；把注解留在 `<d>` 内会被模型当台词读出来。
- * 按 #50 的定论「表演注解不参与生产参数」，注解应剥出、移到描述层作表演提示，绝不塞回 `<d>`。
- *
- * @returns {{ text: string, performance: string, hasText: boolean }}
- *   text=纯台词正文；performance=表演注解（无则空串）；
- *   hasText=false 表示整条只有注解、无正文（splitDialogue 以 warning code=empty_after_cleaning 标记回退原文）。
+ * 说话人 ID：按**稳定序号**编号 (S1)(S2)…（H3 官方要求同一说话人跨镜保持同 ID）。
+ * 序号来自 `resolveDialogueLines`（优先全局 cast 的顺序，保证同一角色跨镜同号）。
  */
-function splitShotDialogue(raw) {
-    const source = typeof raw === "string" ? raw.trim() : "";
-    if (!source) return { text: "", performance: "", hasText: false };
-    const { text, performance, warnings } = splitDialogue(source);
-    // splitDialogue 在「剥完为空」时会回退原文并给出 warning —— 据此判定「整条只有注解」，
-    // 让 <d> 块整块不输出（不得输出空的 `<d>[English] </d>`）。
-    const onlyAnnotation = warnings.some((entry) => entry?.code === "empty_after_cleaning");
-    const script = onlyAnnotation ? "" : text.trim();
-    return { text: script, performance: String(performance ?? "").trim(), hasText: script.length > 0 };
-}
-
-/**
- * 表演提示句（描述层）：注解按调研口径并入 integrated_multimodal_description，
- * **绝不塞回 `<d>` 内**。无注解返回空串。
- */
-function h3PerformanceHint(shot) {
-    const { performance } = splitShotDialogue(shot?.dialogue);
-    return hasText(performance) ? `Performance: ${stripTail(performance)}.` : "";
-}
-
-/** 说话人 ID：按出场顺序稳定编号 (S1)(S2)…（H3 官方要求同一说话人跨镜保持同 ID）。 */
 export function speakerId(index) {
     return `S${Math.max(0, Number(index) || 0) + 1}`;
 }
@@ -611,32 +582,50 @@ function characterNames(characters) {
 }
 
 /**
- * 选说话人：优先 action/dialogue 中点名的角色；否则取该镜第一个角色；再否则中性称谓。
- * 返回 { name, id }。
+ * 表演提示句（描述层）：注解按调研口径并入 integrated_multimodal_description，**绝不塞回 `<d>` 内**。
+ * 只取**有台词正文**的那些条（整条只有注解的不算——没有台词就不该写表演提示）；多角色多条用「；」连接。
+ * 无注解返回空串。
  */
-function pickSpeaker(shot, characters) {
-    const names = characterNames(characters);
-    const haystack = `${String(shot?.action ?? "")} ${String(shot?.dialogue ?? "")}`;
-    const named = names.find((name) => name && haystack.includes(name));
-    const name = named || names[0] || "The speaker";
-    const index = Math.max(0, names.indexOf(name));
-    return { name, id: speakerId(index) };
+function h3PerformanceHint(shot, characters, cast) {
+    const { lines } = resolveDialogueLines(shot, characters, cast);
+    const perf = [
+        ...new Set(
+            lines
+                .filter((line) => !line.onlyAnnotation && hasText(line.text))
+                .map((line) => String(line.performance ?? "").trim())
+                .filter(Boolean),
+        ),
+    ];
+    return perf.length ? `Performance: ${stripTail(perf.join("；"))}.` : "";
 }
 
 /**
- * H3 台词句（正文逐字不翻译、**不含表演注解**）：
- *   `<角色> (S1) says: <d>[English] ...</d>`；画外音写 `says in an off-screen voiceover` 且紧跟「嘴唇保持闭合」。
- * 括号表演注解已由 splitShotDialogue 剥出（见 h3PerformanceHint 写进描述层）；
- * 整条只有注解、无正文时返回空串（`<d>` 块整块不输出）。
+ * H3 台词句（正文逐字不翻译、**不含表演注解**）：逐条台词带说话人，每条一个块：
+ *   `<角色> (S1) says: <d>[English] ...</d>`
+ * 画外音写 `says in an off-screen voiceover` 且紧跟「嘴唇保持闭合」。
+ *
+ * 说话人由 `resolveDialogueLines` 逐级回落解析（新契约 `dialogueLines[]` 的显式说话人优先；
+ * 旧字符串 `dialogue` 当「一条、无明确说话人」）；`(Sx)` 序号取全局 cast 的稳定位置 → 同一角色跨镜同号。
+ * `<d>` 标签与语言标签从**模型能力元数据**取（dialogue-roles.js · minimax_h3），本函数只负责渲染，不另创一套口径。
+ * 括号表演注解已剥出（见 h3PerformanceHint 写进描述层）；整条只有注解、无正文时该块不输出（不输出空 `<d>[English] </d>`）。
+ * @returns {string} 多条用空格连接；无台词正文返回空串。
  */
-export function h3DialogueSentence(shot, characters, { voiceover = false } = {}) {
-    const { text, hasText: hasLine } = splitShotDialogue(shot?.dialogue);
-    if (!hasLine) return "";
-    const { name, id } = pickSpeaker(shot, characters);
-    const isVoiceover = voiceover || shot?.voiceover === true || /画外音|旁白|off-?screen/.test(`${shot?.audio ?? ""} ${shot?.action ?? ""}`);
-    const tag = isVoiceover ? "says in an off-screen voiceover" : "says";
-    const block = `${name} (${id}) ${tag}: <d>[English] ${text}</d>`;
-    return isVoiceover ? `${block}, while the lips remain completely closed.` : `${block}`;
+export function h3DialogueSentence(shot, characters, { voiceover = false, cast = null, template = null } = {}) {
+    const meta = template ? dialogueMetaForTemplate(template) : null;
+    const tag = meta?.utteranceTag || "d";
+    const lang = meta?.utteranceLangTag || "English";
+    const { lines } = resolveDialogueLines(shot, characters, cast);
+    const blocks = [];
+    for (const line of lines) {
+        if (line.onlyAnnotation || !hasText(line.text)) continue; // 整条只有注解 → 不输出 <d> 块
+        const name = line.speaker.name || "The speaker";
+        const id = speakerId(line.speaker.index);
+        const isVoiceover = voiceover || line.voiceover === true || shot?.voiceover === true || /画外音|旁白|off-?screen/.test(`${shot?.audio ?? ""} ${shot?.action ?? ""}`);
+        const verb = isVoiceover ? "says in an off-screen voiceover" : "says";
+        const block = `${name} (${id}) ${verb}: <${tag}>[${lang}] ${line.text}</${tag}>`;
+        blocks.push(isVoiceover ? `${block}, while the lips remain completely closed.` : block);
+    }
+    return blocks.join(" ");
 }
 
 /* ------------------------------------------------------------------ *
@@ -663,7 +652,7 @@ function h3Music(shot) {
  * H3 integrated_multimodal_description 正文（英文结构 + 内容层事实原语言）。
  * 单镜写 [Shot 1]；多镜按 shot.cuts（[{ atSec, text }]）在文件内写清切镜点（两位小数时间码）。
  */
-function h3Description(shot, { scene, characters, style, mode, durationSec, overlays, textInImage }) {
+function h3Description(shot, { scene, characters, cast, template, style, mode, durationSec, overlays, textInImage }) {
     const parts = [];
     const { anchor: styleAnchor } = readStyleFields(style);
     // [Shot 1] 头部：风格 + 初始构图。
@@ -693,13 +682,13 @@ function h3Description(shot, { scene, characters, style, mode, durationSec, over
     });
     // 段末可见状态。
     if (hasText(endState)) parts.push(`By the end of the shot, ${stripTail(endState)}.`);
-    // 台词（正文逐字不翻译；括号表演注解已被剥出）。
-    const dialogue = h3DialogueSentence(shot, characters);
+    // 台词（逐条带说话人；正文逐字不翻译；括号表演注解已被剥出）。
+    const dialogue = h3DialogueSentence(shot, characters, { cast, template });
     if (dialogue) {
         parts.push(dialogue);
         // 表演注解 → 描述层作表演提示（绝不塞回 <d>）。仅在有台词正文时输出：
         // 整条只有注解、无正文时 <d> 块整块不输出，也不该为不存在的台词写表演提示。
-        const performance = h3PerformanceHint(shot);
+        const performance = h3PerformanceHint(shot, characters, cast);
         if (performance) parts.push(performance);
     }
     // 画面文字（英文双引号包原文）。
@@ -722,7 +711,7 @@ function stringNegativeList(shot) {
  * H3 编译器：本地字段口径（T2VA/I2VA/FL2VA/L2VA 三字段；Ref2VA 六段）。
  * @returns {string}
  */
-export function compileH3VideoPrompt({ template, shot, scene, characters, style, slots, overlays, durationSec } = {}) {
+export function compileH3VideoPrompt({ template, shot, scene, characters, cast = null, style, slots, overlays, durationSec } = {}) {
     const seconds = Number(durationSec) > 0 ? Number(durationSec) : Number(shot?.durationSec) > 0 ? Number(shot.durationSec) : 5;
     const images = slotImages(slots);
     const mode = h3Mode(template, images);
@@ -731,7 +720,7 @@ export function compileH3VideoPrompt({ template, shot, scene, characters, style,
 
     // Ref2VA：六段固定顺序（全参考模式）。
     if (mode === "Ref2VA") {
-        return compileH3Ref2VA({ shot, scene, characters, style, slots, overlays, durationSec: seconds, images, textInImage });
+        return compileH3Ref2VA({ shot, scene, characters, cast, template, style, slots, overlays, durationSec: seconds, images, textInImage });
     }
 
     const blocks = [];
@@ -744,7 +733,7 @@ export function compileH3VideoPrompt({ template, shot, scene, characters, style,
     const fieldOrder = Array.isArray(protocol?.fields_fixed_order)
         ? protocol.fields_fixed_order
         : ["integrated_multimodal_description", "overall_soundscape", "non_diegetic_music"];
-    const description = h3Description(shot, { scene, characters, style, mode, durationSec: seconds, overlays, textInImage });
+    const description = h3Description(shot, { scene, characters, cast, template, style, mode, durationSec: seconds, overlays, textInImage });
     const fieldValue = {
         integrated_multimodal_description: description,
         overall_soundscape: h3Soundscape(shot),
@@ -755,7 +744,7 @@ export function compileH3VideoPrompt({ template, shot, scene, characters, style,
 }
 
 /** H3 Ref2VA：subject_definitions → summary → retention_analysis → detailed_description → soundscape → music。 */
-function compileH3Ref2VA({ shot, scene, characters, style, slots, overlays, durationSec, images, textInImage }) {
+function compileH3Ref2VA({ shot, scene, characters, cast, template, style, slots, overlays, durationSec, images, textInImage }) {
     const lines = [];
     const refs = images.map((image, index) => {
         const tag = `<Picture ${index + 1}>`;
@@ -773,8 +762,8 @@ function compileH3Ref2VA({ shot, scene, characters, style, slots, overlays, dura
     // detailed_description（350–500 英文词目标；此处按事实精炼，交由官方改写器扩写）
     const place = hasText(scene?.name) ? String(scene.name).trim() : "";
     const { anchor: styleAnchor } = readStyleFields(style);
-    // 台词：正文逐字不翻译、括号表演注解剥出；有正文才带描述层的表演提示（绝不塞回 <d>）。
-    const dialogueLine = h3DialogueSentence(shot, characters);
+    // 台词：逐条带说话人、正文逐字不翻译、括号表演注解剥出；有正文才带描述层的表演提示（绝不塞回 <d>）。
+    const dialogueLine = h3DialogueSentence(shot, characters, { cast, template });
     const detailParts = [
         styleAnchor ? `${stripTail(styleAnchor)}.` : "Live-action, cinematic.",
         place ? `The scene is set in ${place}.` : "",
@@ -782,7 +771,7 @@ function compileH3Ref2VA({ shot, scene, characters, style, slots, overlays, dura
         stripTail(splitEndState(shot?.action).process) ? `${stripTail(splitEndState(shot?.action).process)}.` : "",
         cameraSentence(shot),
         dialogueLine,
-        dialogueLine ? h3PerformanceHint(shot) : "",
+        dialogueLine ? h3PerformanceHint(shot, characters, cast) : "",
         overlayClauseH3(overlays, textInImage),
     ].filter(Boolean);
     lines.push(`detailed_description: ${detailParts.join(" ")}`);

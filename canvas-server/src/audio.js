@@ -151,6 +151,162 @@ export function splitDialogue(raw) {
     return { text, performance, warnings };
 }
 
+/**
+ * 取镜头的原始台词条目（未解析说话人）：优先新契约 `shot.dialogueLines[]`，否则回落旧字符串 `shot.dialogue`。
+ * 旧字符串一律归一成**一条、无明确说话人**的台词（向后兼容红线，绝不臆断拆分归属）。
+ */
+function rawDialogueEntries(shot) {
+    const structured = Array.isArray(shot?.dialogueLines) ? shot.dialogueLines : null;
+    if (structured && structured.length) {
+        const out = [];
+        for (const entry of structured) {
+            if (typeof entry === "string") {
+                const text = entry.trim();
+                if (text) out.push({ speaker: "", text, performance: "", voiceover: false });
+                continue;
+            }
+            if (!entry || typeof entry !== "object") continue;
+            const text = String(entry.text ?? entry.line ?? entry.dialogue ?? "");
+            const performance = String(entry.performance ?? "").trim();
+            const speaker = String(entry.speaker ?? entry.speakerId ?? entry.characterId ?? entry.name ?? "").trim();
+            if (!text.trim() && !performance) continue;
+            out.push({ speaker, text, performance, voiceover: entry.voiceover === true });
+        }
+        if (out.length) return out;
+    }
+    const legacy = typeof shot?.dialogue === "string" ? shot.dialogue.trim() : "";
+    return legacy ? [{ speaker: "", text: legacy, performance: "", voiceover: false }] : [];
+}
+
+/** 台词正文截断（warning 用，避免超长）。 */
+function truncateText(value, max = 20) {
+    const text = String(value ?? "").trim();
+    return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
+/**
+ * 归一一个镜头的台词为「逐条带说话人」的结构，并逐级回落解析说话人（记 warning，**不阻塞**）。
+ *
+ * 输入兼容（向后兼容红线）：
+ *   · `shot.dialogueLines[]`（新契约）：每条含 `speaker`（角色名或角色 id；也可写 `speakerId`/`characterId`/`name`）
+ *     + `text`（纯台词正文）+ 可选 `performance`（表演注解）+ 可选 `voiceover`。
+ *   · `shot.dialogue`（旧字符串）：整条当作「一条、无明确说话人」的台词 —— 旧项目一律仍能跑。
+ *
+ * 说话人解析**逐级回落**（越靠后越不可靠；④⑥ 会记 warning）：
+ *   ① 台词显式标注的说话人（命中角色表）；
+ *   ② 镜头级 `characterId` / `characterIds[0]`（内容层已指明归属）；
+ *   ③ 台词正文里出现的角色名；
+ *   ④ 镜头 `action`/`dialogue` 文本里出现的角色名（多于一个 → 取第一个并 warning）；
+ *   ⑤ 该镜只有一个角色 → 用它（无歧义）；
+ *   ⑥ 回落该镜第一个角色（warning；保证有音可混、不阻塞）。
+ * 指不到任何角色时 → `speaker.name = null`（如实标记，不编造）。
+ *
+ * @param {object}  shot        镜头
+ * @param {Array}   [characters] 本镜角色表（角色来自 script 阶段产物）
+ * @param {Array}   [cast]       全局角色表（用于稳定编号；缺省回落 characters）
+ * @returns {{ lines: Array<object>, warnings: Array<{code:string,reason:string}> }}
+ */
+export function resolveDialogueLines(shot, characters = [], cast = null) {
+    const shotChars = Array.isArray(characters) ? characters.filter((c) => c && typeof c === "object") : [];
+    const roster = Array.isArray(cast) && cast.length ? cast.filter((c) => c && typeof c === "object") : shotChars;
+    const entries = rawDialogueEntries(shot);
+    const warnings = [];
+    const charKey = (value) => String(value ?? "").trim();
+    const matchIn = (ref, list) => {
+        const key = charKey(ref);
+        return key ? list.find((c) => charKey(c?.id) === key || charKey(c?.name) === key) || null : null;
+    };
+    const indexOf = (char) => Math.max(0, roster.indexOf(char));
+    const nameOf = (char) => charKey(char?.name) || null;
+
+    const lines = [];
+    for (const entry of entries) {
+        // 台词正文与表演注解分开：正文里若仍残留括号注解，一并剥出（复用 splitDialogue，不另写括号解析）。
+        const cleaned = splitDialogue(entry.text);
+        const onlyAnnotation = cleaned.warnings.some((w) => w?.code === "empty_after_cleaning");
+        const performance = [entry.performance, cleaned.performance].map((s) => String(s ?? "").trim()).filter(Boolean).join("；");
+
+        let char = null;
+        let source = "";
+        let warning = null;
+
+        // ① 显式说话人
+        const explicitRef = charKey(entry.speaker);
+        if (explicitRef) {
+            const hit = matchIn(explicitRef, roster.length ? roster : shotChars);
+            if (hit) {
+                char = hit;
+                source = "explicit";
+            } else {
+                warning = {
+                    code: "speaker_unknown_character",
+                    reason: `台词说话人「${explicitRef}」不在角色表里，已按回落链解析（不得乱填归属）`,
+                };
+            }
+        }
+        // ② 镜头级角色 id
+        if (!char) {
+            const shotRef = charKey(shot?.characterId) || charKey(Array.isArray(shot?.characterIds) ? shot.characterIds[0] : "");
+            const hit = shotRef ? matchIn(shotRef, roster.length ? roster : shotChars) : null;
+            if (hit) {
+                char = hit;
+                source = "shot_character_id";
+            }
+        }
+        // ③ 台词正文里的角色名
+        if (!char) {
+            const hit = roster.find((c) => charKey(c?.name) && String(entry.text ?? "").includes(charKey(c.name)));
+            if (hit) {
+                char = hit;
+                source = "line_text";
+            }
+        }
+        // ④ 镜头文本里的角色名
+        if (!char) {
+            const hay = `${String(shot?.action ?? "")} ${String(shot?.dialogue ?? "")}`;
+            const hits = roster.filter((c) => charKey(c?.name) && hay.includes(charKey(c.name)));
+            if (hits.length === 1) {
+                char = hits[0];
+                source = "shot_text";
+            } else if (hits.length > 1) {
+                char = hits[0];
+                source = "shot_text_ambiguous";
+                warning = {
+                    code: "speaker_ambiguous",
+                    reason: `镜头文本点名了多个角色（${hits.map(nameOf).join("、")}），无法确定「${truncateText(entry.text)}」归属，已取第一个并告警`,
+                };
+            }
+        }
+        // ⑤ 单角色兜底
+        if (!char && shotChars.length === 1) {
+            char = shotChars[0];
+            source = "single_character";
+        }
+        // ⑥ 首个角色兜底（warning，不阻塞）
+        if (!char && roster.length) {
+            char = roster[0];
+            source = "fallback_first";
+            warning = {
+                code: "speaker_fallback_first",
+                reason: `无法从分镜确定「${truncateText(entry.text)}」的说话角色，已回落使用第一个角色「${nameOf(char) || charKey(char?.id)}」的音色`,
+            };
+        }
+        if (warning && !warnings.some((w) => w.code === warning.code && w.reason === warning.reason)) warnings.push(warning);
+
+        lines.push({
+            speaker: { name: nameOf(char), characterId: charKey(char?.id) || null, index: char ? indexOf(char) : 0 },
+            speakerRef: explicitRef,
+            source: source || (char ? "unknown" : "none"),
+            text: cleaned.text,
+            performance,
+            onlyAnnotation,
+            voiceover: entry.voiceover === true,
+            warnings: cleaned.warnings,
+        });
+    }
+    return { lines, warnings };
+}
+
 /** 从表演注解里探测语速线索：慢 → -step，快 → +step，both/无 → 0。 */
 function detectSpeedHint(performance) {
     const source = String(performance ?? "");
@@ -329,32 +485,39 @@ export function cuesFromShots({ shots, characters = [], voiceProfiles = [] } = {
         const duration = num(shot.durationSec);
         const total = duration !== null && duration > 0 ? duration : CUE_FALLBACK_SEC;
 
-        const dialogue = typeof shot.dialogue === "string" ? shot.dialogue : "";
-        // 台词清洗：括号表演注解不进 TTS 文本，只有纯台词进 `text`，注解挂到 `performance`。
-        const cleaned = splitDialogue(dialogue);
-        const sentences = splitSentences(cleaned.text);
-        if (sentences.length > 0) {
-            const characterId = resolveCharacterId(shot, characters);
+        // 逐条台词带说话人：新契约 `dialogueLines[]` 每条自带说话人；旧字符串 `dialogue` 归一成「一条、无明确说话人」，
+        // 按说话人逐级回落解析（见 resolveDialogueLines）—— 保证多角色镜头里每句落到正确的人，且不阻塞。
+        const { lines } = resolveDialogueLines(shot, characters);
+        const spoken = [];
+        for (const line of lines) {
+            const sentences = splitSentences(line.text);
+            if (sentences.length === 0) continue;
+            const characterId = line.speaker.characterId || resolveCharacterId(shot, characters);
             const voiceProfile = findVoiceProfile(shot, characterId, voiceProfiles);
             const voiceProfileId = voiceProfile?.id || null;
             // 语速是显式参数：默认正常；注解里「语速慢」只作线索，且有下限保护。
-            const { speed } = resolveSpeechSpeed({ voiceProfile, performance: cleaned.performance });
-            const step = total / sentences.length;
-            sentences.forEach((text, index) => {
+            const { speed } = resolveSpeechSpeed({ voiceProfile, performance: line.performance });
+            for (const text of sentences) {
+                spoken.push({ text, performance: line.performance, speed, characterId, voiceProfileId, warnings: line.warnings });
+            }
+        }
+        if (spoken.length > 0) {
+            const step = total / spoken.length;
+            spoken.forEach((entry, index) => {
                 cues.push({
                     id: `cue_${shotId}_dialogue_${String(index + 1).padStart(2, "0")}`,
                     shotId,
                     type: "dialogue",
                     startSec: round3(index * step),
                     endSec: round3((index + 1) * step),
-                    text,
-                    performance: cleaned.performance,
-                    speed,
-                    characterId,
-                    voiceProfileId,
+                    text: entry.text,
+                    performance: entry.performance,
+                    speed: entry.speed,
+                    characterId: entry.characterId,
+                    voiceProfileId: entry.voiceProfileId,
                     artifactId: null,
                     status: "draft",
-                    warnings: cleaned.warnings,
+                    warnings: entry.warnings,
                 });
             });
         }

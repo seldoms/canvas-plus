@@ -7,6 +7,8 @@ import { artifactUrl, ensureDir, saveBuffer } from "../files.js";
 import { durationMetaForTemplate } from "../durations.js";
 // 分辨率/画幅档位（模型能力元数据）的唯一事实源：与「模型清单」同源挂到每个模板上，随 /api/providers 输出。
 import { sizeMetaForTemplate } from "../sizes.js";
+// 台词归属口径（模型能力元数据）的唯一事实源：H3=(S1)+<d>；TTS=SPEAKER+INSTRUCT；纯视频/生图=无。同源下发。
+import { dialogueMetaForTemplate } from "../dialogue-roles.js";
 
 const TOKEN_RE = /\{\{([A-Z0-9_]+)\}\}/g;
 
@@ -161,6 +163,8 @@ export function listTemplates(workflowsDir) {
             const durationMeta = durationMetaForTemplate(name);
             // 规格随清单同源下发：「画幅口径跟模型建议尺寸走」，前端从该字段读，不硬编码。
             const sizeMeta = sizeMetaForTemplate(name);
+            // 台词归属口径随清单同源下发：H3=(S1)+<d>、TTS=SPEAKER+INSTRUCT、纯视频/生图=无，前端只读。
+            const dialogueMeta = dialogueMetaForTemplate(name);
             return {
                 name,
                 family: familyOf(name),
@@ -170,6 +174,7 @@ export function listTemplates(workflowsDir) {
                 durationMeta,
                 sizes: sizeMeta.sizes,
                 sizeMeta,
+                dialogueMeta,
             };
         });
 }

@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 
 import { splitNovelIntoChunks } from "./chunk-novel.js";
-import { buildMixInput } from "./audio.js";
+import { buildMixInput, resolveDialogueLines } from "./audio.js";
 import { projectAudioCues, projectVoiceProfiles } from "./audio-track.js";
 import { ASSET_ROLE } from "./contracts.js";
 import { assembleEpisode } from "./delivery.js";
@@ -16,6 +16,8 @@ import { buildShotBinding, missingRefsReport, resolveSelectedArtifacts, stableSe
 import { sizeForRatio } from "./sizes.js";
 // 提示词编译器：按所选模型把「模型无关的内容事实」编译成该模型要的提示词（图片/视频一视同仁）。
 import { compilePromptForTemplate, compilePromptForTemplateAsync, presetForTemplate, stripUntranslatedMarker } from "./prompt-compiler.js";
+// 台词归属口径跟着模型走：模型能力元数据（H3=(S1)+<d>；TTS=SPEAKER+INSTRUCT；纯视频/生图=无）。
+import { templateCarriesDialogue } from "./dialogue-roles.js";
 import { normalizeShotEpisodeIds, RUN_SHOT_ID_FIELD } from "./production-contracts.js";
 import { loadRegistry, readSkill } from "./skills.js";
 import { listReferenceCapableTemplates, resolveToolForShot, scanTemplateDir } from "./tool-adapter.js";
@@ -2146,6 +2148,27 @@ ${JSON.stringify(partials, null, 2)}
         return (Array.isArray(shotBinding?.characterIds) ? shotBinding.characterIds : []).map((id) => byId.get(String(id))).filter(Boolean);
     }
 
+    /**
+     * 取本 run 的**全局角色表**（台词说话人 (Sx) 稳定编号的事实源）：design.characters 优先，回落剧本 characters。
+     * 同一角色跨镜拿到同一个 (S1)/(S2) —— H3 官方要求同一说话人跨镜保持同 ID。
+     */
+    function castForRun(run) {
+        const design = run.stages?.design?.output && typeof run.stages.design.output === "object" ? run.stages.design.output : {};
+        if (Array.isArray(design.characters) && design.characters.length) return design.characters;
+        const project = projectOf(run);
+        return Array.isArray(project?.script?.characters) ? project.script.characters : [];
+    }
+
+    /**
+     * 台词说话人归属的 warning（逐级回落的可解释结果，**不阻塞**）：仅当该视频模型承载台词（H3）时才产出。
+     * 旧字符串 dialogue 在多角色镜头里无法确定归属 → 由 resolveDialogueLines 记 warning，供 plan.warning 留痕。
+     */
+    function dialogueAttributionWarnings(template, shot, characters, cast) {
+        if (!templateCarriesDialogue(template)) return [];
+        const { warnings } = resolveDialogueLines(shot, characters, cast);
+        return warnings.map((entry) => entry?.reason).filter(Boolean);
+    }
+
     /** 优先参考图模板：显式 configured 优先，否则含 edit 的参考图模板，最后字典序第一个。 */
     function preferredReferenceTemplate() {
         const configured = String(pipelineConfig.referenceImageTemplate ?? "").trim();
@@ -2433,12 +2456,16 @@ ${JSON.stringify(partials, null, 2)}
         // 采样参数按规则表参数档回填（仅模板声明的 token；不硬编码）。
         applyPresetParams(videoParams, videoTemplate, videoTokens);
         const legacyBody = [shot?.prompt, shot?.action].filter(Boolean).join(", ");
+        const shotCharacters = charactersForShot(run, videoShotBinding);
+        // 全局角色表：说话人 (Sx) 跨镜稳定编号的事实源（H3 官方要求同一说话人跨镜同 ID）。
+        const cast = castForRun(run);
         const compileInput = {
             template: videoTemplate,
             family: "video",
             shot: shot || {},
             scene: sceneForShot(run, shot),
-            characters: charactersForShot(run, videoShotBinding),
+            characters: shotCharacters,
+            cast,
             style,
             slots: { images: slotImages },
             overlays: shot?.textOverlays,
@@ -2449,9 +2476,11 @@ ${JSON.stringify(partials, null, 2)}
         const renderedPrompt = promptFor(run, item, videoTemplate, compileInput);
         videoParams.PROMPT = renderedPrompt.prompt;
         const promptWarning = untranslatedWarning(renderedPrompt.raw);
+        // 台词说话人归属逐级回落 → 记 warning（不阻塞）；多角色镜头里旧字符串 dialogue 无法确定归属时尤其重要。
+        const dialogueWarnings = dialogueAttributionWarnings(videoTemplate, shot || {}, shotCharacters, cast);
         // 画幅无官方对应档 → 回落默认 + warning（不臆造官方档位）。
         const sizeWarning = videoDims.warning ? { reason: videoDims.warning } : null;
-        const warningReason = [sizeWarning?.reason, promptWarning?.reason].filter(Boolean).join("；");
+        const warningReason = [sizeWarning?.reason, promptWarning?.reason, ...dialogueWarnings].filter(Boolean).join("；");
         return {
             kind: "video",
             template: videoTemplate,
