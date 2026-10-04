@@ -18,6 +18,8 @@ import { loadRegistry } from "./skills.js";
 import { createComfyClient, probeComfy, listComfyCapabilities, listTemplates } from "./providers/comfy.js";
 // 时长档位（D1）与模板清单同源；/api/durations 供前端按「当前视频模型」取可选档位。
 import { durationMetaForTemplate } from "./durations.js";
+// 生成参数能力校验（像素上限 / 宽高在档 / 时长帧数）：发起请求那一刻按模型元数据拦超限，不跑到 147 才炸。
+import { validateGenerationParams } from "./capability-limits.js";
 // 平台音色库（声音从平台音色库中选）的唯一事实源：/api/tts/voices 与 /api/providers 同源下发。
 import { QWEN3_TTS_TEMPLATE, isLanguageAllowed, isSpeakerAllowed, listVoices, qwen3Language, qwen3Speaker } from "./voices.js";
 import { forwardToLlm, chat as llmChat, externalProviders } from "./providers/llm.js";
@@ -285,6 +287,10 @@ function submitGeneration(kind, body) {
         // 能力不匹配 / 设备不可用时直接拒绝并给出可读原因，绝不静默改走别的设备。
         const verdict = registry.canRun(template);
         if (!verdict.ok) throw new Error(`无法提交${kind === "video" ? "生视频" : "生图"}任务：${verdict.reason}`);
+        // 发起生成那一刻按所选模型的能力元数据校验像素上限 / 宽高在档 / 时长帧数：
+        // 超限当场给可读错误，绝不静默放过、绝不静默改参，也不让请求跑到 147 才炸。
+        const check = validateGenerationParams(template, body.params || {});
+        if (!check.ok) throw new Error(`无法提交${kind === "video" ? "生视频" : "生图"}任务：${check.error}`);
         return local.submit({ ...body, kind });
     }
 

@@ -1,11 +1,12 @@
 import { type ReactNode } from "react";
-import { Slider } from "antd";
+import { Select, Slider } from "antd";
 import { useTranslation } from "react-i18next";
 
 import i18n from "@/i18n";
 import { ImageSettingsTheme } from "@/components/image-settings-panel";
 import { type CanvasTheme } from "@/lib/canvas-theme";
 import { clampVideoSeconds, computeVideoSize, inferVideoRatio, parseVideoResolution, readVideoDimensions, VIDEO_SECONDS_MAX, VIDEO_SECONDS_MIN, videoRatioOptions } from "@/lib/media-size";
+import { type TemplateSizeOption } from "@/services/api/template-sizes";
 import { type AiConfig } from "@/stores/use-config-store";
 
 const resolutionOptions = [
@@ -28,9 +29,11 @@ type VideoSettingsPanelProps = {
     theme: CanvasTheme;
     showTitle?: boolean;
     className?: string;
+    /** 该模型官方规格（来自 GET /api/providers 的 sizes）：给定时只读下拉，禁硬编码、禁自由填。 */
+    sizePicker?: { options: TemplateSizeOption[]; value: string; pending?: boolean; note?: string } | null;
 };
 
-export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = true, className = "w-[320px] space-y-4 rounded-2xl px-1 py-0.5" }: VideoSettingsPanelProps) {
+export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = true, className = "w-[320px] space-y-4 rounded-2xl px-1 py-0.5", sizePicker }: VideoSettingsPanelProps) {
     const { t } = useTranslation();
     const seconds = Number(clampVideoSeconds(config.videoSeconds || "6"));
     const videoMode = normalizeVideoModeValue(config.videoMode);
@@ -50,6 +53,23 @@ export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = 
         <ImageSettingsTheme theme={theme}>
             <div className={className} style={{ color: theme.node.text }} onMouseDown={(event) => event.stopPropagation()}>
                 {showTitle ? <div className="text-lg font-semibold">{t("settingsPanels.video.title")}</div> : null}
+                {sizePicker ? (
+                    <SettingGroup title={t("settingsPanels.video.spec")} color={theme.node.muted}>
+                        {/* 规格来自后端下发的该模型官方清单（只读下拉，不硬编码、不自由填）；超上限的档不下发。 */}
+                        <Select
+                            className="w-full"
+                            size="large"
+                            value={sizePicker.value || undefined}
+                            placeholder={sizePicker.pending ? t("settingsPanels.video.specPending") : sizePicker.note || t("settingsPanels.video.specPlaceholder")}
+                            disabled={!sizePicker.options.length}
+                            options={sizePicker.options}
+                            notFoundContent={sizePicker.pending ? t("settingsPanels.video.specPending") : sizePicker.note || t("settingsPanels.video.specPlaceholder")}
+                            onChange={(value) => onConfigChange("size", value)}
+                            onMouseDown={(event) => event.stopPropagation()}
+                        />
+                    </SettingGroup>
+                ) : (
+                    <>
                 <SettingGroup title={t("settingsPanels.video.quality")} color={theme.node.muted}>
                     <div className="grid grid-cols-4 gap-2.5">
                         {resolutionOptions.map((item) => (
@@ -84,6 +104,8 @@ export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = 
                         ))}
                     </div>
                 </SettingGroup>
+                    </>
+                )}
                 <SettingGroup title={t("settingsPanels.video.seconds")} color={theme.node.muted}>
                     <div className="flex items-center gap-3" onMouseDown={(event) => event.stopPropagation()}>
                         <Slider className="min-w-0 flex-1" min={VIDEO_SECONDS_MIN} max={VIDEO_SECONDS_MAX} step={1} value={seconds} onChange={(value) => onConfigChange("videoSeconds", String(Array.isArray(value) ? value[0] : value))} />

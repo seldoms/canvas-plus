@@ -513,13 +513,17 @@ export function buildGatewayTemplateScript(template: GatewayTemplateInfo) {
  * @param {function} http - 便捷请求；绝对 URL 原样使用，不会拼 /v1
  * @param {function} poll - poll(request, extract, { intervalMs, timeoutMs })
  */
-const TEMPLATE = { name: ${JSON.stringify(template.name)}, family: ${JSON.stringify(capability)}, tokens: ${JSON.stringify(template.tokens || [])} };
+const TEMPLATE = { name: ${JSON.stringify(template.name)}, family: ${JSON.stringify(capability)}, tokens: ${JSON.stringify(template.tokens || [])}, sizes: ${JSON.stringify((template.sizes || []).map((size) => [size.ratio, size.width, size.height]))} };
 
+// 尺寸档位来自后端下发的该模型官方规格（TEMPLATE.sizes），不硬编码 —— 避免提交超上限/非官方档。
+// 后端在发起生成那一刻会按能力元数据复核（capability-limits.js），这里先按官方档取，取不到才回落。
 function resolveSize(size, fallback) {
-  const preset = { "1:1": [1024, 1024], "16:9": [1344, 768], "9:16": [768, 1344], "3:2": [1216, 832], "2:3": [832, 1216] };
-  if (preset[size]) return preset[size];
-  const matched = String(size || "").match(/^(\\d+)\\s*[x×]\\s*(\\d+)$/i);
-  return matched ? [Number(matched[1]), Number(matched[2])] : fallback;
+  const key = String(size || "").trim().toLowerCase();
+  const tier = TEMPLATE.sizes.find((item) => item[0] === key);
+  if (tier) return [tier[1], tier[2]];
+  const matched = key.match(/^(\\d+)\\s*[x×]\\s*(\\d+)$/i);
+  if (matched) return [Number(matched[1]), Number(matched[2])];
+  return TEMPLATE.sizes[0] ? [TEMPLATE.sizes[0][1], TEMPLATE.sizes[0][2]] : fallback;
 }
 
 function absoluteUrl(gateway, url) {

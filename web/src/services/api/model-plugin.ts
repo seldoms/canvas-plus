@@ -1050,7 +1050,8 @@ return await generateVideo({
  * @returns {Promise<{url: string}>}
  */
 function resolveSize(size, fallback) {
-  const preset = { "1:1": [1024, 1024], "16:9": [1280, 720], "9:16": [720, 1280], "3:2": [1216, 832], "2:3": [832, 1216] };
+  // 档位取 H3 官方规格（与后端 sizes.js 的 minimax_h3 同源）；"auto"/取不到时回落官方 16:9 1344x768。
+  const preset = { "1:1": [768, 768], "16:9": [1344, 768], "9:16": [768, 1344], "4:3": [1024, 768], "3:4": [768, 1024], "21:9": [1792, 768] };
   if (preset[size]) return preset[size];
   const matched = String(size || "").match(/^(\\d+)\\s*[x×]\\s*(\\d+)$/i);
   return matched ? [Number(matched[1]), Number(matched[2])] : fallback;
@@ -1079,7 +1080,7 @@ async function waitForJobUrl(gateway, jobId, http, poll, options) {
 async function generateVideo({ prompt, images, params, baseUrl, http, poll }) {
   const gateway = baseUrl.replace(/\\/+$/, "").replace(/\\/v1$/i, "");
   if (!images || !images.length) throw new Error("H3 图生视频需要一张参考图，请先接入参考图");
-  const [width, height] = resolveSize(params.size || params.ratio, [1280, 720]);
+  const [width, height] = resolveSize(params.size || params.ratio, [1344, 768]);
   const baseSeed = params.seed === undefined || params.seed === null || params.seed === "" ? Math.floor(Math.random() * 2147483647) : Number(params.seed);
   // H3 的 LENGTH 是帧数（fps=24）且必须落在 17n+5 网格（5s≈124 帧、2.3s≈56 帧），不能把秒数直接当帧数。
   const frames = Math.max(1, Math.round((Number(params.seconds) || 5) * 24));
@@ -1115,7 +1116,8 @@ return await generateVideo({ prompt, images, params, baseUrl, http, poll });`,
  * @returns {Promise<{url: string}>}
  */
 function resolveSize(size, fallback) {
-  const preset = { "1:1": [1024, 1024], "16:9": [1280, 720], "9:16": [720, 1280], "3:2": [1216, 832], "2:3": [832, 1216] };
+  // 档位取 H3 官方规格（与后端 sizes.js 的 minimax_h3 同源）；"auto"/取不到时回落官方 16:9 1344x768。
+  const preset = { "1:1": [768, 768], "16:9": [1344, 768], "9:16": [768, 1344], "4:3": [1024, 768], "3:4": [768, 1024], "21:9": [1792, 768] };
   if (preset[size]) return preset[size];
   const matched = String(size || "").match(/^(\\d+)\\s*[x×]\\s*(\\d+)$/i);
   return matched ? [Number(matched[1]), Number(matched[2])] : fallback;
@@ -1143,7 +1145,7 @@ async function waitForJobUrl(gateway, jobId, http, poll, options) {
 
 async function generateVideo({ prompt, params, baseUrl, http, poll }) {
   const gateway = baseUrl.replace(/\\/+$/, "").replace(/\\/v1$/i, "");
-  const [width, height] = resolveSize(params.size || params.ratio, [1280, 720]);
+  const [width, height] = resolveSize(params.size || params.ratio, [1344, 768]);
   const baseSeed = params.seed === undefined || params.seed === null || params.seed === "" ? Math.floor(Math.random() * 2147483647) : Number(params.seed);
   // H3 的 LENGTH 是帧数（fps=24）且必须落在 17n+5 网格（5s≈124 帧、2.3s≈56 帧），不能把秒数直接当帧数。
   const frames = Math.max(1, Math.round((Number(params.seconds) || 5) * 24));

@@ -19,7 +19,16 @@
  * ⚠️ 关键修复（pilot-issues #77）：片段尺寸此前由 pipeline 的 `dimensionsForRatio("9:16", 768)`
  *   实时按比例推导 → **768x1376**（官方**没有**这一档）→ 拼接时被二次重采样。
  *   现在片段/关键帧/成片尺寸一律经本模块的 `sizeForRatio` 从登记表取（H3 竖屏 = 官方 768x1344）。
- *   ⚠️ 未登记规格的模板（测试桩 img-test / 未查证模型）才回落到旧的按比例推导，保证不臆造官方档位。
+ * ⚠️ 未登记规格的模板（测试桩 img-test / 未查证模型）才回落到旧的按比例推导，保证不臆造官方档位。
+ *
+ * ⚠️ **像素上限（maxPixels）也登记在本模块**（不止写在注释里）—— 供 capability-limits.js 在
+ *   「发起生成请求那一刻」按模型校验，超限当场返回可读错误，不再跑到 147 才炸。
+ *   一手证据（147，2026-10-04，任务 video-mutm8c0y-mewdg / 模板 video_h3_i2v）：提交 2048x2048 时
+ *   节点 MiniMaxH3AudioConditioningT8 抛 ValueError：
+ *     "Requested canvas has 4,194,304 pixels and exceeds the configured MiniMax H3 2.0MP cap
+ *      of 2,088,960 pixels (1920x1088); reduce width/height"
+ *   → `minimax_h3.maxPixels = 2088960`（1920x1088），capSource = "147-error"。
+ *   其余视频模型的 cap 取 registry `limits.resolutions` 里**官方最大档**的像素数（capSource = "registry-official"）。
  */
 
 // 模板名 → registry 模型键（复用 model-rules 已冻结的映射表，不另起一套）。
@@ -160,6 +169,10 @@ export const SIZE_CATALOG = Object.freeze({
         verified: true,
         align: null,
         mode: "select",
+        // 官方最大档 1280x720 = 921,600 像素（1.3B 只支持 480P）—— registry 派生，非 147 报错。
+        maxPixels: 921600,
+        maxSize: "1280x720",
+        capSource: "registry-official",
         note: "官方 832x480 / 1280x720；1.3B 只支持 480P（registry wan21_t2v.limits.resolutions）",
     },
     wan22_animate: {
@@ -171,6 +184,10 @@ export const SIZE_CATALOG = Object.freeze({
         verified: true,
         align: 16,
         mode: "select",
+        // 官方最大档 1280x720 = 921,600 像素（预处理按面积 1280x720）—— registry 派生。
+        maxPixels: 921600,
+        maxSize: "1280x720",
+        capSource: "registry-official",
         note: "预处理按面积 1280x720，宽高必须 16 倍数（registry wan22_animate.limits.resolutions）",
     },
     scail2: {
@@ -182,6 +199,10 @@ export const SIZE_CATALOG = Object.freeze({
         verified: true,
         align: 32,
         mode: "select",
+        // 官方最大档 704x1280 = 901,120 像素（704p）—— registry 派生。
+        maxPixels: 901120,
+        maxSize: "704x1280",
+        capSource: "registry-official",
         note: "官方 512p / 704p（姿态驱动更好，如 704x1280），32 对齐（registry scail2.limits.resolutions）",
     },
     minimax_h3: {
@@ -199,8 +220,12 @@ export const SIZE_CATALOG = Object.freeze({
         verified: true,
         align: 32,
         mode: "select",
+        // ⚠️ H3 画面上限：2,088,960 像素（1920x1088）—— 取自 147 一手报错（见模块头注释）。
+        maxPixels: 2088960,
+        maxSize: "1920x1088",
+        capSource: "147-error",
         // ⚠️ 9:16 官方档是 768x1344（不是按比例推导的 768x1376）。
-        note: "官方短边 768 原生（16:9=1344x768）、竖屏 480x832 / 768x1344，32 对齐（registry minimax_h3.limits.resolutions）",
+        note: "官方短边 768 原生（16:9=1344x768）、竖屏 480x832 / 768x1344，32 对齐；画面上限 1920x1088（2.0MP，147 报错原文）（registry minimax_h3.limits.resolutions）",
     },
     ltx23: {
         sizes: null,
@@ -234,6 +259,7 @@ export function sizeMetaForTemplate(name) {
     const model = template ? ruleKeyForTemplate(template) : null;
     const entry = model ? SIZE_CATALOG[model] : null;
     const sizes = entry && Array.isArray(entry.sizes) ? entry.sizes.map((size) => ({ ...size, value: sizeId(size.width, size.height) })) : null;
+    const maxPixels = Number(entry?.maxPixels) > 0 ? Number(entry.maxPixels) : null;
     return {
         sizes,
         verified: Boolean(entry?.verified),
@@ -241,8 +267,23 @@ export function sizeMetaForTemplate(name) {
         default: entry && entry.default ? String(entry.default) : null,
         mode: entry?.mode || "none",
         align: entry?.align ?? null,
+        // 画面上限（像素）随清单同源下发 —— 前端可据此禁用超限档；后端据此在提交时校验。
+        maxPixels,
+        maxSize: maxPixels ? (entry?.maxSize || null) : null,
+        capSource: maxPixels ? (entry?.capSource || null) : null,
         note: entry?.note || (isSizeTemplate(template) ? "该模型未登记官方规格，待查证" : "非图像/视频模板，无画面规格"),
     };
+}
+
+/**
+ * 取模板所属模型的画面上限（像素）。未登记上限 / 未映射模板 → null（无法校验，不臆造）。
+ * @param {string} name 后端模板名
+ * @returns {{model:string|null,maxPixels:number,maxSize:string|null,source:string|null}|null}
+ */
+export function pixelCapForTemplate(name) {
+    const meta = sizeMetaForTemplate(name);
+    if (!meta.maxPixels) return null;
+    return { model: meta.model, maxPixels: meta.maxPixels, maxSize: meta.maxSize, source: meta.capSource };
 }
 
 /** 选定模板 → 可选规格数组（含 value=WxH）；未登记 / 无规格返回 null。 */

@@ -1,12 +1,15 @@
-import { useEffect, useRef, useState, type RefObject } from "react";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { Settings2 } from "lucide-react";
 import { Button } from "antd";
 
 import { VideoSettingsPanel, videoModeLabel, videoResolutionLabel, videoSecondsLabel, videoSizeLabel } from "@/components/video-settings-panel";
 import { canvasThemes } from "@/lib/canvas-theme";
+import { defaultSizeFor, findTemplate, loadTemplateCatalog, sizeNoteFor, sizeOptionsFor, type GatewayTemplateInfo, type TemplateSizeOption } from "@/services/api/template-sizes";
 import { useThemeStore } from "@/stores/use-theme-store";
-import type { AiConfig } from "@/stores/use-config-store";
+import { modelOptionName, type AiConfig } from "@/stores/use-config-store";
+
+type CanvasVideoSizePicker = { options: TemplateSizeOption[]; value: string; pending?: boolean; note?: string } | null;
 
 type CanvasVideoSettingsPopoverProps = {
     config: AiConfig;
@@ -21,6 +24,43 @@ export function CanvasVideoSettingsPopover({ config, onConfigChange, buttonClass
     const panelRef = useRef<HTMLDivElement>(null);
     const [open, setOpen] = useState(false);
     const [buttonRect, setButtonRect] = useState<DOMRect | null>(null);
+
+    // 画布的视频尺寸**必须来自 GET /api/providers 的该模型 sizes**（禁硬编码、禁自由填）；
+    // 网关不可达时保持空 → 退回旧控件，不阻塞画布。
+    const [videoTemplates, setVideoTemplates] = useState<GatewayTemplateInfo[]>([]);
+    useEffect(() => {
+        let alive = true;
+        void loadTemplateCatalog("video")
+            .then((templates) => {
+                if (alive) setVideoTemplates(templates);
+            })
+            .catch(() => {
+                if (alive) setVideoTemplates([]);
+            });
+        return () => {
+            alive = false;
+        };
+    }, []);
+
+    const templateName = modelOptionName(config.model || config.videoModel || "");
+    const template = useMemo(() => findTemplate(videoTemplates, templateName), [videoTemplates, templateName]);
+    const sizeOptions = useMemo(() => sizeOptionsFor(template), [template]);
+    const defaultSize = defaultSizeFor(template);
+    // 当前 size 不在官方档内（含历史 auto / 超限档）→ 一次性落回该模型默认档，保证提交的是合法档。
+    const committedRef = useRef<string | null>(null);
+    useEffect(() => {
+        if (!sizeOptions?.length) return;
+        if (sizeOptions.some((option) => option.value === config.size)) return;
+        const target = defaultSize && sizeOptions.some((option) => option.value === defaultSize) ? defaultSize : sizeOptions[0].value;
+        const key = `${templateName}:${target}`;
+        if (committedRef.current === key) return;
+        committedRef.current = key;
+        onConfigChange("size", target);
+    }, [sizeOptions, defaultSize, config.size, onConfigChange, templateName]);
+
+    const sizePicker: CanvasVideoSizePicker = template
+        ? { options: sizeOptions ?? [], value: sizeOptions?.some((option) => option.value === config.size) ? config.size : defaultSize ?? "", pending: !sizeOptions, note: sizeNoteFor(template) }
+        : null;
 
     useEffect(() => {
         if (!open) return;
@@ -43,7 +83,7 @@ export function CanvasVideoSettingsPopover({ config, onConfigChange, buttonClass
         };
     }, [open]);
 
-    const panel = open && buttonRect ? <VideoSettingsPortal buttonRect={buttonRect} panelRef={panelRef} placement={placement} theme={theme} config={config} onConfigChange={onConfigChange} /> : null;
+    const panel = open && buttonRect ? <VideoSettingsPortal buttonRect={buttonRect} panelRef={panelRef} placement={placement} theme={theme} config={config} onConfigChange={onConfigChange} sizePicker={sizePicker} /> : null;
 
     return (
         <>
@@ -66,6 +106,7 @@ function VideoSettingsPortal({
     theme,
     config,
     onConfigChange,
+    sizePicker,
 }: {
     buttonRect: DOMRect;
     panelRef: RefObject<HTMLDivElement | null>;
@@ -73,6 +114,7 @@ function VideoSettingsPortal({
     theme: (typeof canvasThemes)[keyof typeof canvasThemes];
     config: AiConfig;
     onConfigChange: (key: keyof AiConfig, value: string) => void;
+    sizePicker: CanvasVideoSizePicker;
 }) {
     const width = 356;
     const gap = 8;
@@ -104,7 +146,7 @@ function VideoSettingsPortal({
             onMouseDown={(event) => event.stopPropagation()}
             onClick={(event) => event.stopPropagation()}
         >
-            <VideoSettingsPanel config={config} onConfigChange={(key, value) => onConfigChange(key, value)} theme={theme} className="space-y-4" />
+            <VideoSettingsPanel config={config} onConfigChange={(key, value) => onConfigChange(key, value)} theme={theme} className="space-y-4" sizePicker={sizePicker} />
         </div>,
         document.body,
     );
