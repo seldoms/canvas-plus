@@ -23,8 +23,12 @@ export function useProjectTimeline({ runId }: { runId: string }) {
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState("");
 
-    // 是否在跑以服务端为准：progress.phase=running 或 /progress 返回 inflight；据此决定完整 run 的轮询节流。
-    const active = inflight || progress?.phase === "running";
+    // 是否在跑以服务端为准：以 /progress 返回的 inflight 为权威（后端正在执行哪个阶段就为 true）。
+    // 不能再用 `progress.phase === "running"` 兜底当「在跑」：后端 recomputeStage 落终态时不 writeProgress，
+    // progress.json 会冻在 phase:"running"，只看 phase 会让时间线永远显示「生成中」并持续轮询（#73，同 #71 判据）。
+    const active = inflight;
+    // 只有当「服务端仍在执行」且 phase 显示 running 时，才是真正在跑的阶段；inflight=false 即已落终态，不再铺进度行。
+    const runningStage = progress && progress.phase === "running" && inflight ? progress.stage : "";
 
     useEffect(() => {
         if (!runId) {
@@ -82,5 +86,5 @@ export function useProjectTimeline({ runId }: { runId: string }) {
         };
     }, [runId, active]);
 
-    return { runId, run, progress, active, loading, error };
+    return { runId, run, progress, active, runningStage, loading, error };
 }

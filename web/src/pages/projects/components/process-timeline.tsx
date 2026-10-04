@@ -75,7 +75,7 @@ export function ProcessTimeline({
 }) {
     const { t } = useTranslation();
     const navigate = useNavigate();
-    const { run, progress, active, error } = useProjectTimeline({ runId });
+    const { run, progress, active, runningStage, error } = useProjectTimeline({ runId });
     const stages = useMemo(() => buildStages(run), [run]);
     const registered = useMemo(() => {
         const urls = new Set<string>();
@@ -85,7 +85,6 @@ export function ProcessTimeline({
         }
         return urls;
     }, [assetRefs]);
-    const runningStage = progress && progress.phase === "running" ? progress.stage : "";
 
     const openRun = () => {
         if (!run) return;

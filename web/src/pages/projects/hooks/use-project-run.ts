@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import i18n from "@/i18n";
 import { attachProjectRun, cancelPipelineStage, createPipelineRun, fetchPipelineProgress, listPipelineGates, resolveProjectSourceText, runPipelineStage, type GatewayStageProgress } from "@/services/api/gateway";
@@ -41,10 +41,21 @@ export function useProjectRun({
     const [error, setError] = useState("");
     const [notice, setNotice] = useState("");
     const runId = createdRunId || activeRunId || "";
+    /**
+     * 上一轮 progress 轮询看到的 inflight 标志（null=本轮还没打过）。
+     * 与流水线页 use-pipeline-run.ts 的 #71 判据同源：后端 recomputeStage 落终态（done/blocked 等）时不写
+     * progress.json，phase 会停在 "running"；只看 phase 会让面板永远「生成中」、按钮永久禁用（#70/#71/#73）。
+     * inflight 由 true 翻成 false 即表示服务端已不再执行本阶段，据此补拉一次完整 run 取真实终态。
+     */
+    const progressInflight = useRef<boolean | null>(null);
 
     // 刷新恢复：项目里该阶段已在跑时接回进度轮询（stageStatus 由关联 run 合并而来）。
+    // 反向同理：任一来源（run 阶段摘要）落到终态就解除运行态，不再显示「生成中」（#73）。
     useEffect(() => {
-        if (stage && stageStatus[stage] === "running") setRunning(true);
+        if (!stage) return;
+        const status = stageStatus[stage];
+        if (status === "running") setRunning(true);
+        else if (status === "done" || status === "error" || status === "canceled" || status === "blocked") setRunning(false);
     }, [stage, stageStatus]);
 
     // 切项目 / 切工作区时清掉运行态，避免上一阶段的进度串到本工作区。
@@ -57,17 +68,26 @@ export function useProjectRun({
     }, [projectId, stage, activeRunId]);
 
     // 阶段跑完/中止后拉一次完整 run（页面据此刷新上下文与门禁）。
+    // 判据与流水线页 use-pipeline-run.ts 的 #71 完全一致：progress.phase 到终态，**或** inflight 由 true 翻成
+    // false（服务端已不再执行，但 recomputeStage 未 writeProgress、phase 仍停在 running）任一命中即补拉完整 run。
     useEffect(() => {
         if (!running || !runId || !stage) return;
+        // 每轮轮询（开始/换 run/换阶段）重置基线：第一次打点只建立 inflight 基线。
+        progressInflight.current = null;
         let alive = true;
         const tick = () => {
             void fetchPipelineProgress(runId)
-                .then(({ progress: latest }) => {
+                .then(({ progress: latest, inflight }) => {
                     if (!alive) return;
                     if (latest && latest.stage === stage) setProgress(latest);
-                    if (latest?.phase === "done" || latest?.phase === "failed") {
+                    const phaseTerminal = latest?.phase === "done" || latest?.phase === "failed";
+                    const stoppedExecuting = inflight === false && progressInflight.current !== false;
+                    if (phaseTerminal || stoppedExecuting) {
+                        progressInflight.current = false;
                         setRunning(false);
                         void refresh();
+                    } else {
+                        progressInflight.current = inflight;
                     }
                 })
                 .catch(() => {
