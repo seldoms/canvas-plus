@@ -357,10 +357,12 @@ disableEmptyImageRefs(graph) => string[]        // 摘除 image 为空的 LoadIm
 `createLocalRunner` 对 `template` 以 `video_` 开头的任务，在渲染前把 `WIDTH`/`HEIGHT` 吸附到最近的 32 倍数（下限 32，720→736）并打日志。
 调用方仍应尽量传标准尺寸（480×864、768×1344），吸附只是兜底。
 
-**生成参数自适应（`capability-limits.js`）**：发起生成那一刻（`submitGeneration`）按所选模型的**能力元数据**（`sizes.js` 的 `SIZE_CATALOG`：官方规格 + 像素上限 `maxPixels`）把不合规的尺寸/时长**自动吸附到合法档**，**不再报错拒绝**（产品口径：「只要方向对，该压缩的压缩、该放大的放大」）：
-- `adaptSizeParams`：从 `WIDTH/HEIGHT` 判画幅比例（16:9 / 9:16 / 1:1 / 21:9 / 4:3 / 3:4 …）→ 在该模型合法档里挑**同比例、像素不超上限的最大档**（能放大就放大）；无同比例 → 挑比例最接近且不超上限的。已是合法档则原样放行（不偷改）。
+**生成参数自适应（`capability-limits.js` + `input-image.js`）**：发起生成那一刻（`submitGeneration`）按所选模型的**能力元数据**（`sizes.js` 的 `SIZE_CATALOG`：官方规格 + 像素上限 `maxPixels`）把不合规的尺寸/时长**自动吸附到合法档**，**不再报错拒绝**（产品口径：「只要方向对，该压缩的压缩、该放大的放大」）：
+- **尺寸基准 = 该次实际输入图的真实比例**（图生 / 参考生视频）：147 节点 `first_frame → resize_image(..., "disabled")` 是**不保持比例直接拉伸**（`ref_images` 才是等比缩放），平台「先选画布再喂图」→ 比例不一致必变形。`input-image.js` 在提交那一刻从**实际资产/产物**（`/api/artifacts/...` / 本机路径 / data URL / 远端 URL）只读文件头解析输入图真实像素（**不信前端传的尺寸**；token 优先级 `FIRST_FRAME > INPUT_IMAGE > REF_IMAGE_1..3`，只认模板声明的 token；解析不出 → 按提交尺寸），再把图真实宽高交给 `adaptSizeParams`（`image-dims.js` 零依赖解析 PNG/JPEG/GIF/WebP/BMP）。
+- `adaptSizeParams`：**图比例 ≠ 提交比例 → 以图为准**（`basis:"input-image"`）；一致 / 无输入图（纯文生视频）→ 按 `WIDTH/HEIGHT`（`basis:"requested"`，尊重用户明确选的档、该放大照样放大）。用依据比例在该模型合法档里挑**同比例、像素不超上限的最大档**（能放大就放大）；无同比例 → 挑比例最接近且不超上限的。
 - `adaptDurationParams`：`LENGTH`（帧）不在 `17k+5` 网格 → **向上吸附**（复用 `durations.js` 口径）；超该模型档位上限 → 吸附到最大合法档。
-- **留痕可查（绝不静默偷改）**：调整写进该次任务 `job.meta.sizeAdjust = { from, to, ratio, reason }` / `meta.durationAdjust = { from, to, grid, reason }`，`params.WIDTH/HEIGHT/LENGTH` 用调整后的值；界面不堆解释字。
+- **留痕可查（绝不静默偷改）**：调整写进该次任务 `job.meta.sizeAdjust = { from, to, ratio, basis, reason, image?, imageRatio?, aspectMismatch? }` / `meta.durationAdjust = { from, to, grid, reason }`，`params.WIDTH/HEIGHT/LENGTH` 用调整后的值；界面不堆解释字。`basis` 表明依据输入图还是提交尺寸调整（`"input-image" | "requested"`）。
+- **变形风险可见**：最终画布比例与输入图比例仍有可感知差异（>2%）→ `sizeAdjust.aspectMismatch = { image, canvas, note }`，随任务记录可见（画布侧也用现有 Tooltip 提示「画布比例 vs 参考图比例不符」）。
 - **兜底（不许静默放过）**：模板无规格 / 上限缺失 / 连一个不超上限的档都没有 → 回落 `validateSizeParams` 的**可读拒绝**。前端画布规格下拉只列合法档（`GET /api/providers` 的 `sizes`），旧的超限尺寸自动按比例吸附并展示最终值。
 
 

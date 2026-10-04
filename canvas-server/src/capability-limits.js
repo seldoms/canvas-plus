@@ -33,6 +33,12 @@ const toPosInt = (value) => {
 const withThousands = (value) => Number(value).toLocaleString("en-US");
 
 /**
+ * 画布比例与输入图比例的**可感知差异阈值**（相对差 2%）。
+ * 超过它 → 写进留痕 `sizeAdjust.aspectMismatch`（该次任务记录里可见），把「仍可能变形」摆到明面。
+ */
+export const ASPECT_MISMATCH_TOLERANCE = 0.02;
+
+/**
  * 校验宽高：像素上限 + 是否在模型官方可选档内。
  * WIDTH/HEIGHT 任一缺失/非法 → 跳过（有些模板本就不吃 WIDTH/HEIGHT，不能误拦）。
  * @returns {{ok:boolean,error?:string,code?:string,details?:object}}
@@ -117,23 +123,35 @@ export function validateGenerationParams(name, params = {}) {
  * 产品口径（2026-10-04 拍板）：
  *   「这个能不能自适应一下，只要方向对，分辨率该压缩的就压缩一下，该放大的就放大一下？」
  * 即：**不要「报错拒绝」，要「自动调整到合法档」** —— 把包袱从用户身上拿走。
- *   1. 从 WIDTH/HEIGHT 判方向/比例（16:9 / 9:16 / 1:1 / 21:9 / 4:3 / 3:4 …）；
- *   2. 在该模板合法档里找**同比例**的 → 挑「不超该模型像素上限前提下像素最大」的那档
+ *
+ * ⚠️ 基准（2026-10-05 升级）：**以输入图的真实比例为基准**，不是提交的 WIDTH/HEIGHT。
+ *   147 节点源码证实 `first_frame → resize_image(..., "disabled")` = **不保持比例直接拉伸**
+ *   （见模块头注释 / sizes.js 头注释），而平台是「先选画布再喂图」——
+ *   只要「图的比例」与「提交尺寸比例」不一致就必然变形，所以此时**以图为准**。
+ *   1. 依据选择：有输入图且「图比例 ≠ 提交比例」→ `basis:"input-image"`（以图为准）；
+ *      一致（或没有输入图）→ `basis:"requested"`（尊重用户明确选的档，该放大照样放大）；
+ *   2. 用**依据比例**在该模板合法档里找**同比例**的 → 挑「不超该模型像素上限前提下像素最大」的那档
  *      （**能放大就放大**把模型能力用满；超上限就压）；
  *   3. 没有严格同比例 → 挑**比例最接近**的（并列时取像素更大且不超上限的）；
  *   4. **不报错**，直接按调整后的尺寸继续。
+ *   5. 变形风险可见：最终画布比例与输入图比例仍有可感知差异（>2%）→ `sizeAdjust.aspectMismatch`
+ *      （图/画布比例 + 说明），随任务留痕可见。
  * 且**绝不静默偷改**：调整结果通过 `sizeAdjust` 交回调用方写进该次任务留痕。
  *
  * 兜底（**不许静默放过**）：模板无合法档 / 上限缺失 / 连一个不超上限的档都找不到
  *   → 回落既有的可读拒绝（validateSizeParams）。模板不吃 WIDTH/HEIGHT（缺参/非法）→ 原样放行。
  *
- * ⚠️ 已经是「合法档且不超上限」的尺寸**原样放行**，不因为「能放大」就偷偷改用户明确选的合法档
+ * ⚠️ 已经是「合法档且不超上限」、且**图与提交比例一致**的尺寸**原样放行**，
+ *   不因为「能放大」就偷偷改用户明确选的合法档
  *   （`1280x720` 不是 H3 的合法档，所以会走自适应放大成官方 16:9 的 `1344x768`；
  *    而用户明确选的 `1344x768` / `768x1344` 等合法档不会被改）。
  *
  * @param {string} name 后端模板名
  * @param {object} params 提交参数（含 WIDTH/HEIGHT）
- * @param {{sizes?:Array|null, cap?:object|null}} [options] 仅供测试注入临时能力元数据（模拟「无规格 / 缺上限」的模板）；生产调用不传。
+ * @param {{sizes?:Array|null, cap?:object|null, image?:{width:number,height:number}|null}} [options]
+ *   sizes/cap 仅供测试注入临时能力元数据（模拟「无规格 / 缺上限」的模板），生产调用不传；
+ *   image = 该次**实际输入图**的真实像素宽高（调用方从资产/产物读得，见 input-image.js），
+ *   缺省 = 无输入图（纯文生视频）→ 按 params.WIDTH/HEIGHT 自适应。
  * @returns {{ok:true,params:object,sizeAdjust:object|null}|{ok:false,code:string,error:string,details?:object}}
  */
 export function adaptSizeParams(name, params = {}, options = {}) {
@@ -148,8 +166,18 @@ export function adaptSizeParams(name, params = {}, options = {}) {
     const sizeValue = `${width}x${height}`;
     const withinCap = !cap || width * height <= cap.maxPixels;
 
-    // 已是合法档且不超上限 → 原样放行（不偷改用户明确选的合法档）。
-    if (sizes && sizes.some((size) => size.value === sizeValue) && withinCap) {
+    // 输入图真实像素（调用方从**实际资产/产物**读得；缺省 = 无输入图 → 按提交尺寸）。
+    const image = normalizeImageBasis(options.image);
+    const requestedAspect = width / height;
+    const requestedRatio = ratioOfSize(width, height);
+    // 依据选择：「图比例 ≠ 提交比例」→ 以图为准（不一致必被 first_frame 拉伸）；一致 / 无图 → 按提交尺寸走。
+    const imageDrives = Boolean(image) && !aspectsClose(image.aspect, requestedAspect);
+    const basis = imageDrives ? "input-image" : "requested";
+    const basisAspect = imageDrives ? image.aspect : requestedAspect;
+    const basisRatio = imageDrives ? image.ratio : requestedRatio;
+
+    // 已是合法档且不超上限，且不是「以图为准覆盖提交」→ 原样放行（不偷改用户明确选的合法档）。
+    if (!imageDrives && sizes && sizes.some((size) => size.value === sizeValue) && withinCap) {
         return { ok: true, params: { ...params }, sizeAdjust: null };
     }
 
@@ -160,20 +188,17 @@ export function adaptSizeParams(name, params = {}, options = {}) {
     const candidates = sizes.filter((size) => size.width * size.height <= cap.maxPixels);
     if (!candidates.length) return fallbackSizeVerdict(name, params);
 
-    // ① 判方向/比例：W×H 约简成最简画幅（1920x1080 → 16:9，2048x2048 → 1:1）。
-    const ratio = ratioOfSize(width, height);
-    const wantedAspect = width / height;
     const aspectOf = (item) => {
         const value = aspectValue(item?.ratio);
         return value != null ? value : item && item.height > 0 ? item.width / item.height : null;
     };
 
-    // ② 同比例档：画幅字符串相等，或数值比例相当（兼容 21:9/7:3 这类同值别名）。
+    // 同比例档：画幅字符串相等，或数值比例相当（兼容 21:9/7:3 这类同值别名）。
     const sameRatio = candidates.filter((size) => {
         const label = normalizeRatio(size.ratio);
-        if (label && ratio && label === ratio) return true;
+        if (label && basisRatio && label === basisRatio) return true;
         const aspect = aspectOf(size);
-        return aspect != null && Math.abs(aspect - wantedAspect) <= 1e-6 * Math.max(1, Math.abs(aspect));
+        return aspect != null && Math.abs(aspect - basisAspect) <= 1e-6 * Math.max(1, Math.abs(aspect));
     });
 
     let chosen;
@@ -182,34 +207,51 @@ export function adaptSizeParams(name, params = {}, options = {}) {
         // 同比例里取像素最大的 → 把模型能力用满（能放大就放大；都超上限时已在上面过滤）。
         chosen = sameRatio.slice().sort((a, b) => b.width * b.height - a.width * a.height)[0];
     } else {
-        // ③ 无严格同比例 → 挑比例最接近的（并列取像素更大者）。
+        // 无严格同比例 → 挑比例最接近的（并列取像素更大者）。
         matchedSameRatio = false;
         chosen = candidates
             .slice()
             .sort((a, b) => {
-                const da = Math.abs((aspectOf(a) ?? Number.POSITIVE_INFINITY) - wantedAspect);
-                const db = Math.abs((aspectOf(b) ?? Number.POSITIVE_INFINITY) - wantedAspect);
+                const da = Math.abs((aspectOf(a) ?? Number.POSITIVE_INFINITY) - basisAspect);
+                const db = Math.abs((aspectOf(b) ?? Number.POSITIVE_INFINITY) - basisAspect);
                 if (Math.abs(da - db) > 1e-9) return da - db;
                 return b.width * b.height - a.width * a.height;
             })[0];
     }
 
     const to = `${chosen.width}x${chosen.height}`;
+    // 最终与提交尺寸相同（且非以图覆盖）→ 没有发生实际调整。
+    if (to === sizeValue && !imageDrives) return { ok: true, params: { ...params }, sizeAdjust: null };
+
     const capMp = `${(cap.maxPixels / (1024 * 1024)).toFixed(1)}MP`;
     const overCap = width * height > cap.maxPixels;
-    const reasonParts = [overCap ? `超出该模型 ${capMp} 上限（${cap.maxSize || cap.maxPixels} 像素）` : `不在该模型可选档内`];
-    reasonParts.push(matchedSameRatio ? `按 ${ratio} 比例吸附到合法档 ${to}` : `无 ${ratio} 同比例档，取比例最接近的 ${to}`);
+    const reasonParts = [];
+    if (imageDrives) reasonParts.push(`输入图 ${image.size}（${image.ratio}）与提交 ${sizeValue}（${requestedRatio}）比例不符，以图为准`);
+    else if (overCap) reasonParts.push(`超出该模型 ${capMp} 上限（${cap.maxSize || cap.maxPixels} 像素）`);
+    else reasonParts.push(`不在该模型可选档内`);
+    reasonParts.push(matchedSameRatio ? `按 ${basisRatio} 比例吸附到合法档 ${to}` : `无 ${basisRatio} 同比例档，取比例最接近的 ${to}`);
 
     const adjusted = { ...params, WIDTH: chosen.width, HEIGHT: chosen.height };
     // 调用方若用小写 width/height，同步其口径，避免只改一半。
     if (params && Object.prototype.hasOwnProperty.call(params, "width")) adjusted.width = chosen.width;
     if (params && Object.prototype.hasOwnProperty.call(params, "height")) adjusted.height = chosen.height;
 
+    // 变形风险可见：最终画布比例与输入图比例仍有可感知差异（>2%）→ 明确标注（任务记录里可见）。
+    const aspectMismatch = image ? aspectMismatchOf(image, chosen) : null;
+
     return {
         ok: true,
         params: adjusted,
-        sizeAdjust: { from: sizeValue, to, ratio, reason: reasonParts.join("；") },
-        details: { model: cap.model || null, maxPixels: cap.maxPixels, maxSize: cap.maxSize || null, matchedSameRatio },
+        sizeAdjust: {
+            from: sizeValue,
+            to,
+            ratio: basisRatio,
+            basis,
+            reason: reasonParts.join("；"),
+            ...(image ? { image: image.size, imageRatio: image.ratio } : {}),
+            ...(aspectMismatch ? { aspectMismatch } : {}),
+        },
+        details: { model: cap.model || null, maxPixels: cap.maxPixels, maxSize: cap.maxSize || null, matchedSameRatio, basis, imageDriven: imageDrives },
     };
 }
 
@@ -269,7 +311,10 @@ export function adaptDurationParams(name, params = {}) {
  * 调用方拿到 `ok:false` 就原样回 400；拿到 `ok:true` 就用 `params` 提交、把 `sizeAdjust/durationAdjust` 写进该次任务留痕。
  * @param {string} name 后端模板名
  * @param {object} params 提交参数
- * @param {{sizes?:Array|null, cap?:object|null}} [options] 仅供测试注入临时能力元数据；生产调用不传。
+ * @param {{sizes?:Array|null, cap?:object|null, image?:{width:number,height:number}|null}} [options]
+ *   sizes/cap 仅供测试注入临时能力元数据；生产不传。
+ *   image = 该次**实际输入图**真实像素（调用方从资产/产物读得）→ 尺寸自适应**以图比例为准**
+ *   （见 adaptSizeParams；无输入图走 params.WIDTH/HEIGHT）。
  * @returns {{ok:true,params:object,sizeAdjust:object|null,durationAdjust:object|null}|{ok:false,code?:string,error:string,details?:object}}
  */
 export function adaptGenerationParams(name, params = {}, options = {}) {
@@ -304,4 +349,35 @@ function aspectValue(ratio) {
     const w = Number(match[1]);
     const h = Number(match[2]);
     return w > 0 && h > 0 ? w / h : null;
+}
+
+/** 归一化「输入图真实像素」选项：{width,height} → {width,height,size,ratio,aspect}；非法返回 null。 */
+function normalizeImageBasis(image) {
+    if (!image || typeof image !== "object") return null;
+    const width = toPosInt(image.width ?? image.WIDTH);
+    const height = toPosInt(image.height ?? image.HEIGHT);
+    if (!width || !height) return null;
+    return { width, height, size: `${width}x${height}`, ratio: ratioOfSize(width, height), aspect: width / height };
+}
+
+/** 两个宽高比是否「实质一致」（相对差 ≤ 可感知阈值）→ 一致就不必以图覆盖提交。 */
+function aspectsClose(a, b) {
+    if (!(a > 0) || !(b > 0)) return false;
+    return Math.abs(a - b) / Math.max(a, b) <= ASPECT_MISMATCH_TOLERANCE;
+}
+
+/**
+ * 变形风险标注：最终画布比例与输入图比例仍有可感知差异（>2%）→ 返回
+ * `{image, canvas, note}`（否则 null）。宁可标注也不静默放过。
+ */
+function aspectMismatchOf(image, chosen) {
+    const canvasAspect = chosen.width / chosen.height;
+    const delta = Math.abs(canvasAspect - image.aspect) / Math.max(image.aspect, 1e-9);
+    if (delta <= ASPECT_MISMATCH_TOLERANCE) return null;
+    const canvasRatio = normalizeRatio(chosen.ratio) || ratioOfSize(chosen.width, chosen.height);
+    return {
+        image: image.ratio,
+        canvas: canvasRatio,
+        note: `画布 ${chosen.width}x${chosen.height}（${canvasRatio}）与输入图 ${image.size}（${image.ratio}）仍有约 ${(delta * 100).toFixed(1)}% 比例差，first_frame 可能轻微变形`,
+    };
 }

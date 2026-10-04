@@ -15,12 +15,14 @@ import { createProjects } from "./projects.js";
 import { createBibleStore } from "./bible.js";
 import { deriveGates } from "./gates.js";
 import { loadRegistry } from "./skills.js";
-import { createComfyClient, probeComfy, listComfyCapabilities, listTemplates } from "./providers/comfy.js";
+import { createComfyClient, probeComfy, listComfyCapabilities, listTemplates, extractTokens } from "./providers/comfy.js";
 // 时长档位（D1）与模板清单同源；/api/durations 供前端按「当前视频模型」取可选档位。
 import { durationMetaForTemplate } from "./durations.js";
 // 生成参数能力校验 + 自适应（像素上限 / 宽高在档 / 时长帧数）：发起请求那一刻按模型元数据
 // 把超限尺寸/时长**自动吸附到合法档**（不报错拒绝），调整结果写进该次任务留痕（meta.sizeAdjust/durationAdjust）。
 import { adaptGenerationParams } from "./capability-limits.js";
+// 该次任务**实际输入图**的真实像素宽高（从资产/产物读，不信前端传的尺寸）：尺寸自适应以图比例为基准。
+import { resolveInputImageSize } from "./input-image.js";
 // 平台音色库（声音从平台音色库中选）的唯一事实源：/api/tts/voices 与 /api/providers 同源下发。
 import { QWEN3_TTS_TEMPLATE, isLanguageAllowed, isSpeakerAllowed, listVoices, qwen3Language, qwen3Speaker } from "./voices.js";
 import { forwardToLlm, chat as llmChat, externalProviders } from "./providers/llm.js";
@@ -279,8 +281,26 @@ const artifacts = createArtifacts({
 });
 startupMark("artifacts 内核");
 
+/**
+ * 解析该次提交的**实际输入图**真实宽高（只对**视频模板**做：图生/参考生视频才会被 first_frame 拉伸）。
+ * 从模板 JSON 扫出实际声明的 token（不硬编码模板名），再按主驱动图优先从资产/产物读真实像素。
+ * 任何异常 / 读不到 / 未知格式 → null（回落「按提交尺寸自适应」），**绝不阻塞提交、绝不臆造尺寸**。
+ */
+async function resolveInputImageForSubmit(template, params) {
+    if (!/^video[_-]/i.test(template)) return null;
+    const templatePath = safeJoin(config.workflowsDir, `${template}.json`);
+    if (!templatePath || !existsSync(templatePath)) return null;
+    try {
+        const tokens = extractTokens(templatePath);
+        return await resolveInputImageSize(params, tokens, { dataDir: config.dataDir });
+    } catch (error) {
+        console.warn(`[submit] 解析输入图尺寸失败（回落按提交尺寸自适应）：${template} — ${error.message}`);
+        return null;
+    }
+}
+
 /** 入队入口：默认本地 ComfyUI，显式传 backend:"runninghub" 时才走云端。提交前按资源类别做 canRun 校验。 */
-function submitGeneration(kind, body) {
+async function submitGeneration(kind, body) {
     const backend = String(body.backend || config.generation.defaultBackend || "local").trim();
     if (backend === "local") {
         const template = String(body.template || "").trim();
@@ -288,11 +308,15 @@ function submitGeneration(kind, body) {
         // 能力不匹配 / 设备不可用时直接拒绝并给出可读原因，绝不静默改走别的设备。
         const verdict = registry.canRun(template);
         if (!verdict.ok) throw new Error(`无法提交${kind === "video" ? "生视频" : "生图"}任务：${verdict.reason}`);
+        // 取该次**实际输入图**的真实像素（从资产/产物读；别信前端传的尺寸）——
+        // 尺寸自适应**以图的比例为基准**：图比例 ≠ 提交比例时以图为准（否则 first_frame 必被拉伸）。
+        const inputImage = await resolveInputImageForSubmit(template, body.params || {});
         // 发起生成那一刻按所选模型的能力元数据**自适应**像素上限 / 宽高 / 时长帧数：
         // 超限不再报错拒绝，而是把尺寸吸附到「同比例、上限内像素最大」的合法档、时长吸附到 17k+5 网格；
+        // 有输入图时基准是**图的比例**（basis:"input-image"），无输入图时才是 params.WIDTH/HEIGHT（basis:"requested"）。
         // 调整结果写进该次任务留痕（meta.sizeAdjust / meta.durationAdjust），绝不静默偷改。
         // 连自适应都找不到合法档时（模板无规格 / 上限缺失）→ 回落既有可读拒绝，不静默放过。
-        const adapted = adaptGenerationParams(template, body.params || {});
+        const adapted = adaptGenerationParams(template, body.params || {}, inputImage ? { image: inputImage } : {});
         if (!adapted.ok) throw new Error(`无法提交${kind === "video" ? "生视频" : "生图"}任务：${adapted.error}`);
         const meta = { ...(body.meta && typeof body.meta === "object" ? body.meta : {}) };
         if (adapted.sizeAdjust) meta.sizeAdjust = adapted.sizeAdjust;
@@ -648,7 +672,7 @@ for (const [kind, route] of [["image", "/api/generate/image"], ["video", "/api/g
     router.post(route, async (req, res) => {
         try {
             const body = await readJson(req);
-            sendJson(res, 201, { job: submitGeneration(kind, body) });
+            sendJson(res, 201, { job: await submitGeneration(kind, body) });
         } catch (error) {
             sendError(res, 400, error.message);
         }

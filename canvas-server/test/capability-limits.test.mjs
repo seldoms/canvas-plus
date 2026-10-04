@@ -290,3 +290,78 @@ test("总入口 adaptGenerationParams：尺寸自适应 + 时长吸附，两条�
     assert.equal(result.sizeAdjust.to, "768x768");
     assert.equal(result.durationAdjust.to, 107);
 });
+
+// ————————————— 尺寸自适应基准 =【输入图的真实比例】（产品口径 2026-10-05）—————————————
+// 依据：147 节点 `first_frame → resize_image(..., "disabled")` = 不保持比例直接拉伸，
+// 平台「先选画布再喂图」→ 比例不一致必变形 → **以图为准**，并留痕 basis:"input-image"。
+
+test("以图为准①：图 4:3 + 提交 16:9（1344x768 合法档）→ 选 4:3 档 1024x768，留痕 basis:\"input-image\"", () => {
+    const result = adaptSizeParams("video_h3_i2v", { WIDTH: 1344, HEIGHT: 768, PROMPT: "x" }, { image: { width: 1024, height: 768 } });
+    assert.equal(result.ok, true);
+    assert.deepEqual([result.params.WIDTH, result.params.HEIGHT], [1024, 768], "以图比例为准选 4:3 档");
+    assert.equal(result.params.PROMPT, "x");
+    assert.equal(result.sizeAdjust.basis, "input-image");
+    assert.equal(result.sizeAdjust.ratio, "4:3");
+    assert.equal(result.sizeAdjust.from, "1344x768");
+    assert.equal(result.sizeAdjust.to, "1024x768");
+    assert.equal(result.sizeAdjust.image, "1024x768");
+    assert.equal(result.sizeAdjust.imageRatio, "4:3");
+    assert.match(result.sizeAdjust.reason, /以图为准/);
+    // 图与画布同比例 → 不产生变形标注。
+    assert.equal(result.sizeAdjust.aspectMismatch, undefined);
+});
+
+test("以图为准②：图 16:9 + 提交 16:9 → 按提交走（放大到同比例最大档），basis:\"requested\"", () => {
+    // 提交 1280x720（16:9，非官方档）→ 放大到官方 16:9 的 1344x768。
+    const result = adaptSizeParams("video_h3_i2v", { WIDTH: 1280, HEIGHT: 720 }, { image: { width: 1920, height: 1080 } });
+    assert.equal(result.ok, true);
+    assert.deepEqual([result.params.WIDTH, result.params.HEIGHT], [1344, 768]);
+    assert.equal(result.sizeAdjust.basis, "requested", "图比例与提交一致 → 按提交走");
+    assert.equal(result.sizeAdjust.to, "1344x768");
+    assert.ok(1344 * 768 > 1280 * 720, "确实是放大");
+    // 提交已是官方合法档且与图比例一致 → 原样放行、不留痕。
+    const passthrough = adaptSizeParams("video_h3_i2v", { WIDTH: 1344, HEIGHT: 768 }, { image: { width: 1920, height: 1080 } });
+    assert.equal(passthrough.sizeAdjust, null);
+    assert.deepEqual([passthrough.params.WIDTH, passthrough.params.HEIGHT], [1344, 768]);
+});
+
+test("以图为准③：无输入图（纯文生视频）→ 仍按 params.WIDTH/HEIGHT 自适应，basis:\"requested\"", () => {
+    const noImage = adaptSizeParams("video_h3_i2v", { WIDTH: 1920, HEIGHT: 1080 });
+    assert.deepEqual([noImage.params.WIDTH, noImage.params.HEIGHT], [1344, 768]);
+    assert.equal(noImage.sizeAdjust.basis, "requested");
+    assert.equal(noImage.sizeAdjust.image, undefined);
+    // 显式传 null / 非法 image 也等同无图（不臆造）。
+    assert.equal(adaptSizeParams("video_h3_i2v", { WIDTH: 1920, HEIGHT: 1080 }, { image: null }).sizeAdjust.basis, "requested");
+    assert.equal(adaptSizeParams("video_h3_i2v", { WIDTH: 1920, HEIGHT: 1080 }, { image: { width: 0, height: 0 } }).sizeAdjust.basis, "requested");
+});
+
+test("以图为准④：大比例差被标注 aspectMismatch（图 7:5 无同比例档 → 取最接近 4:3，差 4.8% > 2%）", () => {
+    const result = adaptSizeParams("video_h3_i2v", { WIDTH: 1344, HEIGHT: 768 }, { image: { width: 1400, height: 1000 } });
+    assert.equal(result.ok, true);
+    assert.equal(result.sizeAdjust.basis, "input-image");
+    assert.equal(result.sizeAdjust.imageRatio, "7:5");
+    assert.deepEqual([result.params.WIDTH, result.params.HEIGHT], [1024, 768], "H3 无 7:5 档 → 取最接近的 4:3");
+    assert.ok(result.sizeAdjust.aspectMismatch, "仍有 >2% 比例差必须被标注");
+    assert.deepEqual(
+        { image: result.sizeAdjust.aspectMismatch.image, canvas: result.sizeAdjust.aspectMismatch.canvas },
+        { image: "7:5", canvas: "4:3" },
+    );
+    assert.match(result.sizeAdjust.aspectMismatch.note, /比例差/);
+    // 同比例（图 4:3）→ 不标注。
+    assert.equal(adaptSizeParams("video_h3_i2v", { WIDTH: 1344, HEIGHT: 768 }, { image: { width: 1024, height: 768 } }).sizeAdjust.aspectMismatch, undefined);
+});
+
+test("以图为准⑤：兜底不变 —— 有图但无合法档 → 回落可读拒绝（不静默放过）", () => {
+    const rejected = adaptGenerationParams("video_h3_i2v", { WIDTH: 2048, HEIGHT: 2048 }, { sizes: [], image: { width: 1024, height: 768 } });
+    assert.equal(rejected.ok, false);
+    assert.equal(rejected.code, "size_over_pixel_cap");
+    assert.match(rejected.error, /1920x1088|1920×1088|2,088,960/);
+});
+
+test("以图为准⑥：总入口把 image 选项一路带到尺寸自适应（图 4:3 + 提交 16:9 + LENGTH）", () => {
+    const result = adaptGenerationParams("video_h3_i2v", { WIDTH: 1344, HEIGHT: 768, LENGTH: 100 }, { image: { width: 1024, height: 768 } });
+    assert.equal(result.ok, true);
+    assert.deepEqual([result.params.WIDTH, result.params.HEIGHT, result.params.LENGTH], [1024, 768, 107]);
+    assert.equal(result.sizeAdjust.basis, "input-image");
+    assert.equal(result.durationAdjust.to, 107);
+});
