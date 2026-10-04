@@ -75,21 +75,61 @@ test("POST 只含部分渠道 → 既有渠道仍在，且原 key 未被清空�
     assert.equal(fileMap.localgw.apiKey, "", "无 key 渠道保持无 key");
 });
 
-test("同名 upsert：baseUrl 更新、apiKey 为空时保留原 key", async () => {
+test("同名 upsert：不改地址 + 不传/空 apiKey → 200，原 key 保留", async () => {
+    // 真实场景：GET 只回脱敏清单（hasKey 而非 apiKey），浏览器把这份渠道表回环提交。
     const res = await postProviders([
-        { name: "deepseek", baseUrl: "https://api.deepseek.com/" }, // 尾部斜杠应被规整
-        { name: "kimi", baseUrl: "https://new-kimi.example.com", apiKey: "" }, // 空 key → 保留原 key
+        { name: "deepseek", baseUrl: "https://api.deepseek.com" }, // 不传 apiKey
+        { name: "kimi", baseUrl: "https://api.moonshot.cn", apiKey: "" }, // 空 apiKey
     ]);
     assert.equal(res.status, 200);
     const map = byName(await listProviders());
-    assert.equal(map.deepseek.baseUrl, "https://api.deepseek.com", "同名渠道 baseUrl 应被更新（去掉尾斜杠）");
-    assert.equal(map.kimi.baseUrl, "https://new-kimi.example.com", "同名渠道 baseUrl 应被更新");
-    assert.equal(map.deepseek.hasKey, true, "apiKey 未提供时应保留原 key（hasKey 仍为 true）");
-    assert.equal(map.kimi.hasKey, true, "apiKey 为空时应保留原 key");
+    assert.equal(map.deepseek.hasKey, true, "不传 apiKey 时内存渠道表必须保留原 key");
+    assert.equal(map.kimi.hasKey, true, "apiKey 为空串时内存渠道表必须保留原 key");
 
     const fileMap = byName(readFileProviders());
-    assert.equal(fileMap.deepseek.apiKey, "***", "未提供 apiKey 时文件里的原 key 必须保留");
-    assert.equal(fileMap.kimi.apiKey, "***", "apiKey 为空串时文件里的原 key 必须保留");
+    assert.equal(fileMap.deepseek.apiKey, "***", "不传 apiKey 时落盘文件里的原 key 不能被清空");
+    assert.equal(fileMap.kimi.apiKey, "***", "apiKey 为空串时落盘文件里的原 key 不能被清空");
+});
+
+test("同名 upsert：改地址 + 提供新 apiKey → 200，地址与新 key 一起更新", async () => {
+    const res = await postProviders([{ name: "kimi", baseUrl: "https://new-kimi.example.com", apiKey: "kimi-new-key" }]);
+    assert.equal(res.status, 200);
+    const map = byName(await listProviders());
+    assert.equal(map.kimi.baseUrl, "https://new-kimi.example.com", "换地址 + 新 key 时地址应更新");
+    assert.equal(map.kimi.hasKey, true, "换地址 + 新 key 后渠道仍应有 key");
+
+    const fileMap = byName(readFileProviders());
+    assert.equal(fileMap.kimi.baseUrl, "https://new-kimi.example.com", "落盘 baseUrl 应为新地址");
+    assert.equal(fileMap.kimi.apiKey, "kimi-new-key", "落盘 apiKey 应为新 key，而不是沿用原 key");
+});
+
+test("同名 upsert：改地址 + 不传/空 apiKey → 400，落盘文件与渠道表一字未变", async () => {
+    const beforeFile = readFileSync(providersFile, "utf8");
+    const beforeList = await listProviders();
+
+    const noKey = await postProviders([{ name: "deepseek", baseUrl: "https://evil.example.com" }]);
+    assert.equal(noKey.status, 400, "已存 key 的渠道换地址而不给新 key 必须被拒");
+    const emptyKey = await postProviders([{ name: "deepseek", baseUrl: "https://evil.example.com", apiKey: "" }]);
+    assert.equal(emptyKey.status, 400, "已存 key 的渠道换地址而只给空 apiKey 同样必须被拒");
+    assert.match((await noKey.json()).error.message, /更换地址时必须同时提供新的 API Key/, "400 必须说明拒绝原因");
+
+    assert.equal(readFileSync(providersFile, "utf8"), beforeFile, "被拒的请求不得改动落盘文件");
+    const fileMap = byName(readFileProviders());
+    assert.equal(fileMap.deepseek.baseUrl, "https://api.deepseek.com", "落盘 baseUrl 必须保持原值");
+    assert.equal(fileMap.deepseek.apiKey, "***", "落盘 key 必须保持原值，绝不能被转发到新地址");
+    assert.deepEqual(await listProviders(), beforeList, "被拒的请求不得改动内存渠道表");
+});
+
+test("同名 upsert：只差尾部斜杠的同址 → 200，地址规整后仍是原址", async () => {
+    const res = await postProviders([{ name: "deepseek", baseUrl: "https://api.deepseek.com//" }]);
+    assert.equal(res.status, 200, "只差尾部斜杠不算换地址，不应触发换 key 守卫");
+    const map = byName(await listProviders());
+    assert.equal(map.deepseek.baseUrl, "https://api.deepseek.com", "同址提交后地址仍为规整后的原址");
+    assert.equal(map.deepseek.hasKey, true, "只差尾部斜杠时原 key 必须保留");
+
+    const fileMap = byName(readFileProviders());
+    assert.equal(fileMap.deepseek.baseUrl, "https://api.deepseek.com", "落盘 baseUrl 应去掉尾部斜杠");
+    assert.equal(fileMap.deepseek.apiKey, "***", "只差尾部斜杠时落盘原 key 必须保留");
 });
 
 test("提交空数组 → 不删任何渠道", async () => {

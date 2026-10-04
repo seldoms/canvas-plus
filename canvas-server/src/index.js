@@ -610,6 +610,12 @@ router.post("/api/llm/providers", async (req, res) => {
             if (incomingBase && !/^https?:\/\//i.test(incomingBase)) throw new Error(`渠道 ${name} 的 baseUrl 必须是 http(s) 地址`);
             if (!incomingBase && !prev) throw new Error(`渠道 ${name} 的 baseUrl 必须是 http(s) 地址`);
             const incomingKey = String(item?.apiKey || "").trim();
+            // 已存 key 的渠道换地址时必须同时给新 key：否则旧 key 会在下次调用时被发到**新地址**，
+            // 等于任何能调这个接口的人都能把服务端已存的密钥静默外带。
+            const prevBase = String(prev?.baseUrl || "").trim().replace(/\/+$/, "");
+            if (prev?.apiKey && incomingBase && incomingBase !== prevBase && !incomingKey) {
+                throw new Error(`渠道 ${name} 更换地址时必须同时提供新的 API Key，防止已存密钥被转发到其它地址`);
+            }
             const next = {
                 ...(prev || {}),
                 name,
@@ -731,9 +737,13 @@ router.get("/api/jobs/:id", (req, res, { params }) => {
 });
 
 router.post("/api/jobs/:id/cancel", async (req, res, { params }) => {
+    // jobs.cancel 内部已把 status 改成 canceled，而且 jobs.get 返回的是**同一个对象引用**（就地 Object.assign），
+    // 所以必须在取消前把 status **取成值**再判断；否则 running 分支永远不成立，
+    // 「已出队、还没拿到 promptId」的任务会被漏掉，取消后照样提交并在 GPU 上跑。
+    const beforeStatus = jobs.get(params.id)?.status;
     const job = jobs.cancel(params.id);
     if (!job) return sendError(res, 404, "任务不存在");
-    if (job.status === "running" || job.promptId) await comfy.interrupt().catch(() => {});
+    if (beforeStatus === "running" || job.promptId) await comfy.interrupt().catch(() => {});
     sendJson(res, 200, { job: jobs.get(params.id) });
 });
 
@@ -1079,10 +1089,13 @@ router.post("/api/projects/:id/scenes/:sceneId/shots", routeHandler(async (req, 
     sendJson(res, 201, { shot });
 }));
 
-router.post("/api/projects/:id/shots/:shotId", routeHandler(async (req, res, { params }) => {
+// 改镜头：前端走 PATCH，契约同时保留 POST；同一条路径共用同一个处理器。
+const updateShot = routeHandler(async (req, res, { params }) => {
     const { shot } = projects.episodes.updateShot(params.id, params.shotId, await readJson(req));
     sendJson(res, 200, { shot });
-}));
+});
+router.add("PATCH", "/api/projects/:id/shots/:shotId", updateShot);
+router.post("/api/projects/:id/shots/:shotId", updateShot);
 
 // 源版本（不可变）
 router.get("/api/projects/:id/sources", routeHandler((req, res, { params }) => {
@@ -1348,6 +1361,9 @@ const server = createServer(async (req, res) => {
 async function serveWebApp(req, res) {
     if (!webDist || (req.method !== "GET" && req.method !== "HEAD")) return false;
     const pathname = decodeURIComponent(new URL(req.url, "http://localhost").pathname);
+    // 未命中的 /api/* 绝不能回退 index.html：否则 200 + text/html 会把「路由不存在」伪装成存活
+    // （HEAD 探活、反代健康检查恒通过）。交给 server 兜底返回 404 JSON。
+    if (pathname === "/api" || pathname.startsWith("/api/")) return false;
     const target = safeJoin(webDist, pathname === "/" ? "index.html" : pathname.replace(/^\/+/, ""));
     if (target && existsSync(target) && statSync(target).isFile()) {
         serveFile(req, res, target);

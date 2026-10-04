@@ -70,7 +70,7 @@ cat > canvas-server/config.json <<JSON
         "videoHeight": 1344,
         "videoSeconds": 5,
         "videoFps": 24,
-        "maxKeyframesPerShot": 2
+        "maxKeyframesPerShot": 4
     }
 }
 JSON

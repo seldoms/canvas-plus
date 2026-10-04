@@ -350,15 +350,23 @@ export function createPipeline({ config, skillsDir, jobs, comfy, llm, llmCall, r
         }
     }
 
+    /** 临时文件 + 同目录 rename：run.json / 阶段产物是全量重写的大文件，写窗口内被杀不能留下截断 JSON（照 projects.js 写法）。 */
+    function writeJsonAtomic(file, value) {
+        ensureDir(dirname(file));
+        const temp = `${file}.${process.pid}${Math.random().toString(36).slice(2, 8)}.tmp`;
+        writeFileSync(temp, JSON.stringify(value, null, 2));
+        renameSync(temp, file);
+    }
+
     function saveRun(run) {
         run.updatedAt = nowIso();
         ensureDir(join(runsDir, run.id));
-        writeFileSync(runFile(run.id), JSON.stringify(run, null, 2));
+        writeJsonAtomic(runFile(run.id), run);
         return run;
     }
 
     function saveOutput(runId, stageId, output) {
-        writeFileSync(stageFile(runId, stageId), JSON.stringify(output, null, 2));
+        writeJsonAtomic(stageFile(runId, stageId), output);
     }
 
     /**
@@ -2604,7 +2612,10 @@ ${JSON.stringify(partials, null, 2)}
         if (qcRetry && def.id === "keyframe" && params.SEED !== undefined && Number.isFinite(Number(params.SEED))) {
             params.SEED = (Number(params.SEED) + 104729) % 2147483647;
         }
-        const plan = { kind: STAGE_TEMPLATE_FAMILY[def.id], template: latest.template, params, ready: true };
+        // kind 取**原 job 入队时的取值**（design=image、lipsync=video、keyframe=image…），
+        // 不在这里另造「阶段 → family」映射：STAGE_TEMPLATE_FAMILY 只登记 keyframe/assembly/audio，
+        // 直接查它会让 design / casting / lipsync 的自动重试写成 kind:undefined（生产已出现 kind=null 的 job）。
+        const plan = { kind: jobs?.get?.(latest.jobId)?.kind || STAGE_TEMPLATE_FAMILY[def.id], template: latest.template, params, ready: true };
         if (!enqueueAttempt(run, def, item, plan)) return false;
         // 只在自动生成的候选上打标，作为下次「已重试几次」的唯一依据；旧候选一律保留。
         item.candidates.at(-1).autoRetry = true;
@@ -3537,6 +3548,17 @@ ${JSON.stringify(partials, null, 2)}
                 stage.error = "服务重启导致中断；已完成的分块结果已保留，可用 resume 续跑";
                 stage.finishedAt = nowIso();
                 writeProgress(run.id, { ...(readProgress(run.id) || {}), runId: run.id, stage: stage.id, phase: "failed", error: stage.error });
+                touched = true;
+            }
+            // beginAssemble 只写 assembly.status = "assembling"，**从不改 stage.status**，上面的 running 收敛因此漏掉它：
+            // ffmpeg 合成中途进程被杀时，该 run 会永久卡在「正在合成中」（前端没有 force 入口，beginAssemble 只认 force）。
+            // 按同一风格落成明确终态 error + 可读原因，让用户能重新发起合成。
+            const assembly = run.stages?.assembly?.output?.assembly;
+            if (assembly && typeof assembly === "object" && assembly.status === "assembling") {
+                assembly.status = "error";
+                assembly.error = "服务重启导致合成中断；可重新发起「生成成片」";
+                assembly.finishedAt = nowIso();
+                writeProgress(run.id, { ...(readProgress(run.id) || {}), runId: run.id, stage: "assembly", phase: "failed", error: assembly.error });
                 touched = true;
             }
             if (touched) {

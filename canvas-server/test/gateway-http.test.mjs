@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -79,6 +79,7 @@ const deadPort = await new Promise((resolve) => {
 
 // 渠道注册表：index.js 启动时从 data/llm-providers.json 载入。
 // `models` 是渠道**声明**的模型 id —— 静态清单的唯一来源；nokey / dead 不声明，因此不会出现在清单里。
+// rot：专给「换地址必须带新 key」用例预备的已存 key 渠道，不声明模型，不影响清单断言。
 writeFileSync(
     join(dataDir, "llm-providers.json"),
     JSON.stringify({
@@ -86,9 +87,15 @@ writeFileSync(
             { name: "ext", baseUrl: ext.baseUrl, apiKey: "sk-ext", models: ["deepseek-v4-pro", "deepseek-flash"] },
             { name: "nokey", baseUrl: nokey.baseUrl, apiKey: "" },
             { name: "dead", baseUrl: `http://127.0.0.1:${deadPort}` },
+            { name: "rot", baseUrl: "http://127.0.0.1:1", apiKey: "sk-rot" },
         ],
     }),
 );
+
+// 预置一份最小 web/dist：SPA 兜底**必须处于激活状态**，否则「未命中 /api/* 不回退 index.html」验证不到。
+const webDist = join(root, "webdist");
+mkdirSync(webDist, { recursive: true });
+writeFileSync(join(webDist, "index.html"), "<!doctype html><title>stub</title>");
 
 process.env.CANVAS_SERVER_DATA_DIR = dataDir;
 process.env.CANVAS_SERVER_SKILLS_DIR = skillsDir;
@@ -96,7 +103,7 @@ process.env.CANVAS_SERVER_LLM_URL = local.baseUrl;
 // defaultModel 指向外部渠道，用于验证「裸模型名回退到 defaultModel 所在渠道」。
 process.env.CANVAS_SERVER_LLM_MODEL = "ext::deepseek-v4-pro";
 process.env.CANVAS_SERVER_COMFY_URL = "http://127.0.0.1:9"; // 不可达：绝不真跑生成
-process.env.CANVAS_SERVER_WEB_DIR = join(root, "webdist"); // 不存在：只提供 API
+process.env.CANVAS_SERVER_WEB_DIR = webDist;
 
 const mod = await import("../src/index.js");
 await new Promise((resolve) => mod.server.listen(0, "127.0.0.1", resolve));
@@ -187,4 +194,78 @@ test("/v1/chat/completions 本地模型名仍原样转发到本地 LLM", async (
     assert.equal(res.status, 200);
     assert.equal((await res.json()).choices[0].message.content, "local-ok");
     assert.equal(localSeen.model, "qwen3.8:27b");
+});
+
+// ——— 渠道换地址必须同时给新 key（防止已存密钥被静默转发到攻击者地址） ———
+const providersFile = join(dataDir, "llm-providers.json");
+const storedProvider = (name) => JSON.parse(readFileSync(providersFile, "utf8")).providers.find((item) => item.name === name);
+const postProviders = (providers) =>
+    fetch(`${base}/api/llm/providers`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ providers }) });
+
+test("已存渠道换 baseUrl 但不带 apiKey → 400，且注册表文件不变", async () => {
+    const before = readFileSync(providersFile, "utf8");
+    const res = await postProviders([{ name: "rot", baseUrl: "http://127.0.0.1:2" }]);
+    assert.equal(res.status, 400);
+    const body = await res.json();
+    assert.match(body.error.message, /渠道 rot 更换地址时必须同时提供新的 API Key/);
+    assert.equal(readFileSync(providersFile, "utf8"), before, "被拒的请求不得写盘");
+    assert.equal(storedProvider("rot").baseUrl, "http://127.0.0.1:1", "地址不得被改走");
+    assert.equal(storedProvider("rot").apiKey, "sk-rot", "已存 key 不得被动");
+});
+
+test("已存渠道换 baseUrl 且带 apiKey → 200，地址与 key 一起更新", async () => {
+    const res = await postProviders([{ name: "rot", baseUrl: "http://127.0.0.1:2", apiKey: "sk-rot2" }]);
+    assert.equal(res.status, 200);
+    assert.equal(storedProvider("rot").baseUrl, "http://127.0.0.1:2");
+    assert.equal(storedProvider("rot").apiKey, "sk-rot2");
+});
+
+test("已存渠道不换 baseUrl 且不带 apiKey → 200，旧 key 保留", async () => {
+    const res = await postProviders([{ name: "rot", baseUrl: "http://127.0.0.1:2" }]);
+    assert.equal(res.status, 200);
+    assert.equal(storedProvider("rot").apiKey, "sk-rot2");
+    assert.equal(storedProvider("rot").baseUrl, "http://127.0.0.1:2");
+});
+
+// ——— HEAD 探活：按 GET 匹配，且未命中的 /api/* 不许回退 SPA 的 index.html ———
+test("HEAD /api/health 命中 API 路由：200 JSON，不是 text/html", async () => {
+    const res = await fetch(`${base}/api/health`, { method: "HEAD" });
+    assert.equal(res.status, 200, "HEAD 必须能打到 /api/health");
+    assert.match(res.headers.get("content-type") || "", /application\/json/);
+});
+
+test("未命中的 /api/* 返回 404 JSON，不回退 index.html（HEAD 与 GET）", async () => {
+    const head = await fetch(`${base}/api/nope`, { method: "HEAD" });
+    assert.equal(head.status, 404);
+    assert.match(head.headers.get("content-type") || "", /application\/json/);
+    const get = await fetch(`${base}/api/nope`);
+    assert.equal(get.status, 404);
+    assert.match(get.headers.get("content-type") || "", /application\/json/);
+});
+
+// ——— 取消任务：#74「已出队但没拿到 promptId」的窗口也要打断 ComfyUI ———
+test("取消 running 但尚无 promptId 的任务也会 interrupt ComfyUI", async () => {
+    let interrupted = 0;
+    const original = mod.comfy.interrupt;
+    mod.comfy.interrupt = async () => {
+        interrupted += 1;
+    };
+    let release;
+    const gate = new Promise((resolve) => {
+        release = resolve;
+    });
+    const id = `job_cancel_probe_${Date.now()}`;
+    try {
+        // 往同一个 jobs store 塞一条卡在 running 的假任务：runner 里才会写 promptId，这里永远不写。
+        mod.jobs.enqueue({ id, kind: "image", backend: "local" }, () => gate.then(() => ({ outputs: [] })));
+        assert.equal(mod.jobs.get(id).status, "running", "入队后应立即进入 running，而 runner 还挂着");
+        assert.equal(mod.jobs.get(id).promptId, undefined, "此刻没有 promptId —— 正是旧逻辑漏掉的窗口");
+        const res = await fetch(`${base}/api/jobs/${id}/cancel`, { method: "POST" });
+        assert.equal(res.status, 200);
+        assert.equal((await res.json()).job.status, "canceled");
+        assert.equal(interrupted, 1, "running（即使还没有 promptId）也必须打断 ComfyUI");
+    } finally {
+        mod.comfy.interrupt = original;
+        release();
+    }
 });

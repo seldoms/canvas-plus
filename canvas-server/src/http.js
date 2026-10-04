@@ -204,8 +204,11 @@ export function createRouter() {
             res.end();
             return true;
         }
+        // HEAD 按 GET 匹配：探活/反代常用 HEAD，Node 会自动省掉响应体。不这样匹配时 HEAD /api/health
+        // 会落进 SPA 兜底拿到 200 + text/html，坏掉也测不出来。
+        const method = req.method === "HEAD" ? "GET" : req.method;
         for (const route of routes) {
-            if (route.method !== req.method && route.method !== "ANY") continue;
+            if (route.method !== method && route.method !== "ANY") continue;
             const match = route.regex.exec(pathname);
             if (!match) continue;
             const params = {};

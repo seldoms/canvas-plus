@@ -2,6 +2,14 @@
 
 ## Unreleased
 
++ [修复] **分镜「逐镜编辑」与「镜头重排」不再 404**：前端 `updateShot` 一直用 `PATCH /api/projects/:id/shots/:shotId`，而后端该路径只注册了 POST（路由器按方法匹配，不命中即 404）→ 分镜工作区的保存单镜、上移/下移镜头必然失败。现按同文件既有写法把处理函数提为具名 handler，`PATCH` 与 `POST` 共用同一个处理器，行为不变。
++ [修复] **堵住「已存 API Key 被静默转发到其它地址」的通道**：`POST /api/llm/providers` 的 upsert 在 `apiKey` 为空时保留原 key、同时允许改 `baseUrl`，而调用上游时会用该 key 发 `Bearer` —— 等于任何能调这个接口的人都能把服务端已存的密钥带走。现在**已存 key 的渠道换地址时必须同时提供新 key**，否则 400 并给出中文原因；不改地址（含只差尾部斜杠）时语义完全不变。
++ [修复] **取消「已出队但尚未提交」的任务现在真会中断**：`/api/jobs/:id/cancel` 里的 `job.status === "running"` 恒假（`jobs.cancel` 已就地改成 `canceled`，且 `jobs.get` 返回的是同一对象引用），唯一兜底是 `promptId`，而它要等提交之后才写入 → 取消后任务仍会在 GPU 上跑完。现改为在取消前把 status 取成值再判断。
++ [修复] **`HEAD` 现在能命中 API 路由，未知 `/api/*` 不再回退前端页面**：此前 `HEAD /api/health` 落进 SPA 兜底返回 `200 text/html`，用 HEAD 探活的监控/反向代理恒为「通过」；`HEAD` 下载产物 URL 还会 404。现 `http.js` 让 HEAD 按 GET 匹配，`serveWebApp` 对 `/api` 前缀不再回退 `index.html`（交回 404 JSON）。
++ [修复] **重启不再把成片永久锁死**：`beginAssemble` 只写 `assembly.status = "assembling"` 而从不改阶段状态，启动收敛又只处理 `stage.status === "running"` → ffmpeg 合成中途被杀后该 run 永远停在「正在合成中」，而前端没有 force 入口。现启动收敛会把它落成明确 `error` 并给出可读原因，用户可重新发起合成。
++ [修复] **自动重试的任务不再丢 `kind`**：`retryFailedItem` 用 `STAGE_TEMPLATE_FAMILY[def.id]` 取 kind，而该表只登记 keyframe/assembly/audio，design/casting/lipsync 取到 `undefined`（生产 jobs.json 里已出现 2 条 `kind=null` 的 lip-sync 重试任务，`GET /api/jobs?kind=video` 会漏掉它们）。现改为沿用**原 job 入队时的 kind**。
++ [修复] **`run.json` / 阶段产物改为原子写**：此前直接 `writeFileSync` 全量重写，写窗口内被杀会留下截断 JSON，而读取端解析失败只 warn 并返回 null → 该 run 从 `pipeline.list()` 里**静默消失**（文件还在，接口报「流水线不存在」）。现按 `projects.js` / `artifacts.js` 的既有写法改为临时文件 + 同目录 `rename`。
++ [修复] **`scripts/remote-deploy.sh` 不再把关键帧候选数写回 2**：脚本内嵌生成的 config 写 `maxKeyframesPerShot: 2`，而代码默认是 4（产品拍板 D3「单镜一次出 ≥4 张」）、线上也是 4 —— 任何走该脚本的部署都会静默打回产品约束。已改为 4。
 + [文档] 独立代码审查后的文档回写（基线 `0ca5698`，后端实测 860/860）：修正全线过时口径 —— 流水线「五段式」→ **七段式**（新增 `casting` 角色定妆与 `audio` 配音两个阶段；README / PRD / local-gateway / user-manual / HANDOFF 同步）；工作流模板 16 → **19**；测试基线统一为 **860/860**（此前有 52/73/206/667/673/716 六种写法）；user-manual 的「成片拼接网页上还没有按钮」改为已有 **「合成成片」** 按钮；项目工作区 6 → **7** 并补「角色定妆」；features 文档补「本地网关与短剧流水线」章节、修正「不提供云存储」的表述；HANDOFF「当前状态」重写为 2026-10-05 复核（#26 双写者、`/api/health` 同步探测、四段半断链、D1/D3 拍板、bible 未被消费、runIds 回填、TTS 未进流水线 六项均已闭环）。另在 `pilot-issues.md` 的 2026-10-05 条目登记 **14 项未修硬伤（#68–#81）**：分镜 `PATCH /api/projects/:id/shots/:shotId` 前后端方法错配导致逐镜编辑与重排 404、`remote-deploy.sh` 把 `maxKeyframesPerShot` 写回 2、网关无鉴权且存在「静默外带已存 API Key」链、`/api/providers` 仍同步 await ComfyUI（吃任务级 2h 超时）、成片 `assembling` 残留会锁死成片、候选状态契约写 `failed` 而实现写 `error`、`run.json` 非原子写等。
 + [优化] **远程访问首屏 8.6s → 1.2s**（产品负责人报「任务管理怎么这么慢」）：前端 4.13MB 单包按路由做代码分割（→1.42MB）＋任务页分页，服务端静态资源开启 gzip（→470KB）；限速 4Mbps 实测 **8,636ms → 1,220ms**。
 + [修复] **`index.html` 被打上一年缓存导致重建后白屏**：HTML 改 `no-cache`；缺失的 `/assets/*.js` 不再回退成 HTML（浏览器把 HTML 当 JS 执行必然报错），一律 404。
