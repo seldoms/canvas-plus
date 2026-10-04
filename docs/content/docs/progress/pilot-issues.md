@@ -851,3 +851,45 @@ H3 走 I2VA **只是忠实保留关键帧**，它是无辜的。
 需查：① `previewUrlFor(storageKey)` 为何返回 1×1；② 持久化「瘦身」是否误伤了结果图。
 
 **⚠️ 测试数据**：`image-mutc8f2a-pvcyh`（已归档）、`image-mutcaydv-77anw`（已取消）留在 jobs.json 与左栏队列，**未清理**。
+
+### 2026-10-04 产品负责人拍板：新增独立阶段【角色定妆】—— AI 生产必须显式定义「人脸」与「声音」
+
+**他的原话与判断**：
+> 「现在的策略是如何定义角色声音的？如何确保不同镜头不同场景的角色，锁脸锁声音？」
+> 「这个环节我认为和**关键帧一样重要**，是不是应该在创作流水线中体现这个环节？
+>   **服化道是现实拍摄的主要信息，但是 AI 生产就需要定义人脸和声音了啊**」
+
+**拍板三条**：① **独立环节**（从服化道拆出）② **未确认就拦住下游** ③ **声音从平台音色库中选**
+
+**现状事实（查证）**：
+- 阶段：`script → storyboard → design(服化道) → keyframe → audio → assembly` —— **人藏在服化道里**（问题根因）。
+- **锁脸机制已有**：`03-costume-props` 的 `closeupPrompt`（正脸特写）/ `turnaroundPrompt`（三视图）→
+  `referenceArtifactIds` / `turnaroundArtifactIds`；`pipeline.js` 的 `bindDesignReferenceArtifacts` 生成并绑定进关键帧。
+  skill 原文：「这些产物就是让**同一角色跨镜头、同一场景跨镜次**保持一致的**唯一视觉参考**；
+  只给文字描述、不给可生图提示词，**等于下游每一镜都在重新掷骰子**」。
+  ⚠️ 但 `confirmed:false` **存在却无人使用** —— 没有"定妆确认"这一步。
+- **锁声音机制已有**：`audio-track.js projectVoiceProfiles()` 把 `01 剧本 characters[].voice` + design 归一成
+  **VoiceProfile**；`audio.js qwen3Speaker()` 适配成 TTS 的 `SPEAKER`/`INSTRUCT`；
+  **同一角色跨镜共用同一 VoiceProfile → 参数逐字一致 → 音色一致**。
+  ⚠️ 但**前端没有任何音色界面** —— 用户看不到/改不了/**听不到**；`referenceArtifactId` 缺失只 warning。
+
+**平台音色库（147 实测，唯一合法取值域）**：
+`GET 192.168.123.147:8188/object_info/TDQwen3TTSCustomVoice` →
+`speaker = ["Aiden","Dylan","Eric","Ono_anna","Ryan","Serena","Sohee","Uncle_fu","Vivian"]`；
+`language = ["Auto","Chinese","English","Japanese","Korean","German","French","Russian","Portuguese","Spanish","Italian"]`。
+
+**冻结契约（身份卡，`casting` 产物）**：
+```json
+{"characters":[{"characterId":"c1","name":"阿海",
+  "face":{"closeupArtifactId":"","turnaroundArtifactIds":[],"confirmed":false},
+  "voice":{"voiceProfileId":"vp_c1","speaker":"Uncle_fu","design":"低沉沙哑，语速偏慢",
+           "speed":1,"language":"Chinese","previewArtifactId":"","confirmed":false},
+  "confirmed":false,"version":1,"lockedAt":null}]}
+```
+- `face` **复用**现有 `bindDesignReferenceArtifacts` 与参考图提示词字段（不重写）。
+- `voice.speaker` **只能取上列 9 个**；`design` 是内容层中文音色描述；`language` 取上列枚举。
+- `confirmed` 脸/声各自一个 + 角色总一个；`lockedAt` 确认时写 ISO；确认后修改则 `version+1`。
+- **未完成或存在未确认角色 → `keyframe` / `audio` 置 `blocked`**，写清哪个角色、缺脸还是缺声（复用 #70 机制）。
+
+**新接口**：`GET /api/tts/voices`（音色榜，服务端注册表，**前端禁硬编码**）、
+`POST /api/tts/preview`（试听：合成一句样句返回音频 artifact URL，失败给可读错误）。
