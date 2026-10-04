@@ -1,4 +1,4 @@
-import { ArrowLeft, ArrowRight, BookOpen, CheckSquare, ClipboardPaste, Download, FolderPlus, History, ImagePlus, LoaderCircle, PenLine, Plus, SlidersHorizontal, Sparkles, Trash2, Upload } from "lucide-react";
+import { ArrowLeft, ArrowRight, BookOpen, CheckSquare, ClipboardPaste, Download, FolderPlus, History, ImagePlus, LoaderCircle, PenLine, Plus, SlidersHorizontal, Sparkles, Trash2, Upload, XCircle } from "lucide-react";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { App, Button, Checkbox, Drawer, Empty, Image, Input, Modal, Progress, Tag, Tooltip, Typography } from "antd";
 import localforage from "localforage";
@@ -11,12 +11,13 @@ import { ModelPicker } from "@/components/model-picker";
 import { PromptSelectDialog } from "@/components/prompts/prompt-select-dialog";
 import { AssetPickerModal, type InsertAssetPayload } from "@/components/canvas/asset-picker-modal";
 import { canvasThemes } from "@/lib/canvas-theme";
+import { formatTaskTime } from "@/lib/task-time";
 import { imageReferenceLabel } from "@/lib/image-reference-prompt";
 import { modelOptionLabel, modelOptionName, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { nanoid } from "nanoid";
 import { formatBytes, formatDuration } from "@/lib/image-utils";
-import { enqueueImages, getImageJob, isActiveJobStatus, listImageJobs, type ImageJob, type ImageJobOutput, type ImageJobProgress } from "@/services/api/image-jobs";
+import { cancelImageJob, enqueueImages, getImageJob, isActiveJobStatus, listImageJobs, type ImageJob, type ImageJobOutput, type ImageJobProgress } from "@/services/api/image-jobs";
 import { defaultSizeFor, findTemplate, loadTemplateCatalog, sizeNoteFor, sizeOptionsFor, type GatewayTemplateInfo } from "@/services/api/template-sizes";
 import { resolveGatewayUrl, uploadGatewayAsset } from "@/services/api/gateway";
 import { deleteStoredImages, ensureImagePreview, getImageBlob, getImagePreviewRevision, previewUrlFor, resolveImageUrl, subscribeImagePreviews, uploadImage } from "@/services/image-storage";
@@ -29,6 +30,8 @@ type GeneratedImage = {
     id: string;
     dataUrl: string;
     storageKey?: string;
+    /** 网关产物原始地址（/api/artifacts/<jobId>/<file>）——归档只认它；本地副本仅作缩略。 */
+    artifactUrl?: string;
     durationMs: number;
     width: number;
     height: number;
@@ -36,7 +39,16 @@ type GeneratedImage = {
     mimeType?: string;
 };
 
-type TaskStatus = "running" | "done" | "partial" | "failed";
+type TaskStatus = "running" | "done" | "partial" | "failed" | "canceled";
+
+/** 提交那一刻的参数快照（历史事实，绝不随后续表单编辑而变）。 */
+type TaskSnapshot = {
+    config: GenerationLogConfig;
+    references: ReferenceImage[];
+    seed?: number;
+    /** 提交时表单里显示的模型名（人读）；config 里存裸模板名。 */
+    modelLabel?: string;
+};
 
 /**
  * 工作台任务组：一次提交拆成 count 个服务端 job。jobIds 是唯一事实源 ——
@@ -52,6 +64,10 @@ type Task = {
     createdAt: string;
     /** 提交时上传到 ComfyUI 的参考图名（重试/编辑沿用）。 */
     referenceUrls?: string[];
+    /** 本次实际提交的参数快照（点开记录时的「本次参数」，与当前表单隔离）。 */
+    snapshot: TaskSnapshot;
+    /** 提交中占位：已落记录但还没拿到 jobIds（上传参考图/后端编译入队期间）。 */
+    pending?: boolean;
     /** Agent 面板发起的任务，完成时回写状态。 */
     agentTaskId?: string;
 };
@@ -71,18 +87,44 @@ type GenerationLog = {
     imageCount: number;
     size: string;
     quality: string;
-    status: "success" | "failed";
+    status: "success" | "failed" | "canceled";
     images: GeneratedImage[];
 };
 
 type GenerationLogConfig = Pick<AiConfig, "model" | "imageModel" | "quality" | "size" | "count">;
 
 type UpdateAiConfig = <K extends keyof AiConfig>(key: K, value: AiConfig[K]) => void;
-type GenerationSnapshot = { text: string; config: AiConfig; references: ReferenceImage[] };
 
 const LOG_STORE_KEY = "infinite-canvas:image_generation_logs";
 /** 工作台「未结束任务」的本地索引：只存 jobIds 与提交事实，状态/进度一律回后端读。 */
 const WORKBENCH_TASKS_KEY = "infinite-canvas:image_workbench_tasks";
+/**
+ * 预览里 ↑/↓ 也切换同一个任务的其他素材。
+ *
+ * antd `Image.PreviewGroup` 原生只认 ←/→（要成组才有），所以把 ↑/↓ 映射成一次等价的
+ * ArrowLeft/ArrowRight 键盘事件派发给预览根节点（React 在根上做事件委托，冒泡即可命中它的处理函数）。
+ * 预览没开时**不拦**，避免影响页面正常滚动。
+ */
+function usePreviewVerticalArrows() {
+    useEffect(() => {
+        const onKeyDown = (event: KeyboardEvent) => {
+            if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+            const preview = document.querySelector(".ant-image-preview-wrap");
+            if (!preview) return;
+            event.preventDefault();
+            preview.dispatchEvent(
+                new KeyboardEvent("keydown", {
+                    key: event.key === "ArrowUp" ? "ArrowLeft" : "ArrowRight",
+                    bubbles: true,
+                    cancelable: true,
+                }),
+            );
+        };
+        document.addEventListener("keydown", onKeyDown, true);
+        return () => document.removeEventListener("keydown", onKeyDown, true);
+    }, []);
+}
+
 const RESULT_ACTION_BUTTON_CLASS = "min-w-0 px-1.5 [&_.ant-btn-icon]:shrink-0 [&>span:last-child]:min-w-0 [&>span:last-child]:truncate";
 const logStore = localforage.createInstance({ name: "infinite-canvas", storeName: "image_generation_logs" });
 
@@ -98,6 +140,7 @@ function jobOutputToImage(job: ImageJob, output: ImageJobOutput): GeneratedImage
     return {
         id: `${job.id}-${output.filename || output.url}`,
         dataUrl: resolveGatewayUrl(output.url),
+        artifactUrl: resolveGatewayUrl(output.url),
         durationMs: jobDurationMs(job),
         width: output.width || 0,
         height: output.height || 0,
@@ -121,23 +164,37 @@ function readStoredTasks(): Task[] {
                 jobIds: item.jobIds.map(String),
                 startedAt: Number(item.startedAt) || Date.now(),
                 createdAt: typeof item.createdAt === "string" ? item.createdAt : new Date().toISOString(),
+                snapshot: {
+                    config: item.snapshot?.config ?? { model: item.template || "", imageModel: item.template || "", quality: "", size: "", count: String(item.count || item.jobIds.length) },
+                    references: Array.isArray(item.snapshot?.references) ? item.snapshot.references : [],
+                    ...(Number.isFinite(item.snapshot?.seed) ? { seed: item.snapshot?.seed } : {}),
+                    ...(typeof item.snapshot?.modelLabel === "string" ? { modelLabel: item.snapshot.modelLabel } : {}),
+                },
             }));
     } catch {
         return [];
     }
 }
 
-/** 只持久化未结束的任务（jobIds + 提交事实），刷新后据此恢复。 */
+/** 只持久化未结束的任务（jobIds + 提交事实 + 参数快照），刷新后据此恢复；参考图 dataUrl 落盘前瘦身。 */
 function persistTasks(tasks: Task[]): void {
     if (typeof window === "undefined") return;
     try {
-        window.localStorage.setItem(WORKBENCH_TASKS_KEY, JSON.stringify(tasks));
+        const slim = tasks.map((task) => ({
+            ...task,
+            snapshot: {
+                ...task.snapshot,
+                references: task.snapshot.references.map((reference) => ({ ...reference, dataUrl: reference.storageKey ? "" : reference.dataUrl })),
+            },
+        }));
+        window.localStorage.setItem(WORKBENCH_TASKS_KEY, JSON.stringify(slim));
     } catch {
         // 私密模式 / 配额不足：持久化失败不影响当前会话。
     }
 }
 
 export default function ImagePage() {
+    usePreviewVerticalArrows();
     const { message } = App.useApp();
     const { t } = useTranslation();
     useSyncExternalStore(subscribeImagePreviews, getImagePreviewRevision);
@@ -161,15 +218,13 @@ export default function ImagePage() {
     const [assetPickerOpen, setAssetPickerOpen] = useState(false);
     const [nowTick, setNowTick] = useState(0);
     const [selectedLogIds, setSelectedLogIds] = useState<string[]>([]);
-    const [previewLog, setPreviewLog] = useState<GenerationLog | null>(null);
+    // 左栏「任务队列」里当前点开的那条记录（任务或已落库记录），中/右区据此展示该次的参数快照与结果。
+    const [selectedId, setSelectedId] = useState<string | null>(null);
     const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
     const [isReferenceDragActive, setIsReferenceDragActive] = useState(false);
     const [autoRunToken, setAutoRunToken] = useState(0);
-    const [viewingHistoryWhileRunning, setViewingHistoryWhileRunning] = useState(false);
     // 生图模型的官方规格清单（后端 /api/providers 下发，前端不硬编码）——「选模型 → 再选规格」。
     const [imageTemplates, setImageTemplates] = useState<GatewayTemplateInfo[]>([]);
-    const activeSnapshotRef = useRef<GenerationSnapshot | null>(null);
-    const viewingHistoryRef = useRef(false);
     const imageCommand = useWorkbenchAgentStore((state) => state.imageCommand);
     const clearImageCommand = useWorkbenchAgentStore((state) => state.clearImageCommand);
     const updateAgentTask = useWorkbenchAgentStore((state) => state.updateTask);
@@ -185,8 +240,8 @@ export default function ImagePage() {
     const model = effectiveConfig.imageModel || effectiveConfig.model;
     const canGenerate = Boolean(prompt.trim());
     const generationCount = Math.max(1, Math.min(10, Number(config.count) || 1));
-    // 进度口径全部读后端：未结束 = 后端 status 为 queued/running（或该 job 还没取到）。
-    const pendingSlotCount = tasks.reduce((sum, task) => sum + task.jobIds.filter((id) => isActiveJobStatus(jobs[id]?.status)).length, 0);
+    // 进度口径全部读后端：未结束 = 后端 status 为 queued/running（或该 job 还没取到）；提交中的占位记录算 1 条未结束。
+    const pendingSlotCount = tasks.reduce((sum, task) => sum + (task.jobIds.length ? task.jobIds.filter((id) => isActiveJobStatus(jobs[id]?.status)).length : 1), 0);
     const hasRunningTask = pendingSlotCount > 0;
     const overallTotal = tasks.reduce((sum, task) => sum + task.count, 0);
     const overallDone = tasks.reduce((sum, task) => sum + task.jobIds.filter((id) => jobs[id] && !isActiveJobStatus(jobs[id].status)).length, 0);
@@ -286,6 +341,35 @@ export default function ImagePage() {
             return;
         }
 
+        // 提交即落一条队列记录：当帧就在左栏出现（状态=排队中），不等上传/编译/入队返回；返回后原地补齐 jobIds。
+        const snapshot: TaskSnapshot = {
+            config: {
+                model: modelOptionName(model),
+                imageModel: modelOptionName(model),
+                quality: effectiveConfig.quality,
+                size: effectiveConfig.size,
+                count: String(generationCount),
+            },
+            references: [...references],
+            modelLabel: modelOptionLabel(effectiveConfig, model),
+        };
+        const localId = nanoid();
+        setTasks((value) => [
+            {
+                id: localId,
+                prompt: text,
+                count: generationCount,
+                template: modelOptionName(model),
+                jobIds: [],
+                startedAt: performance.now(),
+                createdAt: new Date().toISOString(),
+                snapshot,
+                pending: true,
+                ...(agentTaskId ? { agentTaskId } : {}),
+            },
+            ...value,
+        ]);
+        setSelectedId(localId);
         // submitting 只在「上传参考图 + 入队」这段短暂窗口内挡住重复点击；编辑区与输入框任何情况下都不锁。
         setSubmitting(true);
         try {
@@ -302,23 +386,22 @@ export default function ImagePage() {
             });
             const jobIds = result.jobs.map((job) => job.id);
             if (!jobIds.length) throw new Error(t("workbench.generationFailed"));
-
-            const task: Task = {
-                id: nanoid(),
-                prompt: text,
-                count: jobIds.length,
-                template: result.jobs[0]?.template || model,
-                jobIds,
-                startedAt: performance.now(),
-                createdAt: new Date().toISOString(),
-                ...(referenceUrls.length ? { referenceUrls } : {}),
-                ...(agentTaskId ? { agentTaskId } : {}),
-            };
-            activeSnapshotRef.current = { text, config: effectiveConfig, references: [...references] };
-            viewingHistoryRef.current = false;
-            setViewingHistoryWhileRunning(false);
-            setPreviewLog(null);
-            setTasks((value) => [task, ...value]);
+            // 原地补齐 jobIds / 真实模板 / 参考图名（记录 id 不变，选中态不跳）。
+            setTasks((value) =>
+                value.map((item) =>
+                    item.id === localId
+                        ? {
+                              ...item,
+                              count: jobIds.length,
+                              template: result.jobs[0]?.template || item.template,
+                              jobIds,
+                              pending: false,
+                              snapshot: { ...item.snapshot, config: { ...item.snapshot.config, count: String(jobIds.length) } },
+                              ...(referenceUrls.length ? { referenceUrls } : {}),
+                          }
+                        : item,
+                ),
+            );
             setJobs((value) => {
                 const next = { ...value };
                 for (const job of result.jobs) next[job.id] = { id: job.id, status: job.status, template: job.template };
@@ -327,6 +410,9 @@ export default function ImagePage() {
             if (agentTaskId) updateAgentTask(agentTaskId, { status: "running", error: undefined });
         } catch (error) {
             const reason = error instanceof Error ? error.message : String(error);
+            // 提交失败 → 撤掉占位记录，不留误导性条目。
+            setTasks((value) => value.filter((item) => item.id !== localId));
+            setSelectedId((current) => (current === localId ? null : current));
             message.error(t("imageWorkbench.submitFailed", { message: reason }));
             if (agentTaskId) updateAgentTask(agentTaskId, { status: "failed", error: reason });
         } finally {
@@ -393,8 +479,6 @@ export default function ImagePage() {
     };
 
     const createSession = () => {
-        viewingHistoryRef.current = false;
-        setViewingHistoryWhileRunning(false);
         setPrompt("");
         setReferences([]);
         setTasks([]);
@@ -404,15 +488,13 @@ export default function ImagePage() {
         persistTasks([]);
         setNowTick(0);
         setSelectedLogIds([]);
-        setPreviewLog(null);
+        setSelectedId(null);
     };
 
     const deleteSelectedLogs = () => {
         const imageKeys = logs.filter((log) => selectedLogIds.includes(log.id)).flatMap((log) => log.images.map((image) => image.storageKey).filter((key): key is string => Boolean(key)));
         void Promise.all([deleteStoredImages(imageKeys), ...selectedLogIds.map((id) => logStore.removeItem(id))]).then(refreshLogs);
-        if (previewLog && selectedLogIds.includes(previewLog.id)) {
-            setPreviewLog(null);
-        }
+        if (selectedId && selectedLogIds.includes(selectedId)) setSelectedId(null);
         setSelectedLogIds([]);
         setDeleteConfirmOpen(false);
     };
@@ -423,35 +505,17 @@ export default function ImagePage() {
 
     const refreshLogs = async () => setLogs(await readStoredLogs());
 
-    const previewGenerationLog = async (log: GenerationLog) => {
-        const viewingActive = hasRunningTask;
-        viewingHistoryRef.current = viewingActive;
-        setViewingHistoryWhileRunning(viewingActive);
-        setPreviewLog(log);
+    /** 点开左栏一条记录：只切换「在看哪一次」，绝不回填表单 —— 参数快照与当前表单互相隔离，才能无脑连发。 */
+    const selectLog = (log: GenerationLog) => {
+        setSelectedId(log.id);
         setLogsOpen(false);
-        setPrompt(log.prompt);
-        setReferences(log.references || []);
-        if (log.config.imageModel || log.model) updateConfig("imageModel", log.config.imageModel || log.model);
-        if (log.config.quality) updateConfig("quality", log.config.quality);
-        if (log.config.size) updateConfig("size", log.config.size);
-        if (log.config.count) updateConfig("count", log.config.count);
-    };
-
-    const returnToActiveGeneration = () => {
-        const snapshot = activeSnapshotRef.current;
-        if (!snapshot) return;
-        viewingHistoryRef.current = false;
-        setViewingHistoryWhileRunning(false);
-        setPreviewLog(null);
-        setPrompt(snapshot.text);
-        setReferences(snapshot.references);
     };
 
     // 提示词编译已移到后端（POST /api/images/enqueue 入队前用 DeepSeek 编译，失败降级不阻塞）。
     // 前端不再调用 /api/prompt/compile。
 
-    /** 任务全终态后落一条生成记录（后台跑完 / 刷新后恢复完成都走这条），并回写 Agent 任务状态。 */
-    const recordTaskLog = async (task: Task, list: ImageJob[]) => {
+    /** 任务全终态后落一条生成记录（id 与任务一致 → 队列按 id 去重）；参数一律取提交时的快照，绝不读当前表单。 */
+    const finalizeTask = async (task: Task, list: ImageJob[]) => {
         if (loggedTaskIdsRef.current.has(task.id)) return;
         loggedTaskIdsRef.current.add(task.id);
         const doneJobs = list.filter((job) => job.status === "done");
@@ -462,27 +526,28 @@ export default function ImagePage() {
                 const fallback = jobOutputToImage(job, output);
                 try {
                     const stored = await uploadImage(resolveGatewayUrl(output.url));
-                    images.push({ ...fallback, dataUrl: stored.url, ...(stored.storageKey ? { storageKey: stored.storageKey } : {}), width: output.width || stored.width, height: output.height || stored.height, bytes: output.bytes || stored.bytes, mimeType: stored.mimeType });
+                    images.push({ ...fallback, dataUrl: stored.url, artifactUrl: fallback.artifactUrl, ...(stored.storageKey ? { storageKey: stored.storageKey } : {}), width: output.width || stored.width, height: output.height || stored.height, bytes: output.bytes || stored.bytes, mimeType: stored.mimeType });
                 } catch {
                     images.push(fallback);
                 }
             }
         }
         const successCount = doneJobs.length;
-        const failCount = Math.max(0, task.jobIds.length - successCount);
-        saveLog(
-            buildLog({
-                prompt: task.prompt,
-                model: task.template,
-                config: { ...effectiveConfig, model: task.template, imageModel: task.template, count: String(task.count) },
-                references: [],
-                durationMs: Math.max(0, performance.now() - task.startedAt),
-                successCount,
-                failCount,
-                status: successCount ? "success" : "failed",
-                images,
-            }),
-        );
+        const failCount = list.filter((job) => job.status === "error").length;
+        const canceledCount = list.filter((job) => job.status === "canceled").length;
+        const status: GenerationLog["status"] = successCount ? "success" : failCount ? "failed" : canceledCount ? "canceled" : "failed";
+        const log = buildLog({
+            prompt: task.prompt,
+            model: task.snapshot.config.imageModel || task.template,
+            config: task.snapshot.config,
+            references: task.snapshot.references,
+            durationMs: Math.max(0, performance.now() - task.startedAt),
+            successCount,
+            failCount,
+            status,
+            images,
+        });
+        saveLog({ ...log, id: task.id });
         if (task.agentTaskId) {
             updateAgentTask(task.agentTaskId, { status: successCount ? "succeeded" : "failed", successCount, failCount, error: successCount ? undefined : t("workbench.generationFailed") });
         }
@@ -492,7 +557,6 @@ export default function ImagePage() {
     const retryJob = async (taskId: string, jobId: string) => {
         const task = tasks.find((item) => item.id === taskId);
         if (!task) return;
-        setPreviewLog(null);
         try {
             const result = await enqueueImages({
                 template: task.template,
@@ -511,6 +575,21 @@ export default function ImagePage() {
             const reason = error instanceof Error ? error.message : String(error);
             message.error(t("imageWorkbench.submitFailed", { message: reason }));
         }
+    };
+
+    /** 取消单个 job：调后端 POST /api/jobs/:id/cancel，回来后以服务端状态/产物为准（取消不留半成品）。 */
+    const cancelJob = async (jobId: string) => {
+        try {
+            const job = await cancelImageJob(jobId);
+            setJobs((value) => ({ ...value, [job.id]: job }));
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : String(error));
+        }
+    };
+
+    /** 取消整条任务里所有未结束的 job（逐个走后端 cancel）。 */
+    const cancelTask = async (task: Task) => {
+        for (const id of task.jobIds.filter((jobId) => isActiveJobStatus(jobs[jobId]?.status))) await cancelJob(id);
     };
 
     // 进页先拉一次：把未结束的任务恢复出来（刷新 / 切页 / 重开浏览器后任务与进度不丢）。
@@ -532,6 +611,8 @@ export default function ImagePage() {
                 for (const job of all) map[job.id] = job;
                 for (const job of fetched) if (job) map[job.id] = job;
                 setJobs((value) => ({ ...value, ...map }));
+                // 恢复的参数快照里参考图只有 storageKey（dataUrl 已瘦身）→ 触发缩略图重建。
+                for (const task of stored) for (const reference of task.snapshot.references) if (reference.storageKey) void ensureImagePreview(reference.storageKey);
                 setTasks((value) => {
                     const existing = new Set(value.map((task) => task.id));
                     return [...stored.filter((task) => !existing.has(task.id)), ...value];
@@ -603,13 +684,14 @@ export default function ImagePage() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [tasksSignature]);
 
-    // 任务全终态 → 落生成记录（正常完成 / 恢复完成都覆盖）。
+    // 任务全终态 → 落生成记录（正常完成 / 恢复完成 / 取消都覆盖）；记录 id 与任务一致，队列按 id 去重。
     useEffect(() => {
         for (const task of tasks) {
+            if (!task.jobIds.length) continue; // 提交中的占位记录还没 jobIds，等补齐后再判终态。
             const list = task.jobIds.map((id) => jobs[id]).filter((job): job is ImageJob => Boolean(job));
             if (list.length < task.jobIds.length) continue;
             if (list.some((job) => isActiveJobStatus(job.status))) continue;
-            void recordTaskLog(task, list);
+            void finalizeTask(task, list);
         }
     }, [tasks, jobs]);
 
@@ -620,18 +702,27 @@ export default function ImagePage() {
         persistTasks(active);
     }, [tasks, jobs]);
 
+    // 中/右区展示的那一条：优先取选中的任务，其次选中的记录；都没选中时回退到最新一条。
+    const selectedTask = tasks.find((task) => task.id === selectedId) ?? null;
+    const selectedLog = selectedTask ? null : (logs.find((log) => log.id === selectedId) ?? null);
+    const detailTask = selectedTask ?? (selectedLog ? null : (tasks[0] ?? null));
+    const detailLog = selectedLog ?? (detailTask ? null : (logs[0] ?? null));
+
     return (
         <div className="flex h-full flex-col overflow-hidden bg-stone-50 text-stone-900 dark:bg-stone-950 dark:text-stone-100">
             <main className="grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-y-auto p-3 lg:grid-cols-[300px_minmax(0,1fr)] lg:overflow-hidden xl:grid-cols-[320px_minmax(0,1fr)]">
                 <aside className="thin-scrollbar hidden min-h-0 overflow-y-auto rounded-lg border border-stone-200 bg-card p-4 shadow-sm dark:border-stone-800 lg:block">
-                    <LogPanel
+                    <QueuePanel
+                        tasks={tasks}
                         logs={logs}
+                        jobs={jobs}
+                        now={nowTick}
+                        selectedId={detailTask?.id ?? detailLog?.id ?? null}
+                        onSelect={setSelectedId}
                         selectedLogIds={selectedLogIds}
-                        activeLogId={previewLog?.id}
                         onSelectedLogIdsChange={setSelectedLogIds}
                         onCreateSession={createSession}
                         onDeleteSelected={() => setDeleteConfirmOpen(true)}
-                        onPreviewLog={(log) => void previewGenerationLog(log)}
                     />
                 </aside>
 
@@ -760,38 +851,37 @@ export default function ImagePage() {
                                     </Tag>
                                 ) : null}
                             </div>
-                            <div className="flex items-center gap-2">
-                                {viewingHistoryWhileRunning ? (
-                                    <Button size="small" type="primary" onClick={returnToActiveGeneration}>
-                                        {t("workbench.returnToRunning", { count: pendingSlotCount })}
-                                    </Button>
-                                ) : null}
-                            </div>
                         </div>
-                        {previewLog ? (
-                            previewLog.images.length ? (
-                                <div className="grid gap-4 sm:grid-cols-2 2xl:grid-cols-3">
-                                    {previewLog.images.map((image, index) => (
-                                        <ResultImageCard key={image.id} image={image} index={index} onEdit={addResultToReferences} onDownload={downloadImage} onSaveAsset={saveResultToAssets} />
-                                    ))}
-                                </div>
-                            ) : (
-                                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("imageWorkbench.empty")} className="!my-16" />
-                            )
-                        ) : tasks.length ? (
-                            <div className="space-y-6">
-                                {tasks.map((task) => (
-                                    <TaskGroup
-                                        key={task.id}
-                                        task={task}
-                                        jobs={task.jobIds.map((id) => jobs[id]).filter((job): job is ImageJob => Boolean(job))}
-                                        now={nowTick}
-                                        onRetryJob={(jobId) => void retryJob(task.id, jobId)}
-                                        onEdit={addResultToReferences}
-                                        onDownload={downloadImage}
-                                        onSaveAsset={saveResultToAssets}
-                                    />
-                                ))}
+                        {detailTask ? (
+                            <div className="space-y-4">
+                                <SnapshotPanel prompt={detailTask.prompt} config={detailTask.snapshot.config} references={detailTask.snapshot.references} seed={detailTask.snapshot.seed} />
+                                <TaskGroup
+                                    task={detailTask}
+                                    jobs={detailTask.jobIds.map((id) => jobs[id]).filter((job): job is ImageJob => Boolean(job))}
+                                    now={nowTick}
+                                    onCancelJob={(jobId) => void cancelJob(jobId)}
+                                    onCancelTask={() => void cancelTask(detailTask)}
+                                    onRetryJob={(jobId) => void retryJob(detailTask.id, jobId)}
+                                    onEdit={addResultToReferences}
+                                    onDownload={downloadImage}
+                                    onSaveAsset={saveResultToAssets}
+                                />
+                            </div>
+                        ) : detailLog ? (
+                            <div className="space-y-4">
+                                <SnapshotPanel prompt={detailLog.prompt} config={detailLog.config} references={detailLog.references} />
+                                {detailLog.images.length ? (
+                                    // PreviewGroup：同一次任务的素材成一组 → 预览里 ←/→ 直接切换它们（antd 原生键盘导航）
+                                    <Image.PreviewGroup>
+                                        <div className="grid gap-4 sm:grid-cols-2 2xl:grid-cols-3">
+                                            {detailLog.images.map((image, index) => (
+                                                <ResultImageCard key={image.id} image={image} index={index} onEdit={addResultToReferences} onDownload={downloadImage} onSaveAsset={saveResultToAssets} />
+                                            ))}
+                                        </div>
+                                    </Image.PreviewGroup>
+                                ) : (
+                                    <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={detailLog.status === "canceled" ? t("workbench.canceled") : t("imageWorkbench.empty")} className="!my-16" />
+                                )}
                             </div>
                         ) : (
                             <div className="flex min-h-[320px] flex-col items-center justify-center rounded-lg border border-dashed border-stone-300 text-center dark:border-stone-700 lg:min-h-[560px]">
@@ -814,14 +904,17 @@ export default function ImagePage() {
                 }}
             />
             <Drawer title={t("workbench.logs")} placement="bottom" size="large" open={logsOpen} onClose={() => setLogsOpen(false)}>
-                <LogPanel
+                <QueuePanel
+                    tasks={tasks}
                     logs={logs}
+                    jobs={jobs}
+                    now={nowTick}
+                    selectedId={detailTask?.id ?? detailLog?.id ?? null}
+                    onSelect={setSelectedId}
                     selectedLogIds={selectedLogIds}
-                    activeLogId={previewLog?.id}
                     onSelectedLogIdsChange={setSelectedLogIds}
                     onCreateSession={createSession}
                     onDeleteSelected={() => setDeleteConfirmOpen(true)}
-                    onPreviewLog={(log) => void previewGenerationLog(log)}
                 />
             </Drawer>
             <Drawer title={t("workbench.settings")} placement="bottom" size="82vh" open={settingsOpen} onClose={() => setSettingsOpen(false)}>
@@ -911,14 +1004,14 @@ function ResultImageCard({
                         </Button>
                     </Tooltip>
                 </div>
-                {/* 生产动线只给「归档」（可逆）；彻底删除只在「我的资产」页。非网关产物（本地历史图）自动不渲染。 */}
-                <ArtifactActions targets={[{ url: image.dataUrl }]} />
+                {/* 生产动线只给「归档」（可逆）；彻底删除只在「我的资产」页。归档只认网关产物原始地址。 */}
+                <ArtifactActions targets={[{ url: image.artifactUrl || image.dataUrl }]} />
             </div>
         </div>
     );
 }
 
-function PendingImageCard({ progress }: { progress?: ImageJobProgress }) {
+function PendingImageCard({ progress, onCancel }: { progress?: ImageJobProgress; onCancel?: () => void }) {
     const { t } = useTranslation();
     const max = Number(progress?.max) || 0;
     const value = Number(progress?.value) || 0;
@@ -937,13 +1030,28 @@ function PendingImageCard({ progress }: { progress?: ImageJobProgress }) {
                 <LoaderCircle className="size-6 animate-spin" />
                 <span>{detail}</span>
                 {max > 0 ? <Progress percent={Math.round((value / max) * 100)} size="small" showInfo={false} className="!mb-0 !w-24" /> : null}
+                {onCancel ? (
+                    <Button size="small" icon={<XCircle className="size-3.5" />} onClick={onCancel}>
+                        {t("workbench.cancel")}
+                    </Button>
+                ) : null}
             </div>
         </div>
     );
 }
 
-function FailedImageCard({ error, onRetry }: { error: string; onRetry: () => void }) {
+function FailedImageCard({ error, canceled = false, onRetry }: { error: string; canceled?: boolean; onRetry: () => void }) {
     const { t } = useTranslation();
+    if (canceled) {
+        return (
+            <div className="overflow-hidden rounded-lg border border-stone-200 bg-stone-50 dark:border-stone-800 dark:bg-stone-900">
+                <div className="flex aspect-square flex-col items-center justify-center gap-3 p-5 text-center">
+                    <XCircle className="size-6 text-stone-400" />
+                    <div className="text-sm font-medium text-stone-500 dark:text-stone-400">{t("workbench.canceled")}</div>
+                </div>
+            </div>
+        );
+    }
     return (
         <div className="overflow-hidden rounded-lg border border-red-200 bg-red-50 dark:border-red-950 dark:bg-red-950/20">
             <div className="flex aspect-square flex-col items-center justify-center gap-3 p-5 text-center">
@@ -965,6 +1073,8 @@ function TaskGroup({
     task,
     jobs,
     now,
+    onCancelJob,
+    onCancelTask,
     onRetryJob,
     onEdit,
     onDownload,
@@ -973,6 +1083,8 @@ function TaskGroup({
     task: Task;
     jobs: ImageJob[];
     now: number;
+    onCancelJob: (jobId: string) => void;
+    onCancelTask: () => void;
     onRetryJob: (jobId: string) => void;
     onEdit: (image: GeneratedImage, index: number) => void;
     onDownload: (image: GeneratedImage, index: number) => void;
@@ -981,6 +1093,7 @@ function TaskGroup({
     const { t } = useTranslation();
     const jobById = new Map(jobs.map((job) => [job.id, job] as const));
     const total = task.jobIds.length;
+    const pendingSubmit = total === 0;
     // 组进度 = 已完成条数 / 总条数；完成与否只认后端 status。
     const finished = task.jobIds.filter((id) => {
         const job = jobById.get(id);
@@ -988,13 +1101,39 @@ function TaskGroup({
     }).length;
     const percent = total ? Math.round((finished / total) * 100) : 0;
     const hasActive = task.jobIds.some((id) => isActiveJobStatus(jobById.get(id)?.status));
-    const hasError = task.jobIds.some((id) => jobById.get(id)?.status === "error");
-    const status: TaskStatus = hasActive ? "running" : hasError ? (finished > 0 ? "partial" : "failed") : "done";
+    const anyRunning = task.jobIds.some((id) => jobById.get(id)?.status === "running");
+    const doneCount = task.jobIds.filter((id) => jobById.get(id)?.status === "done").length;
+    const errorCount = task.jobIds.filter((id) => jobById.get(id)?.status === "error").length;
+    const canceledCount = task.jobIds.filter((id) => jobById.get(id)?.status === "canceled").length;
+    // 状态优先级：提交中 > 进行中 > 全取消 > 全失败 > 部分成功 > 完成。
+    const status: TaskStatus = pendingSubmit
+        ? "running"
+        : hasActive
+          ? "running"
+          : doneCount === 0 && errorCount === 0 && canceledCount > 0
+            ? "canceled"
+            : doneCount === 0 && errorCount > 0
+              ? "failed"
+              : doneCount > 0 && (errorCount > 0 || canceledCount > 0)
+                ? "partial"
+                : "done";
     const elapsedMs = Math.max(0, (now || task.startedAt) - task.startedAt);
-    const statusLabel = status === "running" ? t("workbench.taskRunning") : status === "done" ? t("workbench.taskDone") : status === "partial" ? t("workbench.taskPartial") : t("workbench.taskFailed");
-    const statusColor = status === "running" ? "blue" : status === "done" ? "green" : status === "partial" ? "orange" : "red";
+    const statusLabel = pendingSubmit
+        ? t("workbench.taskQueued")
+        : status === "running"
+          ? t(anyRunning ? "workbench.taskRunning" : "workbench.taskQueued")
+          : status === "done"
+            ? t("workbench.taskDone")
+            : status === "partial"
+              ? t("workbench.taskPartial")
+              : status === "canceled"
+                ? t("workbench.taskCanceled")
+                : t("workbench.taskFailed");
+    const statusColor = status === "running" ? "blue" : status === "done" ? "green" : status === "partial" ? "orange" : status === "canceled" ? "default" : "red";
 
-    const cards = task.jobIds.flatMap((id, jobIndex) => {
+    const cards = pendingSubmit
+        ? [<PendingImageCard key="pending" />]
+        : task.jobIds.flatMap((id, jobIndex) => {
         const job = jobById.get(id);
         if (job?.status === "done" && job.outputs?.length) {
             return job.outputs
@@ -1003,10 +1142,13 @@ function TaskGroup({
                     <ResultImageCard key={`${id}-${output.filename || outputIndex}`} image={jobOutputToImage(job, output)} index={jobIndex} onEdit={onEdit} onDownload={onDownload} onSaveAsset={onSaveAsset} />
                 ));
         }
-        if (job && (job.status === "error" || job.status === "canceled")) {
+        if (job?.status === "canceled") {
+            return [<FailedImageCard key={id} canceled error={t("workbench.canceled")} onRetry={() => onRetryJob(id)} />];
+        }
+        if (job?.status === "error") {
             return [<FailedImageCard key={id} error={job.error || t("workbench.generationFailed")} onRetry={() => onRetryJob(id)} />];
         }
-        return [<PendingImageCard key={id} progress={job?.progress} />];
+        return [<PendingImageCard key={id} progress={job?.progress} onCancel={() => onCancelJob(id)} />];
     });
 
     return (
@@ -1015,10 +1157,16 @@ function TaskGroup({
                 <div className="min-w-0 flex-1">
                     <div className="truncate text-sm font-semibold">{task.prompt}</div>
                     <div className="mt-1.5 flex items-center gap-2">
-                        <Progress percent={percent} size="small" showInfo={false} className="!mb-0 !w-32 min-w-24" />
-                        <span className="shrink-0 text-xs text-stone-500 dark:text-stone-400">
-                            {finished}/{total}
-                        </span>
+                        {pendingSubmit ? (
+                            <span className="text-xs text-stone-500 dark:text-stone-400">{t("workbench.taskQueued")}</span>
+                        ) : (
+                            <>
+                                <Progress percent={percent} size="small" showInfo={false} className="!mb-0 !w-32 min-w-24" />
+                                <span className="shrink-0 text-xs text-stone-500 dark:text-stone-400">
+                                    {finished}/{total}
+                                </span>
+                            </>
+                        )}
                     </div>
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
@@ -1026,33 +1174,173 @@ function TaskGroup({
                         {statusLabel}
                     </Tag>
                     {status === "running" ? <span className="text-xs text-stone-500 dark:text-stone-400">{formatDuration(elapsedMs)}</span> : null}
+                    {hasActive ? (
+                        <Button size="small" danger icon={<XCircle className="size-3.5" />} onClick={onCancelTask}>
+                            {t("workbench.cancel")}
+                        </Button>
+                    ) : null}
                 </div>
             </div>
-            <div className="grid gap-4 sm:grid-cols-2 2xl:grid-cols-3">{cards}</div>
+            {/* 同一次任务的素材成一组 → 预览里 ←/→ 切换它们（配合 usePreviewVerticalArrows 的 ↑/↓ 映射） */}
+            <Image.PreviewGroup>
+                <div className="grid gap-4 sm:grid-cols-2 2xl:grid-cols-3">{cards}</div>
+            </Image.PreviewGroup>
         </div>
     );
 }
 
-function LogPanel({
+/** 本次提交的参数快照（历史事实）：模型 / 规格 / 数量 / seed + 提示词 + 参考图。与当前表单完全隔离。 */
+function SnapshotPanel({ prompt, config, references, seed, modelLabel }: { prompt: string; config: GenerationLogConfig; references: ReferenceImage[]; seed?: number; modelLabel?: string }) {
+    const { t } = useTranslation();
+    useSyncExternalStore(subscribeImagePreviews, getImagePreviewRevision);
+    const modelName = modelLabel || config.imageModel || config.model;
+    return (
+        <div className="space-y-3 rounded-lg border border-stone-200 bg-stone-50 p-3 dark:border-stone-800 dark:bg-stone-900">
+            <div className="flex flex-wrap items-center gap-1.5">
+                {modelName ? (
+                    <Tag className="m-0" color="blue">
+                        {modelName}
+                    </Tag>
+                ) : null}
+                {config.size ? <Tag className="m-0">{config.size}</Tag> : null}
+                <Tag className="m-0">{t("workbench.itemCount", { count: Number(config.count) || 1 })}</Tag>
+                {seed !== undefined ? <Tag className="m-0">seed {seed}</Tag> : null}
+            </div>
+            <div className="whitespace-pre-wrap break-words text-sm text-stone-700 dark:text-stone-300">{prompt}</div>
+            {references.length ? (
+                <div className="hover-scrollbar flex gap-2 overflow-x-auto">
+                    {references.map((item) => (
+                        <img key={item.id} src={previewUrlFor(item.storageKey) || item.dataUrl} alt={item.name} className="size-14 shrink-0 rounded-md border border-stone-200 object-cover dark:border-stone-800" />
+                    ))}
+                </div>
+            ) : null}
+        </div>
+    );
+}
+
+/** 队列里一条「进行中的任务」卡片：状态与进度全部读后端 job，提交即出现。 */
+function TaskCard({ task, jobs, now, active, onSelect }: { task: Task; jobs: Record<string, ImageJob>; now: number; active: boolean; onSelect: () => void }) {
+    const { t } = useTranslation();
+    useSyncExternalStore(subscribeImagePreviews, getImagePreviewRevision);
+    const list = task.jobIds.map((id) => jobs[id]);
+    const total = task.jobIds.length;
+    const pendingSubmit = total === 0;
+    const finished = list.filter((job) => job && !isActiveJobStatus(job.status)).length;
+    const anyRunning = list.some((job) => job?.status === "running");
+    const hasActive = list.some((job) => isActiveJobStatus(job?.status));
+    const doneCount = list.filter((job) => job?.status === "done").length;
+    const errorCount = list.filter((job) => job?.status === "error").length;
+    const canceledCount = list.filter((job) => job?.status === "canceled").length;
+    const status: TaskStatus = pendingSubmit
+        ? "running"
+        : hasActive
+          ? "running"
+          : doneCount === 0 && errorCount === 0 && canceledCount > 0
+            ? "canceled"
+            : doneCount === 0 && errorCount > 0
+              ? "failed"
+              : doneCount > 0 && (errorCount > 0 || canceledCount > 0)
+                ? "partial"
+                : "done";
+    // 单张任务优先用后端 progress 的真实比例；多张任务退回「已完成/总数」。
+    const single = total === 1 ? list[0] : undefined;
+    const singlePercent = single && Number(single.progress?.max) > 0 ? Math.round((Number(single.progress?.value) / Number(single.progress?.max)) * 100) : undefined;
+    const percent = singlePercent ?? (total ? Math.round((finished / total) * 100) : 0);
+    const statusLabel =
+        status === "running"
+            ? t(anyRunning ? "workbench.taskRunning" : "workbench.taskQueued")
+            : status === "done"
+              ? t("workbench.taskDone")
+              : status === "partial"
+                ? t("workbench.taskPartial")
+                : status === "canceled"
+                  ? t("workbench.taskCanceled")
+                  : t("workbench.taskFailed");
+    const statusColor = status === "running" ? "blue" : status === "done" ? "green" : status === "partial" ? "orange" : status === "canceled" ? "default" : "red";
+    const thumbnails = task.jobIds
+        .map((id) => jobs[id])
+        .filter((job): job is ImageJob => Boolean(job?.status === "done" && job.outputs?.length))
+        .flatMap((job) => (job.outputs || []).filter((output) => !output.type || output.type === "image").map((output) => jobOutputToImage(job, output)))
+        .slice(0, 4);
+    const elapsedMs = status === "running" ? Math.max(0, (now || task.startedAt) - task.startedAt) : 0;
+
+    return (
+        <button
+            type="button"
+            className={`block w-full rounded-lg border p-2 text-left transition ${active ? "border-stone-900 bg-blue-50 dark:border-stone-100 dark:bg-blue-950/20" : "border-stone-200 bg-background hover:bg-stone-50 dark:border-stone-800 dark:hover:bg-stone-900"}`}
+            onClick={onSelect}
+        >
+            <div className="min-w-0">
+                <div className="truncate text-sm font-semibold leading-5">{task.prompt}</div>
+                <div className="mt-1.5 flex items-center gap-1.5">
+                    <Tag className="m-0 flex h-6 items-center rounded-md px-1.5 text-xs leading-none" color={statusColor}>
+                        {statusLabel}
+                    </Tag>
+                    {pendingSubmit ? (
+                        <LoaderCircle className="size-3.5 animate-spin text-stone-400" />
+                    ) : status === "running" ? (
+                        <span className="text-xs tabular-nums text-stone-500 dark:text-stone-400">{percent}%</span>
+                    ) : null}
+                    {elapsedMs ? <span className="text-xs text-stone-400">{formatDuration(elapsedMs)}</span> : null}
+                    {status === "failed" && errorCount ? <span className="truncate text-xs text-red-500">{t("workbench.failCount", { count: errorCount })}</span> : null}
+                </div>
+                {status === "running" && !pendingSubmit ? <Progress percent={percent} size="small" showInfo={false} className="!mb-0 !mt-1.5" /> : null}
+                {thumbnails.length ? (
+                    <div className="mt-2 flex gap-1 overflow-hidden">
+                        {thumbnails.map((image) => (
+                            <img key={image.id} src={previewUrlFor(image.storageKey) || image.dataUrl} alt="" className="size-8 shrink-0 rounded-md object-cover" />
+                        ))}
+                    </div>
+                ) : null}
+            </div>
+        </button>
+    );
+}
+
+/**
+ * 左栏：任务队列（时间线）。本次会话的任务与历史记录合并、按 id 去重、按时间倒序 ——
+ * 点「开始生成」即出现一条，点开任何一条在中/右区看该次的参数快照与结果。
+ */
+function QueuePanel({
+    tasks,
     logs,
+    jobs,
+    now,
+    selectedId,
+    onSelect,
     selectedLogIds,
-    activeLogId,
     onSelectedLogIdsChange,
     onCreateSession,
     onDeleteSelected,
-    onPreviewLog,
 }: {
+    tasks: Task[];
     logs: GenerationLog[];
+    jobs: Record<string, ImageJob>;
+    now: number;
+    selectedId: string | null;
+    onSelect: (id: string) => void;
     selectedLogIds: string[];
-    activeLogId?: string;
     onSelectedLogIdsChange: (ids: string[]) => void;
     onCreateSession: () => void;
     onDeleteSelected: () => void;
-    onPreviewLog: (log: GenerationLog) => void;
 }) {
     const { t } = useTranslation();
-    const allSelected = Boolean(logs.length) && selectedLogIds.length === logs.length;
-    const toggleAll = () => onSelectedLogIdsChange(allSelected ? [] : logs.map((log) => log.id));
+    const seen = new Set<string>();
+    const entries: Array<{ id: string; createdAt: number; task?: Task; log?: GenerationLog }> = [];
+    for (const task of tasks) {
+        if (seen.has(task.id)) continue;
+        seen.add(task.id);
+        entries.push({ id: task.id, createdAt: Date.parse(task.createdAt) || task.startedAt, task });
+    }
+    for (const log of logs) {
+        if (seen.has(log.id)) continue;
+        seen.add(log.id);
+        entries.push({ id: log.id, createdAt: log.createdAt, log });
+    }
+    entries.sort((a, b) => b.createdAt - a.createdAt);
+    const historyIds = entries.filter((entry) => entry.log).map((entry) => entry.id);
+    const allSelected = Boolean(historyIds.length) && historyIds.every((id) => selectedLogIds.includes(id));
+    const toggleAll = () => onSelectedLogIdsChange(allSelected ? [] : historyIds);
 
     return (
         <>
@@ -1060,31 +1348,35 @@ function LogPanel({
                 <div>
                     <h2 className="text-base font-semibold">{t("workbench.logs")}</h2>
                 </div>
-                <Tag className="m-0">{logs.length}</Tag>
+                <Tag className="m-0">{entries.length}</Tag>
             </div>
             <div className="mb-4 flex flex-wrap gap-2">
                 <Button size="small" icon={<Plus className="size-3.5" />} onClick={onCreateSession}>
                     {t("workbench.new")}
                 </Button>
-                <Button size="small" icon={<CheckSquare className="size-3.5" />} disabled={!logs.length} onClick={toggleAll}>
+                <Button size="small" icon={<CheckSquare className="size-3.5" />} disabled={!historyIds.length} onClick={toggleAll}>
                     {allSelected ? t("common.cancel") : t("workbench.selectAll")}
                 </Button>
                 <Button size="small" danger icon={<Trash2 className="size-3.5" />} disabled={!selectedLogIds.length} onClick={onDeleteSelected}>
                     {t("workbench.deleteLogs")}
                 </Button>
             </div>
-            <div className="space-y-3">
-                {logs.map((log) => (
-                    <LogCard
-                        key={log.id}
-                        log={log}
-                        selected={selectedLogIds.includes(log.id)}
-                        active={activeLogId === log.id}
-                        onSelectedChange={(checked) => onSelectedLogIdsChange(checked ? [...selectedLogIds, log.id] : selectedLogIds.filter((id) => id !== log.id))}
-                        onClick={() => onPreviewLog(log)}
-                    />
-                ))}
-                {!logs.length ? <div className="flex min-h-48 items-center justify-center rounded-lg border border-dashed border-stone-300 text-center text-sm text-stone-500 dark:border-stone-700">{t("workbench.noLogs")}</div> : null}
+            <div className="space-y-2">
+                {entries.map((entry) =>
+                    entry.task ? (
+                        <TaskCard key={entry.id} task={entry.task} jobs={jobs} now={now} active={selectedId === entry.id} onSelect={() => onSelect(entry.id)} />
+                    ) : (
+                        <LogCard
+                            key={entry.id}
+                            log={entry.log!}
+                            selected={selectedLogIds.includes(entry.id)}
+                            active={selectedId === entry.id}
+                            onSelectedChange={(checked) => onSelectedLogIdsChange(checked ? [...selectedLogIds, entry.id] : selectedLogIds.filter((id) => id !== entry.id))}
+                            onClick={() => onSelect(entry.id)}
+                        />
+                    ),
+                )}
+                {!entries.length ? <div className="flex min-h-48 items-center justify-center rounded-lg border border-dashed border-stone-300 text-center text-sm text-stone-500 dark:border-stone-700">{t("workbench.noLogs")}</div> : null}
             </div>
         </>
     );
@@ -1093,7 +1385,7 @@ function LogPanel({
 function LogCard({ log, selected, active, onSelectedChange, onClick }: { log: GenerationLog; selected: boolean; active: boolean; onSelectedChange: (checked: boolean) => void; onClick: () => void }) {
     const { t } = useTranslation();
     useSyncExternalStore(subscribeImagePreviews, getImagePreviewRevision);
-    const thumbnails = log.images.filter((image) => image.dataUrl).slice(0, 4);
+    const thumbnails = log.images.filter((image) => image.dataUrl || image.storageKey).slice(0, 4);
 
     return (
         <button
@@ -1117,14 +1409,20 @@ function LogCard({ log, selected, active, onSelectedChange, onClick }: { log: Ge
                 </div>
                 <div className="grid justify-items-end gap-2">
                     <div className="flex gap-1">
-                        <Tag className="m-0 flex h-6 items-center rounded-md px-1.5 text-xs leading-none" color="blue">
-                            {t("workbench.successCount", { count: log.successCount ?? log.imageCount })}
-                        </Tag>
-                        {log.failCount ? (
-                            <Tag className="m-0 flex h-6 items-center rounded-md px-1.5 text-xs leading-none" color="red">
-                                {t("workbench.failCount", { count: log.failCount })}
-                            </Tag>
-                        ) : null}
+                        {log.status === "canceled" ? (
+                            <Tag className="m-0 flex h-6 items-center rounded-md px-1.5 text-xs leading-none">{t("workbench.taskCanceled")}</Tag>
+                        ) : (
+                            <>
+                                <Tag className="m-0 flex h-6 items-center rounded-md px-1.5 text-xs leading-none" color="blue">
+                                    {t("workbench.successCount", { count: log.successCount ?? log.imageCount })}
+                                </Tag>
+                                {log.failCount ? (
+                                    <Tag className="m-0 flex h-6 items-center rounded-md px-1.5 text-xs leading-none" color="red">
+                                        {t("workbench.failCount", { count: log.failCount })}
+                                    </Tag>
+                                ) : null}
+                            </>
+                        )}
                     </div>
                     <div className="flex flex-wrap justify-end gap-1">
                         <Tag className="m-0 flex h-6 items-center rounded-md px-1.5 text-xs leading-none">{t("workbench.itemCount", { count: log.imageCount })}</Tag>
@@ -1133,7 +1431,9 @@ function LogCard({ log, selected, active, onSelectedChange, onClick }: { log: Ge
                         </Tag>
                     </div>
                     <div className="flex justify-end">
-                        <Tag className="m-0 flex h-6 items-center rounded-md px-1.5 text-xs leading-none">{log.time}</Tag>
+                        {/* 时间**渲染时**按 createdAt 现算 —— 老记录里存的 `time` 是旧格式（带年秒），
+                            直接显示会与新的简化格式不一致；createdAt 是时间戳，新旧记录都有。 */}
+                        <Tag className="m-0 flex h-6 items-center rounded-md px-1.5 text-xs leading-none">{formatTaskTime(log.createdAt)}</Tag>
                     </div>
                 </div>
             </div>
@@ -1174,7 +1474,7 @@ async function normalizeLog(log: Partial<GenerationLog>): Promise<GenerationLog>
         createdAt: log.createdAt || Date.now(),
         title: log.title || log.model || i18n.t("workbench.untitled"),
         prompt: log.prompt || log.title || "",
-        time: log.time || new Date().toLocaleString(i18n.resolvedLanguage, { hour12: false }),
+        time: log.time || formatTaskTime(new Date()),
         model: log.model || config.imageModel || "",
         config,
         references,
@@ -1258,14 +1558,14 @@ function buildLog({
         createdAt: Date.now(),
         title: prompt.slice(0, 12) || i18n.t("workbench.untitled"),
         prompt,
-        time: new Date().toLocaleString(i18n.resolvedLanguage, { hour12: false }),
+        time: formatTaskTime(new Date()),
         model,
         config: logConfig,
         references,
         durationMs,
         successCount,
         failCount,
-        imageCount: Number(logConfig.count) || successCount,
+        imageCount: images.length || successCount,
         size: logConfig.size,
         quality: logConfig.quality,
         status,
