@@ -5,6 +5,8 @@ import { basename, extname, join } from "node:path";
 import { artifactUrl, ensureDir, saveBuffer } from "../files.js";
 // 时长档位（模型能力元数据）的唯一事实源：与「模型清单」同源挂到每个模板上，随 /api/providers 输出。
 import { durationMetaForTemplate } from "../durations.js";
+// 分辨率/画幅档位（模型能力元数据）的唯一事实源：与「模型清单」同源挂到每个模板上，随 /api/providers 输出。
+import { sizeMetaForTemplate } from "../sizes.js";
 
 const TOKEN_RE = /\{\{([A-Z0-9_]+)\}\}/g;
 
@@ -157,6 +159,8 @@ export function listTemplates(workflowsDir) {
             const name = file.slice(0, -5);
             // 档位随清单同源下发：D1「时长档位跟着模型走」，前端从该字段读，不硬编码。
             const durationMeta = durationMetaForTemplate(name);
+            // 规格随清单同源下发：「画幅口径跟模型建议尺寸走」，前端从该字段读，不硬编码。
+            const sizeMeta = sizeMetaForTemplate(name);
             return {
                 name,
                 family: familyOf(name),
@@ -164,6 +168,8 @@ export function listTemplates(workflowsDir) {
                 tokens: extractTokens(join(workflowsDir, file)),
                 durations: durationMeta.durations,
                 durationMeta,
+                sizes: sizeMeta.sizes,
+                sizeMeta,
             };
         });
 }

@@ -12,6 +12,8 @@ import { durationsForTemplate, durationMetaForTemplate, frameCountForDuration, i
 import { artifactUrl, ensureDir, safeJoin } from "./files.js";
 import { listTemplates } from "./providers/comfy.js";
 import { buildShotBinding, missingRefsReport, resolveSelectedArtifacts, stableSeed } from "./reference-lock.js";
+// 分辨率/画幅：片段 / 关键帧 / 成片尺寸一律经 sizeForRatio 从「模型官方规格登记表」取（不再实时按比例推导）。
+import { sizeForRatio } from "./sizes.js";
 // 提示词编译器：按所选模型把「模型无关的内容事实」编译成该模型要的提示词（图片/视频一视同仁）。
 import { compilePromptForTemplate, compilePromptForTemplateAsync, presetForTemplate, stripUntranslatedMarker } from "./prompt-compiler.js";
 import { normalizeShotEpisodeIds, RUN_SHOT_ID_FIELD } from "./production-contracts.js";
@@ -102,29 +104,6 @@ function gateError(message, status = 400) {
     const error = new Error(message);
     error.status = status;
     return error;
-}
-
-/** 把像素值吸附到最近的 32 倍数：H3 节点硬性要求宽高可被 32 整除（与 generate.js 的兜底吸附同一口径）。 */
-function snap32(value) {
-    return Math.max(32, Math.round(Number(value) / 32) * 32);
-}
-
-/**
- * 把「宽:高」比例换算成像素尺寸，两边都吸附到 32 的倍数。
- * base 是短边基准（取 config 默认宽高的短边），保证同一画幅不同项目产出一致尺寸。
- * 解析失败返回 null，调用方回落到 config.pipeline 的默认宽高。
- */
-function dimensionsForRatio(ratio, base) {
-    const match = /^(\d+(?:\.\d+)?)\s*:\s*(\d+(?:\.\d+)?)$/.exec(String(ratio ?? "").trim());
-    if (!match) return null;
-    const width = Number(match[1]);
-    const height = Number(match[2]);
-    if (!(width > 0) || !(height > 0)) return null;
-    const short = Math.max(32, Number(base) || 768);
-    return {
-        WIDTH: snap32(width >= height ? (short * width) / height : short),
-        HEIGHT: snap32(height >= width ? (short * height) / width : short),
-    };
 }
 
 /**
@@ -1796,11 +1775,12 @@ ${JSON.stringify(partials, null, 2)}
     /** 单条参考图条目的生图计划（纯文生图；参考图本身不需要参考图输入）。 */
     function designReferencePlan(run, item) {
         const style = productionDefaults(run);
-        const imageDims = dimensionsForRatio(style.ratio, Math.min(Number(pipelineConfig.imageWidth) || 768, Number(pipelineConfig.imageHeight) || 1344));
+        // 尺寸从「该生图模板的官方规格登记表」取（画幅匹配优先，否则回落默认 + warning），不再实时按比例推导。
+        const imageDims = sizeForRatio(pipelineConfig.imageTemplate, style.ratio, { base: Math.min(Number(pipelineConfig.imageWidth) || 768, Number(pipelineConfig.imageHeight) || 1344) });
         const projectId = run?.options?.projectId;
         const params = {
-            WIDTH: imageDims ? imageDims.WIDTH : Number(pipelineConfig.imageWidth) || 768,
-            HEIGHT: imageDims ? imageDims.HEIGHT : Number(pipelineConfig.imageHeight) || 1344,
+            WIDTH: imageDims.width ?? (Number(pipelineConfig.imageWidth) || 768),
+            HEIGHT: imageDims.height ?? (Number(pipelineConfig.imageHeight) || 1344),
             BATCH: Number(pipelineConfig.imageBatch) || 1,
             PROMPT: withPromptHead(style, item.prompt),
         };
@@ -2318,8 +2298,7 @@ ${JSON.stringify(partials, null, 2)}
         const style = productionDefaults(run);
         const start = frames.find((frame) => frame.shotId === item.shotId && frame.role === "start");
         if (def.id === "keyframe") {
-            // ratio 有值时按项目画幅推导尺寸（32 倍数），无值时沿用 config 默认宽高。
-            const imageDims = dimensionsForRatio(style.ratio, Math.min(Number(pipelineConfig.imageWidth) || 768, Number(pipelineConfig.imageHeight) || 1344));
+            // 尺寸在选定模板（decision.template）后从「该模型官方规格登记表」取（见下方 sizeDims），不再实时按比例推导。
             const projectId = run?.options?.projectId;
             // ③ 图上文字逐字拼进 PROMPT（修 #39）：textOverlays 原样照抄，确无文字（kind 全 none / 缺字段）不拼空串。
             const overlayClause = textOverlayClause(item.textOverlays);
@@ -2339,9 +2318,12 @@ ${JSON.stringify(partials, null, 2)}
                 : refContext.report.warning.length
                   ? { reason: `参考图已生成但未选定：${refContext.report.warning.map((entry) => `${entry.role}:${entry.bindingId}`).join("、")}` }
                   : null;
+            // 关键帧尺寸按「实际选定的生图模板」的官方规格取；画幅无对应档 → 回落默认 + warning（不臆造官方档位）。
+            const sizeDims = sizeForRatio(decision.template, style.ratio, { base: Math.min(Number(pipelineConfig.imageWidth) || 768, Number(pipelineConfig.imageHeight) || 1344) });
+            const sizeWarning = sizeDims.warning ? { reason: sizeDims.warning } : null;
             const params = {
-                WIDTH: imageDims ? imageDims.WIDTH : Number(pipelineConfig.imageWidth) || 768,
-                HEIGHT: imageDims ? imageDims.HEIGHT : Number(pipelineConfig.imageHeight) || 1344,
+                WIDTH: sizeDims.width ?? (Number(pipelineConfig.imageWidth) || 768),
+                HEIGHT: sizeDims.height ?? (Number(pipelineConfig.imageHeight) || 1344),
                 BATCH: Number(pipelineConfig.imageBatch) || 1,
                 ...(item.role === "end" ? { INPUT_IMAGE: start?.artifactUrl } : {}),
                 ...extraParams,
@@ -2407,7 +2389,7 @@ ${JSON.stringify(partials, null, 2)}
                 if (params.OUTPUT_PREFIX === undefined) params.OUTPUT_PREFIX = outputPrefixFor(run.id, item.id);
             }
             const promptWarning = untranslatedWarning(renderedPrompt.raw);
-            const warningReason = [warning?.reason, promptWarning?.reason].filter(Boolean).join("；");
+            const warningReason = [warning?.reason, sizeWarning?.reason, promptWarning?.reason].filter(Boolean).join("；");
             return {
                 kind: "image",
                 template: decision.template,
@@ -2423,7 +2405,8 @@ ${JSON.stringify(partials, null, 2)}
         item.durationSec = Number(item.durationSec) > 0 ? Number(item.durationSec) : videoDefaultSeconds;
         if (!item.keyframeId) item.keyframeId = start?.id ?? null;
         const shot = shots.find((entry) => entry.id === item.shotId);
-        const videoDims = dimensionsForRatio(style.ratio, Math.min(Number(pipelineConfig.videoWidth) || 768, Number(pipelineConfig.videoHeight) || 1344));
+        // 片段尺寸从「该视频模型的官方规格登记表」取（画幅匹配优先，否则回落默认 + warning），不再实时按比例推导。
+        const videoDims = sizeForRatio(pipelineConfig.videoTemplate, style.ratio, { base: Math.min(Number(pipelineConfig.videoWidth) || 768, Number(pipelineConfig.videoHeight) || 1344) });
         // 片段侧同样在「发起生成请求」那一刻按所选模型编译提示词：把分镜的模型无关事实（动作/机位/台词/文字）
         // 交给编译器，而不是把「英文静态生图描述 + 中文动作流水句」硬拼后甩给模型。
         // 实际注入的槽位以模板声明的 token 为准：FL 模板走 FIRST_FRAME/LAST_FRAME，i2v 走 INPUT_IMAGE；
@@ -2434,8 +2417,8 @@ ${JSON.stringify(partials, null, 2)}
         const endFrame = frames.find((frame) => frame.shotId === item.shotId && frame.role === "end");
         const slotImages = [];
         const videoParams = {
-            WIDTH: videoDims ? videoDims.WIDTH : Number(pipelineConfig.videoWidth) || 768,
-            HEIGHT: videoDims ? videoDims.HEIGHT : Number(pipelineConfig.videoHeight) || 1344,
+            WIDTH: videoDims.width ?? (Number(pipelineConfig.videoWidth) || 768),
+            HEIGHT: videoDims.height ?? (Number(pipelineConfig.videoHeight) || 1344),
             LENGTH: frameCountForDuration(item.durationSec, Number(pipelineConfig.videoFps) || 24),
         };
         if (start?.artifactUrl) {
@@ -2466,6 +2449,9 @@ ${JSON.stringify(partials, null, 2)}
         const renderedPrompt = promptFor(run, item, videoTemplate, compileInput);
         videoParams.PROMPT = renderedPrompt.prompt;
         const promptWarning = untranslatedWarning(renderedPrompt.raw);
+        // 画幅无官方对应档 → 回落默认 + warning（不臆造官方档位）。
+        const sizeWarning = videoDims.warning ? { reason: videoDims.warning } : null;
+        const warningReason = [sizeWarning?.reason, promptWarning?.reason].filter(Boolean).join("；");
         return {
             kind: "video",
             template: videoTemplate,
@@ -2473,7 +2459,7 @@ ${JSON.stringify(partials, null, 2)}
             ready: Boolean(start?.artifactUrl),
             params: { ...videoParams, ...extraParams },
             compileInput,
-            ...(promptWarning ? { warning: promptWarning } : {}),
+            ...(warningReason ? { warning: { reason: warningReason } } : {}),
         };
     }
 
@@ -3027,6 +3013,8 @@ ${JSON.stringify(partials, null, 2)}
         const assembly = stage.output.assembly;
         const clips = stage.output.clips;
         writeProgress(run.id, { runId: run.id, stage: def.id, phase: "assembling", label: `正在把 ${clips.length} 个片段合成成片` });
+        // 成片尺寸与片段同一口径：都从「该视频模型的官方规格登记表」取（H3 竖屏 = 768x1344），避免片段与成片不一致被二次重采样。
+        const assembleDims = sizeForRatio(pipelineConfig.videoTemplate, productionDefaults(run).ratio, { base: Math.min(Number(pipelineConfig.videoWidth) || 768, Number(pipelineConfig.videoHeight) || 1344) });
         try {
             const result = await assemble({
                 config,
@@ -3036,6 +3024,8 @@ ${JSON.stringify(partials, null, 2)}
                 transition: assembly.transition,
                 options: {
                     id,
+                    width: assembleDims.width ?? config.pipeline?.videoWidth,
+                    height: assembleDims.height ?? config.pipeline?.videoHeight,
                     quality: options.quality,
                     transitionDurationSec: options.transitionDurationSec,
                     audio: Array.isArray(options.audio) && options.audio.length ? options.audio : audioForAssemble(run),

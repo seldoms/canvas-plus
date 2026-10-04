@@ -102,13 +102,15 @@ test("index 集成：/asset-refs 四条路由与 /gates 真实返回 JSON（不�
     await archive(project.id);
 });
 
-test("index 集成：注入 getProject 后 plan.ratio=16:9 的 run 产出 1376×768（不跑 ComfyUI）", async () => {
+test("index 集成：注入 getProject 后 plan.ratio=16:9 的 run 取该生图模型的官方 16:9 规格（不跑 ComfyUI）", async () => {
     const project = await makeProject({ title: "画幅", plan: { ratio: "16:9" } });
     const run = mod.pipeline.create({ novel: "很久以前", title: "短篇", options: { projectId: project.id } });
     mod.pipeline.setStageInput(run.id, "keyframe", { output: { frames: [{ id: "sh1-start", shotId: "sh1", role: "start", prompt: "少女走进老屋，中景" }] } });
     const begun = mod.pipeline.beginRegenerate(run.id, "keyframe", { itemId: "sh1-start" });
-    assert.equal(begun.plan.params.WIDTH, 1376, "16:9 长边 768*16/9≈1365.33 吸附到 32 倍数");
-    assert.equal(begun.plan.params.HEIGHT, 768);
+    // 尺寸从「该生图模型的官方规格登记表」取（config imageTemplate=img_qwen21_t2i → registry qwen_image_2_1）；
+    // 16:9 官方档 = 2752x1536（不再实时按比例推导出官方没有的 1376）。
+    assert.equal(begun.plan.params.WIDTH, 2752, "qwen_image_2_1 官方 16:9 档 = 2752x1536");
+    assert.equal(begun.plan.params.HEIGHT, 1536);
     assert.equal(begun.plan.params.WIDTH % 32, 0);
     assert.equal(begun.plan.params.HEIGHT % 32, 0);
     await archive(project.id);
