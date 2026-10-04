@@ -6,6 +6,8 @@ import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import { displayProgressLabel } from "@/lib/progress-label";
 import { resolveGatewayUrl, type GatewayArtifact, type GatewayStageProgress, type GatewayStageStatus, type GatewayTemplateInfo } from "@/services/api/gateway";
+import { MediaPreviewGroup, PreviewableMedia } from "@/components/workbench";
+import type { SelectModelItem } from "@/lib/model-grouping";
 import { isGenerativeStage, isVideoArtifact, orphanArtifacts, stageItems, stageMediaKind, templatesForStage } from "../pipeline-utils";
 import type { PipelineStageView } from "../use-pipeline-run";
 import { CandidateStrip } from "./candidate-strip";
@@ -56,7 +58,7 @@ function StageProgress({ progress }: { progress: GatewayStageProgress }) {
     );
 }
 
-export function StageCard({ index, view, busy, progress, resumeChunks, disabledReason, modelOptions, model, templates, regeneratingItem, onModelChange, onRun, onRerun, onCancel, onEdit, onRegenerate, onRefresh, onOpenProjects }: { index: number; view: PipelineStageView; busy: boolean; progress: GatewayStageProgress | null; resumeChunks: number; disabledReason: string; modelOptions: Array<{ label: string; options: Array<{ value: string; label: string }> }>; model: string; templates: GatewayTemplateInfo[]; regeneratingItem: string; onModelChange: (model: string) => void; onRun: () => void; onRerun: () => void; onCancel: () => void; onEdit: () => void; onRegenerate: (stageId: string, itemId: string, template: string) => Promise<string>; onRefresh: () => void; onOpenProjects: () => void }) {
+export function StageCard({ index, view, busy, progress, resumeChunks, disabledReason, modelOptions, model, templates, regeneratingItem, onModelChange, onRun, onRerun, onCancel, onEdit, onRegenerate, onRefresh, onOpenProjects }: { index: number; view: PipelineStageView; busy: boolean; progress: GatewayStageProgress | null; resumeChunks: number; disabledReason: string; modelOptions: SelectModelItem[]; model: string; templates: GatewayTemplateInfo[]; regeneratingItem: string; onModelChange: (model: string) => void; onRun: () => void; onRerun: () => void; onCancel: () => void; onEdit: () => void; onRegenerate: (stageId: string, itemId: string, template: string) => Promise<string>; onRefresh: () => void; onOpenProjects: () => void }) {
     const { t } = useTranslation();
     const [expanded, setExpanded] = useState(false);
     const output = view.stage?.output;
@@ -110,6 +112,7 @@ export function StageCard({ index, view, busy, progress, resumeChunks, disabledR
                         style={{ minWidth: 200 }}
                         placeholder={t("pipeline.modelLoadFailed")}
                         options={modelOptions}
+                        optionLabelProp="title"
                         disabled={running}
                     />
                     {running ? (
@@ -177,27 +180,31 @@ export function StageCard({ index, view, busy, progress, resumeChunks, disabledR
             {view.stage?.error && !blocked ? <div className="mt-1 text-xs text-red-600 dark:text-red-400">{view.stage.error}</div> : null}
             {expanded ? <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-words text-xs leading-relaxed text-stone-600 dark:text-stone-300">{output === undefined ? t("pipeline.noOutput") : JSON.stringify(output, null, 2)}</pre> : null}
             {itemsWithCandidates.length ? (
-                <div className="mt-2 space-y-1">
-                    {itemsWithCandidates.map((item) => (
-                        <CandidateStrip
-                            key={item.id}
-                            item={item}
-                            index={items.indexOf(item)}
-                            kind={itemKind}
-                            templates={stageTemplates}
-                            busy={regeneratingItem === `${view.id}:${item.id}`}
-                            stageRunning={running}
-                            onRegenerate={(itemId, template) => onRegenerate(view.id, itemId, template)}
-                        />
-                    ))}
-                </div>
+                <MediaPreviewGroup>
+                    <div className="mt-2 space-y-1">
+                        {itemsWithCandidates.map((item) => (
+                            <CandidateStrip
+                                key={item.id}
+                                item={item}
+                                index={items.indexOf(item)}
+                                kind={itemKind}
+                                templates={stageTemplates}
+                                busy={regeneratingItem === `${view.id}:${item.id}`}
+                                stageRunning={running}
+                                onRegenerate={(itemId, template) => onRegenerate(view.id, itemId, template)}
+                            />
+                        ))}
+                    </div>
+                </MediaPreviewGroup>
             ) : null}
             {looseArtifacts.length ? (
-                <div className="mt-2 flex flex-wrap gap-2">
-                    {looseArtifacts.map((artifact) => (
-                        <StageArtifact key={artifact.url} artifact={artifact} />
-                    ))}
-                </div>
+                <MediaPreviewGroup>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                        {looseArtifacts.map((artifact) => (
+                            <StageArtifact key={artifact.url} artifact={artifact} />
+                        ))}
+                    </div>
+                </MediaPreviewGroup>
             ) : null}
         </section>
     );
@@ -205,8 +212,15 @@ export function StageCard({ index, view, busy, progress, resumeChunks, disabledR
 
 function StageArtifact({ artifact }: { artifact: GatewayArtifact }) {
     const src = resolveGatewayUrl(artifact.url);
+    // 视频自带控件即可播放；图片本身没有可点暗示 → 走共享可预览组件，站内弹窗看大图。
     if (isVideoArtifact(artifact)) return <video src={src} controls preload="metadata" className="h-28 max-w-52 rounded-md" />;
-    if (artifact.type === "image") return <img src={src} alt={artifact.filename} className="h-28 max-w-52 rounded-md object-cover" />;
+    if (artifact.type === "image") {
+        return (
+            <PreviewableMedia id={`artifact:${artifact.url}`} kind="image" src={src} title={artifact.filename} className="h-28 max-w-52 cursor-zoom-in overflow-hidden rounded-md">
+                <img src={src} alt={artifact.filename} className="h-28 max-w-52 rounded-md object-cover" />
+            </PreviewableMedia>
+        );
+    }
     return (
         <a href={src} target="_blank" rel="noreferrer" className="self-center text-xs text-stone-500 underline dark:text-stone-400">
             {artifact.filename}

@@ -229,6 +229,10 @@ export default {
         taskCanceled: "Canceled",
         canceled: "Canceled",
         cancel: "Cancel",
+        mediaPreview: {
+            previous: "Previous",
+            next: "Next",
+        },
     },
     imageWorkbench: {
         title: "Image Studio",

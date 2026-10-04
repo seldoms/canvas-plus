@@ -1,4 +1,4 @@
-import { App, Button, Empty, Image, Modal, Segmented, Select, Spin } from "antd";
+import { App, Button, Empty, Input, Modal, Segmented, Select, Spin } from "antd";
 import { RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -6,6 +6,7 @@ import { useNavigate } from "react-router-dom";
 
 import { cn } from "@/lib/utils";
 import { cancelGatewayJob, resolveGatewayUrl } from "@/services/api/gateway";
+import { MediaPreviewGroup } from "@/components/workbench";
 import { listTaskJobs, listTaskRuns, type TaskJob } from "@/services/api/tasks";
 
 import { TaskGroupCard } from "./components/task-group-card";
@@ -175,7 +176,7 @@ export default function TasksPage() {
                     ) : error && !jobs.length ? (
                         <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} className="py-24" description={t("tasks.loadFailed")} />
                     ) : visibleGroups.length ? (
-                        <Image.PreviewGroup preview={{ closeIcon: false }}>
+                        <MediaPreviewGroup>
                             <div className="space-y-3">
                                 {visibleGroups.map((group) => (
                                     <TaskGroupCard
@@ -190,7 +191,7 @@ export default function TasksPage() {
                                     />
                                 ))}
                             </div>
-                        </Image.PreviewGroup>
+                        </MediaPreviewGroup>
                     ) : (
                         <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} className="py-24" description={jobs.length ? t("tasks.emptyFiltered") : t("tasks.empty")} />
                     )}

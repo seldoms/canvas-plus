@@ -174,6 +174,7 @@ export default function PipelinePage() {
                                     style={{ minWidth: 220 }}
                                     placeholder={t("pipeline.modelLoadFailed")}
                                     options={modelOptions}
+                                    optionLabelProp="title"
                                 />
                             ) : null}
                             <Button icon={<FileText className="size-4" />} disabled={Boolean(run)} onClick={() => fileInputRef.current?.click()}>

@@ -28,6 +28,7 @@ import {
 } from "@/services/api/gateway";
 import { useConfigStore } from "@/stores/use-config-store";
 import { usePipelineStore, type PipelineRunRecord } from "@/stores/use-pipeline-store";
+import { groupModelsByBase, toSelectModelOptions, type GroupableModel, type SelectModelItem } from "@/lib/model-grouping";
 import { collectJobIds, uniqueArtifacts } from "./pipeline-utils";
 
 export type PipelineStageView = {
@@ -118,20 +119,32 @@ export function usePipelineRun() {
         [run],
     );
 
-    // 同一个下拉混合列出：💻 本地（网关 LLM）+ ☁️ 外部 API（渠道管理里配置的 OpenAI 兼容渠道）。
-    // 外部模型的 value 用「渠道名::模型名」，渠道已同步进网关注册表，由网关按前缀路由到对应 API。
-    const modelOptions = useMemo(() => {
-        const groups: Array<{ label: string; options: Array<{ value: string; label: string }> }> = [];
-        if (llmModels.length) groups.push({ label: "💻 本地模型", options: llmModels.map((name) => ({ value: name, label: `💻 ${name}` })) });
-        const remote = channels
-            .filter((channel) => !channel.apiFormat || channel.apiFormat === "openai")
-            .flatMap((channel) =>
-                channel.models
-                    .filter((model) => model.capability === "text")
-                    .map((model) => ({ value: `${channel.name}::${model.name}`, label: `☁️ ${channel.name} / ${model.alias?.trim() || model.name}` })),
-            );
-        if (remote.length) groups.push({ label: "☁️ 外部 API", options: remote });
-        return groups;
+    // 网关已注册 LLM + 浏览器渠道文本模型合成一份清单，统一按 base（渠道/提供方名）分组：
+    // 组头只写一次 base、组内只列模型名、整组云端 → ☁️ 提到组头。value 仍是真实模型名（请求侧不变）。
+    const modelOptions = useMemo<SelectModelItem[]>(() => {
+        const entries: GroupableModel[] = [];
+        const seen = new Set<string>();
+        const push = (value: string, base: string, task: string) => {
+            if (!value || seen.has(value)) return;
+            seen.add(value);
+            entries.push({ value, base, task, cloud: true });
+        };
+        const split = (value: string) => {
+            const at = value.indexOf("::");
+            return at > 0 ? { base: value.slice(0, at), task: value.slice(at + 2) } : { base: "", task: value };
+        };
+        for (const name of llmModels) {
+            const { base, task } = split(name);
+            push(name, base, task);
+        }
+        for (const channel of channels) {
+            if (channel.apiFormat && channel.apiFormat !== "openai") continue;
+            for (const model of channel.models) {
+                if (model.capability !== "text") continue;
+                push(`${channel.name}::${model.name}`, channel.name, model.alias?.trim() || model.name);
+            }
+        }
+        return toSelectModelOptions(groupModelsByBase(entries));
     }, [llmModels, channels]);
 
     // 先探测可达网关地址（已配置 → 按主机推导 → 本机回环），再拉阶段与模型清单；

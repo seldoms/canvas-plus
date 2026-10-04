@@ -1,10 +1,11 @@
-import { App, Button, Card, Empty, Image, Input, Select, Spin, Tag, Typography } from "antd";
+import { App, Button, Card, Empty, Input, Select, Spin, Tag, Typography } from "antd";
 import { ImageOff, Plus } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { cn } from "@/lib/utils";
 import { resolveGatewayUrl } from "@/services/api/gateway";
+import { MediaPreviewGroup, PreviewableMedia } from "@/components/workbench";
 import type { AssetRefCreateInput, AssetRefPatchInput } from "@/services/api/projects";
 import type { AssetRef } from "@/types/domain";
 
@@ -61,14 +62,14 @@ export function AssetRefPanel({
                                     <span className="text-sm font-medium">{t(`projects.assetsView.roles.${group.role}`)}</span>
                                     <Tag className="!mr-0">{group.refs.length}</Tag>
                                 </div>
-                                {/* 同一类别（≈同一阶段）的缩略图共用一个预览组，弹窗里可左右切换。 */}
-                                <Image.PreviewGroup preview={{ closeIcon: false }}>
+                                {/* 同一类别（≈同一阶段）的缩略图共用一个预览组，弹窗里可 ←→↑↓ 切换。 */}
+                                <MediaPreviewGroup>
                                     <div className="space-y-1.5">
                                         {group.refs.map((ref) => (
                                             <AssetRefRow key={ref.id} refItem={ref} script={script} saving={savingRefId === ref.id} onPatch={onPatch} />
                                         ))}
                                     </div>
-                                </Image.PreviewGroup>
+                                </MediaPreviewGroup>
                             </div>
                         ))
                     ) : (
@@ -120,15 +121,15 @@ function AssetRefRow({ refItem, script, saving, onPatch }: { refItem: AssetRef; 
     return (
         <div className="flex items-start gap-3 rounded-lg border border-stone-200 px-3 py-2 dark:border-stone-800">
             {cover ? (
-                <Image
+                <PreviewableMedia
+                    id={refItem.id}
+                    kind="image"
                     src={resolveGatewayUrl(cover)}
-                    alt={name}
                     title={name}
-                    loading="lazy"
-                    rootClassName="block size-24 shrink-0 cursor-pointer overflow-hidden rounded border border-stone-200/80 bg-black/5 dark:border-stone-700/80 dark:bg-white/5"
-                    className="size-24 object-cover"
-                    preview={{ cover: false, closeIcon: false }}
-                />
+                    className="block size-24 shrink-0 cursor-zoom-in overflow-hidden rounded border border-stone-200/80 bg-black/5 dark:border-stone-700/80 dark:bg-white/5"
+                >
+                    <img src={resolveGatewayUrl(cover)} alt={name} loading="lazy" className="size-24 object-cover" />
+                </PreviewableMedia>
             ) : (
                 <span
                     className="flex size-24 shrink-0 items-center justify-center rounded border border-dashed border-stone-300 text-stone-400 dark:border-stone-700 dark:text-stone-500"

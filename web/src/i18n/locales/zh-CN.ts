@@ -218,6 +218,10 @@ export default {
         taskCanceled: "已取消",
         canceled: "已取消",
         cancel: "取消",
+        mediaPreview: {
+            previous: "上一个",
+            next: "下一个",
+        },
     },
     imageWorkbench: {
         title: "生图工作台",

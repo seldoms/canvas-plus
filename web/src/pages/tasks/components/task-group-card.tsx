@@ -1,9 +1,10 @@
-import { Button, Card, Image, Progress, Tag, Tooltip } from "antd";
+import { Button, Card, Progress, Tag, Tooltip } from "antd";
 import { ChevronDown, ChevronRight, ExternalLink, X } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { resolveGatewayUrl } from "@/services/api/gateway";
+import { PreviewableMedia } from "@/components/workbench";
 import type { TaskJob, TaskJobStatus } from "@/services/api/tasks";
 import { ArtifactActions } from "@/components/artifact-actions";
 import { formatTaskTime } from "@/lib/task-time";
@@ -140,15 +141,16 @@ export function TaskGroupCard({ group, runLabel, now, onCancelQueued, onCancelJo
                                                     <video src={resolveGatewayUrl(output.url)} muted className="size-9 object-cover" />
                                                 </button>
                                             ) : (
-                                                <Image
+                                                <PreviewableMedia
                                                     key={output.url}
+                                                    id={`task:${job.id}:${output.url}`}
+                                                    kind="image"
                                                     src={resolveGatewayUrl(output.url)}
-                                                    width={36}
-                                                    height={36}
-                                                    className="rounded"
-                                                    style={{ width: 36, height: 36, objectFit: "cover" }}
-                                                    preview={{ src: resolveGatewayUrl(output.url) }}
-                                                />
+                                                    title={job.name}
+                                                    className="size-9 overflow-hidden rounded border border-stone-200 dark:border-stone-700"
+                                                >
+                                                    <img src={resolveGatewayUrl(output.url)} alt={job.name} className="size-9 object-cover" />
+                                                </PreviewableMedia>
                                             ),
                                         )
                                     ) : (

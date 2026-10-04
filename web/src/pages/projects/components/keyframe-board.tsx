@@ -1,9 +1,10 @@
-import { Alert, Button, Card, Empty, Image, Spin, Tag, Typography } from "antd";
+import { Alert, Button, Card, Empty, Spin, Tag, Typography } from "antd";
 import { useTranslation } from "react-i18next";
 
 import { cn } from "@/lib/utils";
 import { resolveGatewayUrl, type GatewayGenerationStatus } from "@/services/api/gateway";
 import { ArtifactActions } from "@/components/artifact-actions";
+import { MediaPreviewGroup, PreviewableMedia } from "@/components/workbench";
 
 import type { KeyframeShot } from "../keyframes-model";
 
@@ -76,13 +77,13 @@ export function KeyframeBoard({
                     {t("projects.keyframes.summary", { shots: shots.length, images: imageCount })}
                 </Typography.Text>
             </div>
-            <Image.PreviewGroup preview={{ closeIcon: false }}>
+            <MediaPreviewGroup>
                 <div className="space-y-3">
                     {shots.map((shot) => (
                         <ShotGroup key={shot.id} shot={shot} onChanged={onRetry} />
                     ))}
                 </div>
-            </Image.PreviewGroup>
+            </MediaPreviewGroup>
         </section>
     );
 }
@@ -138,24 +139,24 @@ function ShotGroup({ shot, onChanged }: { shot: KeyframeShot; onChanged: () => v
             {shot.images.length ? (
                 <div className="mt-2 flex flex-wrap gap-1.5">
                     {shot.images.map((candidate) => (
-                        <span
+                        <PreviewableMedia
                             key={candidate.jobId}
+                            id={candidate.jobId}
+                            kind="image"
+                            src={resolveGatewayUrl(candidate.artifactUrl || "")}
+                            title={[candidate.template, candidate.seed ? `seed ${candidate.seed}` : ""].filter(Boolean).join(" · ")}
                             className={cn(
-                                "relative block size-24 overflow-hidden rounded border border-stone-200/80 bg-black/5 dark:border-stone-700/80 dark:bg-white/5",
+                                "block size-24 overflow-hidden rounded border border-stone-200/80 bg-black/5 dark:border-stone-700/80 dark:bg-white/5",
                                 candidate.selected && "ring-2 ring-stone-400 dark:ring-stone-500",
                             )}
                         >
-                            <Image
+                            <img
                                 src={resolveGatewayUrl(candidate.artifactUrl || "")}
                                 alt={candidate.template}
-                                title={[candidate.template, candidate.seed ? `seed ${candidate.seed}` : ""].filter(Boolean).join(" · ")}
                                 loading="lazy"
-                                rootClassName="block h-full w-full cursor-pointer"
                                 className="h-full w-full object-cover"
-                                style={{ height: "100%", width: "100%", objectFit: "cover" }}
-                                preview={{ cover: false, closeIcon: false }}
                             />
-                        </span>
+                        </PreviewableMedia>
                     ))}
                 </div>
             ) : null}

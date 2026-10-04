@@ -1,4 +1,4 @@
-import { App, Button, Empty, Image, Input, Modal, Segmented, Select, Spin, Tag } from "antd";
+import { App, Button, Empty, Input, Modal, Segmented, Select, Spin, Tag } from "antd";
 import { RefreshCw, Search } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -7,6 +7,7 @@ import { saveAs } from "file-saver";
 
 import { cn } from "@/lib/utils";
 import { resolveGatewayUrl } from "@/services/api/gateway";
+import { MediaPreviewGroup } from "@/components/workbench";
 import { listAssetRefsOverview, type AssetOverview, type AssetOverviewRef } from "@/services/api/projects";
 
 import { artifactFileName, filterAssetRefs, roleFilterOptions } from "./asset-overview-model";
@@ -137,13 +138,13 @@ export default function AssetsPage() {
                     ) : error && !overview ? (
                         <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} className="py-24" description={error} />
                     ) : filtered.length ? (
-                        <Image.PreviewGroup preview={{ closeIcon: false }}>
+                        <MediaPreviewGroup>
                             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
                                 {filtered.map((refItem) => (
                                     <AssetRefCard key={refItem.id} refItem={refItem} onPreviewVideo={setVideoRef} onDownload={download} onOpenProject={openProject} />
                                 ))}
                             </div>
-                        </Image.PreviewGroup>
+                        </MediaPreviewGroup>
                     ) : (
                         <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} className="py-24" description={total ? t("assets.overview.emptyFiltered") : t("assets.overview.empty")} />
                     )}

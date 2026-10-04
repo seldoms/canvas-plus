@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import i18n from "@/i18n";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
+import { groupModelsByBase, modelGroupHeaderLabel, type GroupableModel, type ModelBaseGroup } from "@/lib/model-grouping";
 import { useRegistryModelOptions } from "@/hooks/use-model-registry";
 import { modelRegistryBase, modelRegistryDisplayName, modelRegistryTask } from "@/services/api/model-registry";
 import { modelOptionFullLabel, modelOptionLabel, modelOptionName, selectableModelsByCapability, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
@@ -14,10 +15,10 @@ import { modelOptionFullLabel, modelOptionLabel, modelOptionName, selectableMode
  * - `label`：触发器（已选项）的展示 —— 注册表模式下是完整展示名（base+task 别名），保证选中后知道自己选了啥；
  * - `task`：下拉列表内的展示 —— 注册表模式下**只写能力名 task**（base 已由分组标题承担，不再重复）；
  * - `fullLabel`：title 提示，注册表模式下是原始 `name`（排查用）。
+ * 分组口径统一走 `@/lib/model-grouping`（组头只写一次 base / 整组云端 ☁️ 提到组头 / 混合则 ☁️ 落各条）。
  */
-type PickerOption = { value: string; label: string; task: string; fullLabel: string; cloud?: boolean };
-/** 一组 = 一个 base；`base` 为空串表示「无分组」（渠道模式的自有清单，保持扁平原样）。 */
-type PickerGroup = { base: string; cloud: boolean; options: PickerOption[] };
+type PickerOption = GroupableModel;
+type PickerGroup = ModelBaseGroup;
 
 type ModelPickerProps = {
     config: AiConfig;
@@ -51,24 +52,22 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
      */
     const groups = useMemo<PickerGroup[]>(() => {
         if (usingRegistry) {
-            const map = new Map<string, PickerGroup>();
-            for (const entry of registryState.models) {
-                const base = modelRegistryBase(entry);
-                const group = map.get(base) || { base, cloud: true, options: [] };
-                if (entry.runtime !== "cloud") group.cloud = false;
-                group.options.push({
+            const entries: GroupableModel[] = registryState.models.map((entry) => {
+                const cloud = entry.runtime === "cloud";
+                const display = modelRegistryDisplayName(entry);
+                return {
                     value: entry.name,
-                    label: entry.runtime === "cloud" ? `☁️ ${modelRegistryDisplayName(entry)}` : modelRegistryDisplayName(entry),
-                    task: modelRegistryTask(entry) || modelRegistryDisplayName(entry),
+                    base: modelRegistryBase(entry),
+                    task: modelRegistryTask(entry) || display,
+                    label: cloud ? `☁️ ${display}` : display,
                     fullLabel: entry.name,
-                    cloud: entry.runtime === "cloud",
-                });
-                map.set(base, group);
-            }
-            return [...map.values()];
+                    cloud,
+                };
+            });
+            return groupModelsByBase(entries);
         }
         const values = Array.from(new Set([...(config.channelMode === "local" && !capability ? [value] : []), ...selectableModelsByCapability(config, capability)].filter((model): model is string => Boolean(model))));
-        return [{ base: "", cloud: false, options: values.map((model) => ({ value: model, label: modelOptionLabel(config, model), task: modelOptionLabel(config, model), fullLabel: modelOptionFullLabel(config, model) })) }];
+        return groupModelsByBase(values.map((model) => ({ value: model, base: "", task: modelOptionLabel(config, model), label: modelOptionLabel(config, model), fullLabel: modelOptionFullLabel(config, model) })));
     }, [usingRegistry, registryState.models, capability, config, value]);
     const options = useMemo(() => groups.flatMap((group) => group.options), [groups]);
     const current = value || "";
@@ -123,17 +122,16 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
             >
                 {options.length ? (
                     groups.map((group) => {
-                        const listLabel = (option: PickerOption) => (option.cloud && !group.cloud ? `☁️ ${option.task}` : option.task);
                         const items = group.options.map((option) => (
                             <SelectItem key={option.value} value={option.value} textValue={option.label}>
-                                <ModelLabel model={option.value} label={listLabel(option)} fullLabel={option.fullLabel} />
+                                <ModelLabel model={option.value} label={option.listLabel} fullLabel={option.fullLabel || option.value} />
                             </SelectItem>
                         ));
-                        // 渠道模式（无 base）保持扁平原样；注册表模式每组建一个分组，标题只写 base 一次。
+                        // 渠道模式（无 base）保持扁平原样；注册表模式每组建一个分组，标题只写 base 一次（整组云端加 ☁️）。
                         if (!group.base) return <Fragment key="__flat__">{items}</Fragment>;
                         return (
                             <SelectGroup key={group.base}>
-                                <SelectLabel className="font-medium">{group.cloud ? `☁️ ${group.base}` : group.base}</SelectLabel>
+                                <SelectLabel className="font-medium">{modelGroupHeaderLabel(group)}</SelectLabel>
                                 {items}
                             </SelectGroup>
                         );

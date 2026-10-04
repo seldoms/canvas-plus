@@ -1,8 +1,9 @@
-import { Button, Image, Tag } from "antd";
+import { Button, Tag } from "antd";
 import { Download, ExternalLink, ImageOff, Play } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { resolveGatewayUrl } from "@/services/api/gateway";
+import { PreviewableMedia } from "@/components/workbench";
 import type { AssetOverviewRef } from "@/services/api/projects";
 
 import { mediaKindOf } from "../asset-overview-model";
@@ -39,15 +40,9 @@ export function AssetRefCard({
                             </span>
                         </button>
                     ) : (
-                        <Image
-                            src={src}
-                            alt={refItem.name}
-                            loading="lazy"
-                            rootClassName="block h-full w-full"
-                            className="h-full w-full object-cover"
-                            style={{ height: "100%", width: "100%", objectFit: "cover" }}
-                            preview={{ cover: false, closeIcon: false }}
-                        />
+                        <PreviewableMedia id={refItem.id} kind="image" src={src} title={refItem.name} className="block h-full w-full">
+                            <img src={src} alt={refItem.name} loading="lazy" className="h-full w-full object-cover" />
+                        </PreviewableMedia>
                     )
                 ) : (
                     <span className="flex h-full w-full items-center justify-center text-stone-400 dark:text-stone-600" title={t("projects.assetsView.noArtifact")}>

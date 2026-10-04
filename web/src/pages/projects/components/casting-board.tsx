@@ -1,7 +1,8 @@
-import { Alert, Button, Card, Empty, Image, Spin, Typography } from "antd";
+import { Alert, Button, Card, Empty, Spin, Typography } from "antd";
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 
+import { MediaPreviewGroup, PreviewableMedia } from "@/components/workbench";
 import type { CastingScope, CastingVoice } from "@/services/api/casting";
 import type { TtsPreviewResult } from "@/services/api/tts";
 
@@ -132,7 +133,7 @@ export function CastingBoard({
             ) : null}
 
             {views.length ? (
-                <Image.PreviewGroup preview={{ closeIcon: false }}>
+                <MediaPreviewGroup>
                     <div className="grid gap-3 lg:grid-cols-2">
                         {views.map((character) => (
                             <IdentityCard
@@ -149,7 +150,7 @@ export function CastingBoard({
                             />
                         ))}
                     </div>
-                </Image.PreviewGroup>
+                </MediaPreviewGroup>
             ) : (
                 <Card size="small">
                     <Empty className="py-8" description={t("projects.casting.empty")} />

@@ -1,8 +1,9 @@
-import { Button, Card, Image, Input, Select, Tag, Tooltip } from "antd";
+import { Button, Card, Input, Select, Tag, Tooltip } from "antd";
 import { Play, Sparkles } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 
+import { PreviewableMedia } from "@/components/workbench";
 import type { CastingScope, CastingVoice } from "@/services/api/casting";
 
 import type { CastingCharacterView } from "../casting-model";
@@ -72,28 +73,27 @@ export function IdentityCard({
                     </div>
                     <div className="mt-1 flex flex-wrap gap-1.5">
                         {character.closeupUrl ? (
-                            <span className="relative block size-20 overflow-hidden rounded border border-stone-200/80 bg-black/5 dark:border-stone-700/80 dark:bg-white/5">
-                                <Image
-                                    src={character.closeupUrl}
-                                    alt={character.name}
-                                    rootClassName="block h-full w-full cursor-pointer"
-                                    className="h-full w-full object-cover"
-                                    style={{ height: "100%", width: "100%", objectFit: "cover" }}
-                                    preview={{ cover: false, closeIcon: false }}
-                                />
-                            </span>
+                            <PreviewableMedia
+                                id={`${character.characterId}:closeup`}
+                                kind="image"
+                                src={character.closeupUrl}
+                                title={character.name}
+                                className="block size-20 overflow-hidden rounded border border-stone-200/80 bg-black/5 dark:border-stone-700/80 dark:bg-white/5"
+                            >
+                                <img src={character.closeupUrl} alt={character.name} className="h-full w-full object-cover" />
+                            </PreviewableMedia>
                         ) : null}
                         {character.turnaroundUrls.map((url) => (
-                            <span key={url} className="relative block size-20 overflow-hidden rounded border border-stone-200/80 bg-black/5 dark:border-stone-700/80 dark:bg-white/5">
-                                <Image
-                                    src={url}
-                                    alt={character.name}
-                                    rootClassName="block h-full w-full cursor-pointer"
-                                    className="h-full w-full object-cover"
-                                    style={{ height: "100%", width: "100%", objectFit: "cover" }}
-                                    preview={{ cover: false, closeIcon: false }}
-                                />
-                            </span>
+                            <PreviewableMedia
+                                key={url}
+                                id={`${character.characterId}:turnaround:${url}`}
+                                kind="image"
+                                src={url}
+                                title={character.name}
+                                className="block size-20 overflow-hidden rounded border border-stone-200/80 bg-black/5 dark:border-stone-700/80 dark:bg-white/5"
+                            >
+                                <img src={url} alt={character.name} className="h-full w-full object-cover" />
+                            </PreviewableMedia>
                         ))}
                         <Button size="small" icon={<Sparkles className="size-4" />} onClick={onGenerateFace}>
                             {t(faceReady ? "projects.casting.regenerate" : "projects.casting.generate")}

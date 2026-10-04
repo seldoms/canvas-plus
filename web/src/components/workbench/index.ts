@@ -6,6 +6,7 @@ export * from "./types";
 export * from "./task-utils";
 export { usePreviewVerticalArrows } from "./use-preview-arrows";
 export { ImageThumb, UnavailableImage } from "./media";
+export { MediaPreviewGroup, PreviewableMedia, type PreviewMediaItem, type PreviewMediaKind } from "./media-preview";
 export { SnapshotPanel } from "./snapshot-panel";
 export { PendingMediaCard, FailedMediaCard } from "./status-cards";
 export { QueuePanel } from "./queue-panel";

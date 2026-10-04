@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 
 import { cn } from "@/lib/utils";
 import { resolveGatewayUrl, type GatewayGenerationItem, type GatewayJobStatus, type GatewayTemplateInfo } from "@/services/api/gateway";
+import { PreviewableMedia } from "@/components/workbench";
 import { candidateViews, type CandidateView } from "../pipeline-utils";
 
 const CANDIDATE_STATUS_CLASS: Record<GatewayJobStatus, string> = {
@@ -84,19 +85,30 @@ function CandidateThumb({ candidate, kind }: { candidate: CandidateView; kind: "
     const tone = CANDIDATE_STATUS_CLASS[candidate.status];
     const status = t(`pipeline.candidates.status.${candidate.status}`);
     const title = [candidate.template, status, candidate.selected ? t("pipeline.candidates.selected") : ""].filter(Boolean).join(" · ");
+    const box = cn("relative size-14 shrink-0 overflow-hidden rounded bg-black/5 dark:bg-white/10", candidate.selected && "ring-2 ring-stone-400 dark:ring-stone-500");
+
+    // 有产物就能点开：站内弹窗看大图 / 播视频，同阶段其它候选可 ←→↑↓ 切换。
+    if (!src || failed) {
+        return (
+            <Tooltip title={title}>
+                <div className={box}>
+                    <span className={cn("flex size-full items-center justify-center px-1 text-center text-[10px] leading-tight", tone)}>{status}</span>
+                    <span className={cn("absolute left-1 top-1 size-1.5 rounded-full bg-current", tone)} />
+                </div>
+            </Tooltip>
+        );
+    }
 
     return (
         <Tooltip title={title}>
-            <div className={cn("relative size-14 shrink-0 overflow-hidden rounded bg-black/5 dark:bg-white/10", candidate.selected && "ring-2 ring-stone-400 dark:ring-stone-500")}>
-                {src && !failed ? (
-                    kind === "video" ? (
+            <div className={box}>
+                <PreviewableMedia id={candidate.jobId} kind={kind} src={src} title={title} className="size-full">
+                    {kind === "video" ? (
                         <video src={src} muted preload="metadata" className="size-full object-cover" onError={() => setFailed(true)} />
                     ) : (
                         <img src={src} alt={candidate.template} className="size-full object-cover" onError={() => setFailed(true)} />
-                    )
-                ) : (
-                    <span className={cn("flex size-full items-center justify-center px-1 text-center text-[10px] leading-tight", tone)}>{status}</span>
-                )}
+                    )}
+                </PreviewableMedia>
                 <span className={cn("absolute left-1 top-1 size-1.5 rounded-full bg-current", tone)} />
             </div>
         </Tooltip>
