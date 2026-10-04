@@ -765,3 +765,24 @@ test("图像（通用改写）：无分级编译器的模板同样不把台词�
     assert.ok(seen.length >= 1, "必须真的走到改写器（否则本用例空转）");
     for (const call of seen) assert.ok(!call.user.includes("姑娘，这么晚"), `通用改写载荷不得含台词：${call.user}`);
 });
+
+test("字幕绝不进画面：kind=subtitle 的文字层一律丢弃（成片要过剪映精剪，烧死的字幕没法改）", () => {
+    // 产品铁律：对白字幕由后期独立 .srt 提供，任何画面都不得渲染字幕。
+    // 画面内文字只允许真实的物体文字：sign / ticket / screen / logo。
+    const withSub = compileH3VideoPrompt({
+        template: "video_h3_i2v",
+        shot: SH1,
+        scene,
+        characters: [],
+        style: STYLE,
+        slots: { images: [{ url: "/a/f.png", kind: "first_frame" }] },
+        overlays: [
+            { text: "老城南路公交站", kind: "sign", position: "站牌", style: "" },
+            { text: "姑娘，这么晚，去哪儿？", kind: "subtitle", position: "画面底部", style: "白字黑边" },
+        ],
+        durationSec: 5,
+    });
+    assert.ok(withSub.includes("老城南路公交站"), "物体文字（sign）照常进画面");
+    assert.ok(!withSub.includes("姑娘，这么晚，去哪儿？"), "字幕（subtitle）必须被丢弃，绝不进画面");
+    assert.ok(!/subtitle/i.test(withSub.split("integrated_multimodal_description")[1] ?? ""), "产物正文里不得出现 subtitle 载体描述");
+});

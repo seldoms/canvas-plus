@@ -73,7 +73,7 @@ description: |
 - `episodes[]`（顶层，随产物回带「集 → 场次」映射）：`{ "id": <剧本 episodes[].id>, "sceneIds": [<剧本 scenes[].id>...] }`，必须与剧本 `episodes[].sceneIds` 一致，不得新增剧本没有的场次；这是服务端把镜头归位到集、并回填 `episodes[].shotIds` 的依据。
 - `prompt` / `negativePrompt` 用英文，供生图与生视频模板的 `PROMPT` token 直接使用。
 - **本阶段不产出任何「模型专属提示词」。** 用户可能把生成模型换成 H3 / Wan / Kling / Qwen-Image 等任意一个，**把某个模型的提示词写进分镜，换模型即报废**。因此分镜只负责把**内容事实**写准写全（见「提示词模板 → 十一」），**提示词按所选模型的标准由后端在发起生成时编译**（架构原则：模型适配是后端的职责）。
-- `textOverlays`：本镜画面上**要渲染的确切文字**清单，逐条列明中文原样字样；每条含 `text` / `kind` / `position` / `style` 四键，`kind` 取 `sign` | `ticket` | `screen` | `logo` | `subtitle` | `none`。**画面里任何文字都必须逐字列明，绝不允许留空让模型自行发挥**；确无文字时显式写 `[{"text":"","kind":"none","position":"","style":""}]`。详见「提示词模板 → 八」。
+- `textOverlays`：本镜画面上**要渲染的确切文字**清单，逐条列明中文原样字样；每条含 `text` / `kind` / `position` / `style` 四键，`kind` 取 `sign` | `ticket` | `screen` | `logo` | `none`（**没有 `subtitle`**）。**画面里任何文字都必须逐字列明，绝不允许留空让模型自行发挥**；确无文字时显式写 `[{"text":"","kind":"none","position":"","style":""}]`。详见「提示词模板 → 八」。
 - `dialogue`：**镜头里有人开口说话就必须填**（哪怕听不见声音也要逐字记下，声画对齐与口型都依赖它）；确无对白写空字符串并在 `audio` 里说明。
 - `dialogueLines`（数组，**新写入目标**）：把本镜台词**逐条拆开、每条带说话人**——每条含 `speaker` / `text` / `performance` 三键。`speaker` 必须是**剧本 `characters` 里已存在的角色**（写角色名或角色 id，如 `阿海` 或 `c1`）；`text` 是**纯台词正文**（不含括号注解）；`performance` 是括号表演注解（语气 / 音量 / 语速 / 情绪，无则空字符串）。**一个镜头有几个人开口，`dialogueLines` 就有几条**，顺序即开口顺序（说话人归属决定后端把哪句编译给谁的 `(S1)(S2)`、以及配音阶段用谁的音色；见 `06-audio`）。旧项目里 `dialogue` 是字符串的**一律仍能跑**（后端会当成「一条、无明确说话人」逐级回落），但**多角色镜头必须写 `dialogueLines`**，否则每句归不到人、会落 warning。
 - 单镜时长默认 3~6 秒；超过 8 秒的镜头要拆成两条。
@@ -165,7 +165,12 @@ description: |
 **字段形状**：`textOverlays: [{ text, kind, position, style }]`，每条四个键一个都不能少：
 
 - `text`：**要渲染的确切文字**，中文原样给出、用引号包住（如 `"老城南路公交站"`、`"3路"`、`"末班车"`）。**不得翻译、不得改写、不得只写 `a sign` / `站名` / `一块招牌`**；同一屏有多行文字就分条列清，或把多行写进同一条 `text`。
-- `kind`：`sign` | `ticket` | `screen` | `logo` | `subtitle` | `none`。站牌 / 招牌 / 路牌 = `sign`；车票 = `ticket`；显示屏 / 手机屏 = `screen`；商标 = `logo`；字幕 = `subtitle`；**确无文字 = `none`**。
+- `kind`：`sign` | `ticket` | `screen` | `logo` | `none`（**没有 `subtitle`**）。站牌 / 招牌 / 路牌 = `sign`；车票 = `ticket`；显示屏 / 手机屏 = `screen`；商标 = `logo`；**确无文字 = `none`**。
+
+> ⚠️⚠️ **字幕绝不进画面（产品铁律）**：成片要过剪映精剪，烧死在画面里的字幕是像素、没法改。
+> **对白字幕一律由后期以独立 `.srt` 文件提供**，任何画面（关键帧 / 片段 / 成片）都**不得渲染字幕**。
+> 因此 `textOverlays` **只列画面内真实存在的物体文字**（站牌/车票/屏幕/招牌/商标等），
+> **绝不把台词或字幕写进 `textOverlays`，也绝不输出 `kind: "subtitle"`**。
 - `position`：文字在画面里的位置与载体（如「画面左上方的公交站牌主标题」）。
 - `style`：字体 / 颜色 / 材质 / 新旧（如「白底黑体、边缘轻微锈蚀」）。
 
@@ -310,7 +315,7 @@ description: |
 - `durationSec` 为 1~8 的数字；`shotSize`、`camera`、`action` 非空。
 - `camera`（旧字符串）保留可读且非空；`cameraSpec`（新写入目标）应含 `position` / `height` / `angle` / `lens` / `aperture` / `focus` / `movement` 七项，`focus` 至少含 `from` / `to`，`movement` 至少含 `type`。
 - `cameraSpec` 缺失或不完整**不阻断本阶段产出，但必须产生 QC warning**：不得宣称机位已被工具可靠执行，不得静默丢失。
-- 每镜必须含 `textOverlays` 数组；每条含 `text` / `kind` / `position` / `style` 键，`kind` 取 `sign` / `ticket` / `screen` / `logo` / `subtitle` / `none`。画面里出现的文字（站牌、车票、线路号、招牌、路牌、屏幕、字幕等）必须逐条列出**确切文字**（中文原样）；缺键 / 为 `null` / 画面有文字却写成 `kind: "none"` 一律 QC warning，不得静默丢失；确无文字时必须显式 `kind: "none"` 并在 `audio` 说明原因。
+- 每镜必须含 `textOverlays` 数组；每条含 `text` / `kind` / `position` / `style` 键，`kind` 取 `sign` / `ticket` / `screen` / `logo` / `none`（**没有 `subtitle`**）。画面里出现的文字（站牌、车票、线路号、招牌、路牌、屏幕等**物体文字**）必须逐条列出**确切文字**（中文原样）；**台词/字幕不得写入 `textOverlays`**，出现 `kind: "subtitle"` 一律 QC warning 并丢弃；缺键 / 为 `null` / 画面有文字却写成 `kind: "none"` 一律 QC warning，不得静默丢失；确无文字时必须显式 `kind: "none"` 并在 `audio` 说明原因。
 - 镜头里有人开口说话时 `dialogue` 不得为空（确无对白写空字符串并在 `audio` 说明），否则产生 QC warning。
 - `dialogueLines`（新写入目标）：数组，每条含 `speaker` / `text` / `performance` 三键；`speaker` 必须命中上游 `script.characters`（角色名或角色 id），`text` 为纯台词正文。**一个镜头有两个及以上角色开口时必须写全 `dialogueLines`**；`speaker` 指向不存在的角色、或该写却缺失，均产生 QC warning（服务端会按「显式说话人 → 角色 id → 镜头文本里的角色名 → 单角色」逐级回落并记 warning，**绝不乱填、也不阻塞**）。旧字符串 `dialogue` 继续可读（当「一条、无明确说话人」回落）。
 - `prompt` 非空且为英文；`negativePrompt` 允许为空但建议填写。

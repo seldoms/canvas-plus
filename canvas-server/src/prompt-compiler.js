@@ -298,7 +298,7 @@ const OVERLAY_KIND_CN = Object.freeze({
     ticket: "票据文字",
     screen: "屏幕文字",
     logo: "标识文字",
-    subtitle: "字幕",
+    // ⚠️ 不再有 subtitle：对白字幕由后期独立 .srt 提供，**绝不进画面**（产品铁律，成片要过剪映精剪）
 });
 
 /** kind → 英文语义前缀（英文提示词 / 通用兜底用）。 */
@@ -307,7 +307,6 @@ const OVERLAY_KIND_EN = Object.freeze({
     ticket: "ticket text",
     screen: "screen text",
     logo: "logo text",
-    subtitle: "subtitle text",
 });
 
 /** kind → 英文**载体**名（H3 画面文字自然句式用）。 */
@@ -316,7 +315,6 @@ const OVERLAY_CARRIER_EN = Object.freeze({
     ticket: "ticket",
     screen: "screen",
     logo: "logo",
-    subtitle: "subtitle",
 });
 
 /**
@@ -344,7 +342,14 @@ const H3_NO_ON_SCREEN_TEXT =
     "no logos, no signage, no graphical overlays, and no written characters anywhere in the frame. " +
     "The spoken dialogue is conveyed by the audio only — it must never be displayed as text, subtitles, or captions in the picture.";
 
-/** 取有效文字层：text 非空且 kind !== none。 */
+/**
+ * 取有效文字层：text 非空且 kind !== none。
+ *
+ * ⚠️ **`kind: "subtitle"` 一律丢弃（产品铁律）**：成片要过剪映精剪，烧死在画面里的字幕是像素、没法改。
+ * 对白字幕一律由后期以独立 `.srt` 文件提供，**任何画面都不得渲染字幕**。
+ * 这是纵深防御 —— 上游分镜/关键帧 skill 已不再输出 `subtitle` kind，但旧数据/旧模型输出仍可能带着它。
+ * 画面内文字只允许真实的**物体文字**：sign（站牌/招牌/路牌）/ ticket（车票）/ screen（屏幕）/ logo（商标）。
+ */
 function effectiveOverlays(overlays) {
     const out = [];
     for (const raw of Array.isArray(overlays) ? overlays : []) {
@@ -353,6 +358,7 @@ function effectiveOverlays(overlays) {
         if (!text.trim()) continue;
         const kind = String(raw.kind ?? "").trim().toLowerCase();
         if (!kind || kind === "none") continue;
+        if (kind === "subtitle") continue; // ← 字幕绝不进画面（见上方注释）
         out.push({ text, kind, position: String(raw.position ?? "").trim(), style: String(raw.style ?? "").trim() });
     }
     return out;

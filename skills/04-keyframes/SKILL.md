@@ -54,7 +54,7 @@ description: |
 }
 ```
 
-- `textOverlays`：本帧画面上**要渲染的确切文字**清单，**逐字抄自上流分镜 `storyboard.shots[].textOverlays`**（分镜是文字的唯一事实源）、与 `prompt` 一一对应；每条含 `text` / `kind` / `position` / `style` 四个键（`text` 是**要渲染的确切文字**，中文原样给出，**不得翻译、不得改写**）。`kind` 取 `sign` | `ticket` | `screen` | `logo` | `subtitle` | `none`。**本阶段只照抄拼装、绝不自行创造文字**；确无文字时显式写 `[{"text":"","kind":"none","position":"","style":""}]`（键不得缺、不得为 `null`）。**若分镜未提供该字段，只能产生 QC warning，不得静默丢弃、也不得自己编字**。详见「提示词模板 → 五」。
+- `textOverlays`：本帧画面上**要渲染的确切文字**清单，**逐字抄自上流分镜 `storyboard.shots[].textOverlays`**（分镜是文字的唯一事实源）、与 `prompt` 一一对应；每条含 `text` / `kind` / `position` / `style` 四个键（`text` 是**要渲染的确切文字**，中文原样给出，**不得翻译、不得改写**）。`kind` 取 `sign` | `ticket` | `screen` | `logo` | `none`（**没有 `subtitle`**）。**本阶段只照抄拼装、绝不自行创造文字**；**若上游误给 `kind: "subtitle"`，一律丢弃并 QC warning —— 字幕绝不进画面**；确无文字时显式写 `[{"text":"","kind":"none","position":"","style":""}]`（键不得缺、不得为 `null`）。**若分镜未提供该字段，只能产生 QC warning，不得静默丢弃、也不得自己编字**。详见「提示词模板 → 五」。
 - `role` 只能是 `start` / `end` / `key`。
 - `template` 由编排器按 `config.pipeline.imageTemplate` / `editTemplate` 填写，不由模型决定。
 - `jobId`、`artifactUrl`、`status` 由编排器回填：入队后 `jobId` 为任务 id，产物完成后 `artifactUrl` 为 `/api/artifacts/<jobId>/<filename>`；**模型不得编造 jobId 或 artifactUrl**。
@@ -137,7 +137,9 @@ description: |
 **字段形状（原样透传，形状不改）**：`textOverlays: [{ text, kind, position, style }]`，每条四个键都要在：
 
 - `text`：**分镜给定的确切文字**，中文原样照抄（如 `"老城南路公交站"`、`"3路"`、`"末班车"`）。本阶段**只搬不改**。
-- `kind`：`sign` | `ticket` | `screen` | `logo` | `subtitle` | `none`。站牌 / 招牌 / 路牌 = `sign`；车票 = `ticket`；显示屏 / 手机屏 = `screen`；商标 = `logo`；字幕 = `subtitle`；无文字 = `none`。
+- `kind`：`sign` | `ticket` | `screen` | `logo` | `none`（**没有 `subtitle`**）。站牌 / 招牌 / 路牌 = `sign`；车票 = `ticket`；显示屏 / 手机屏 = `screen`；商标 = `logo`；无文字 = `none`。
+
+> ⚠️ **字幕绝不进画面**：对白字幕由后期以独立 `.srt` 提供；本帧只渲染物体文字，**不得渲染字幕**。
 - `position`：文字在画面里的位置与载体（如 `画面左上方的公交站牌主标题`）。
 - `style`：字体 / 颜色 / 材质 / 新旧（如 `白底黑体、边缘轻微锈蚀`）。
 
@@ -193,7 +195,7 @@ description: |
 - 每帧恰好一个光学事件；**胶片 / 介质层由编排器按锚点条件叠加，`prompt` 内不得出现与锚点冲突的胶片介质词**（「二维动画」锚点不得出现 `film / Kodak / grain / tack-sharp / light leak`）。
 - 画面要显式声明可见人数、场景要有实物锚点、情绪要写成可见微动作（质量要求，来自 Luster 踩坑清单）。
 - `prompt` 内不得出现 `--ar` / `--style` / `--s` / `--no` 等生成器尾参，也不得残留 `{{...}}` 占位符。
-- 每帧必须含 `textOverlays` 数组；每条含 `text` / `kind` / `position` / `style` 键，`kind` 取 `sign` / `ticket` / `screen` / `logo` / `subtitle` / `none`；每条 `text` 必须与上游 `storyboard.shots[].textOverlays` **逐字一致**，不得翻译 / 改写 / 新增。
+- 每帧必须含 `textOverlays` 数组；每条含 `text` / `kind` / `position` / `style` 键，`kind` 取 `sign` / `ticket` / `screen` / `logo` / `none`（**没有 `subtitle`**）；每条 `text` 必须与上游 `storyboard.shots[].textOverlays` **逐字一致**，不得翻译 / 改写 / 新增。
 - 分镜给的每条文字都要在 `prompt` 内用引号原样引用；**分镜缺失 `textOverlays` 字段时只能产生 QC warning，不得静默丢弃、也不得自行编字**；`textOverlays` 缺键 / 为 `null` / 画面有文字却写成 `kind: "none"` 一律 QC warning；确无文字时必须显式 `kind: "none"`。
 - `role: "end"` 的帧必须等本镜 `start` 帧拿到 `artifactUrl` 后才能入队，此时才写 `INPUT_IMAGE`；在此之前保持 `status: "queued"`、`jobId: null`。
 - 不伪造产物：没有真实任务时只留 `queued`，不允许填假的 `artifactUrl`。
