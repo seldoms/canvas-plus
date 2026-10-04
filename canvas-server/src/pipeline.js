@@ -3,6 +3,8 @@ import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 
 import { splitNovelIntoChunks } from "./chunk-novel.js";
+import { buildMixInput } from "./audio.js";
+import { projectAudioCues, projectVoiceProfiles } from "./audio-track.js";
 import { ASSET_ROLE } from "./contracts.js";
 import { assembleEpisode } from "./delivery.js";
 // D1：模型时长档位（与「模型清单」同源）。骨架对齐、plan 时长校验都从这里取口径。
@@ -19,11 +21,68 @@ import { listReferenceCapableTemplates, resolveToolForShot, scanTemplateDir } fr
 /** 生成型阶段：只构造生成任务参数并交给任务队列，不等真实产物。 */
 const GENERATIVE_STAGES = new Set(["keyframe", "assembly"]);
 
-/** 生成型阶段 → 可用模板 family：关键帧出图、片段出视频。 */
-const STAGE_TEMPLATE_FAMILY = Object.freeze({ keyframe: "image", assembly: "video" });
+/** 生成型阶段 → 可用模板 family：关键帧出图、片段出视频、配音出音频。 */
+const STAGE_TEMPLATE_FAMILY = Object.freeze({ keyframe: "image", assembly: "video", audio: "audio" });
+
+/** 需要绑定音色的声音类型（对白 / 旁白）——与 audio.js 的 DIALOGUE_TYPES 同语义。 */
+const DIALOGUE_TYPES = new Set(["dialogue", "narration"]);
+
+/** Qwen3-TTS 命名音色枚举（与 147 `TDQwen3TTSCustomVoice.speaker` 的 ENUM 一致，见 workflows/audio_qwen3_tts.json）。 */
+const QWEN3_TTS_SPEAKERS = Object.freeze(["Aiden", "Dylan", "Eric", "Ono_anna", "Ryan", "Serena", "Sohee", "Uncle_fu", "Vivian"]);
 
 /** 生成型阶段 → 自动登记的 AssetRef.role（取值见 contracts.js 的 ASSET_ROLE，不自造枚举）：关键帧出图给 keyframe，片段/成片给 clip。 */
 const GENERATIVE_STAGE_ASSET_ROLE = Object.freeze({ keyframe: ASSET_ROLE.KEYFRAME, assembly: ASSET_ROLE.CLIP });
+
+/** BCP-47 → Qwen3-TTS `language` 枚举（147 `TDQwen3TTSCustomVoice.language`）；未知回落 Auto（模型自判）。 */
+function qwen3Language(language) {
+    const base = String(language ?? "").trim().toLowerCase().split(/[-_]/)[0];
+    const table = { zh: "Chinese", cmn: "Chinese", en: "English", ja: "Japanese", ko: "Korean", de: "German", fr: "French", ru: "Russian", pt: "Portuguese", es: "Spanish", it: "Italian" };
+    return table[base] || "Auto";
+}
+
+/**
+ * 把「角色音色事实」适配成 Qwen3-TTS 的命名音色（`{{SPEAKER}}`）。
+ *
+ * 架构铁律：内容层只产出**模型无关的音色描述**（如「音色低沉沙哑，语速慢」），把描述映射成某个 TTS 模型的
+ * 音色枚举属于**后端适配**，发生在发起生成请求这一刻（与 prompt-compiler 同族）。因此本函数不写进任何内容产物。
+ * 优先级：内容层已给合法枚举 → 直接用；否则按音色描述的音高线索（低沉/清亮）→ 否则按性别 → 否则按角色 id 稳定散列。
+ */
+function qwen3Speaker(profile, character) {
+    const raw = String(profile?.speaker ?? "").trim();
+    if (QWEN3_TTS_SPEAKERS.includes(raw)) return raw;
+    const voiceText = [profile?.timbre, profile?.design].filter(Boolean).join(" ");
+    const low = /低沉|沙哑|低音|浑厚|醇厚|粗|磁/.test(voiceText);
+    const high = /清亮|明亮|高音|尖|细|清脆|甜/.test(voiceText);
+    if (low && !high) return "Uncle_fu";
+    if (high && !low) return "Serena";
+    const text = [character?.appearance, character?.profile, character?.name, profile?.name].filter(Boolean).join(" ");
+    const female = /女性|女|少女|姑娘|女孩|妈|母|姐|妹|她/.test(text);
+    const male = /男性|男|老船长|船长|爸|父|爷|叔|他/.test(text);
+    if (female && !male) return "Serena";
+    if (male && !female) return "Aiden";
+    const seedText = String(profile?.characterId ?? profile?.name ?? profile?.id ?? "voice");
+    let hash = 0;
+    for (const ch of seedText) hash = (hash * 31 + ch.codePointAt(0)) >>> 0;
+    return hash % 2 === 0 ? "Aiden" : "Dylan";
+}
+
+/**
+ * 为一条对白 Cue 解析说话角色的 VoiceProfile。
+ * 分镜的 shot 常**没有** characterId，且台词里也不出现角色名 → 按「cue.voiceProfileId → cue.characterId →
+ * 镜头台词/动作里出现的角色名」逐级回落；仍无法确定时用第一个 VoiceProfile 兜底（`fallback:true` 供上层告警），
+ * 绝不静默丢失音频（硬约束：TTS 失败/归属不明不阻塞出片）。
+ */
+function resolveAudioProfile(cue, shot, { profileById, profileByCharacter, characters, profiles }) {
+    let profile = cue.voiceProfileId ? profileById.get(String(cue.voiceProfileId)) : null;
+    if (!profile && cue.characterId && profileByCharacter.has(String(cue.characterId))) profile = profileByCharacter.get(String(cue.characterId));
+    if (!profile) {
+        const text = [shot?.dialogue, shot?.action, shot?.prompt].filter(Boolean).join(" ");
+        const hit = (Array.isArray(characters) ? characters : []).find((character) => character?.name && text.includes(String(character.name)));
+        if (hit && profileByCharacter.has(String(hit.id))) profile = profileByCharacter.get(String(hit.id));
+    }
+    if (!profile && profiles.length) return { profile: profiles[0], fallback: true };
+    return { profile: profile || null, fallback: false };
+}
 
 /** Job 终态：只有落到这里才回写流水线。 */
 const TERMINAL_JOB = new Set(["done", "error", "canceled"]);
@@ -219,9 +278,9 @@ function outputPrefixFor(runId, itemId) {
     return `canvas/${clean(runId) || "run"}_${clean(itemId) || "item"}`;
 }
 
-/** 阶段产物条目：关键帧用 frames、片段合成用 clips、服化道参考图用 references（顺序即优先级）。 */
+/** 阶段产物条目：关键帧用 frames、片段合成用 clips、服化道参考图用 references、配音用 audio（顺序即优先级）。 */
 function stageOutputItems(stage) {
-    return stage?.output?.frames || stage?.output?.clips || stage?.output?.references || [];
+    return stage?.output?.frames || stage?.output?.clips || stage?.output?.references || stage?.output?.audio || [];
 }
 
 /** 从模型输出里抠出 JSON 对象，容忍 Markdown 代码块与前后解释文字。 */
@@ -2497,6 +2556,9 @@ ${JSON.stringify(partials, null, 2)}
      */
     function retryFailedItem(run, def, item) {
         if (!autoRetryEnabled) return false;
+        // 配音失败不自动重试：TTS 失败多为系统性原因（显存/模型不可达），重试只会堆占 GPU 队列；
+        // 硬约束是「TTS 失败不阻塞出片 + 降级记 warning」，由 attachAudio 的 item.warning 承担。
+        if (def.id === "audio") return false;
         const candidates = Array.isArray(item.candidates) ? item.candidates : [];
         const latest = candidates.at(-1);
         // 只在终态上判定：queued/running（含刚入队的重试）不处理。
@@ -2626,6 +2688,97 @@ ${JSON.stringify(partials, null, 2)}
         recomputeStage(stage, run);
     }
 
+    /**
+     * 配音阶段：为**有对白的镜头**逐条入队 TTS，产物登记成带 `shotId + startSec` 的 audio item。
+     *
+     * 复用与关键帧/片段同一套「候选活扣 + Job 终态回写」机制（enqueueAttempt / projectJob / recomputeStage）：
+     *   - Cue 由分镜台词 + 角色音色**确定性派生**（audio.js / audio-track.js），本阶段不调 LLM；
+     *   - 无对白镜头不产 Cue（cuesFromShots 本就不产出）→ 硬约束「没有台词的镜头不产音频」；
+     *   - TTS 任务失败只让本阶段落 partial/error；assembly 的 requires 里**不含 audio**，
+     *     成片按「有产物才混、没产物跳过」处理 → 硬约束「TTS 失败不阻塞出片」；
+     *   - 音色描述 → 具体模型音色枚举的适配发生在入队这一刻（qwen3Speaker），内容层只给模型无关事实。
+     * prev 是重排前的产物，用于继承旧候选（重跑只追加候选，不清空旧 jobId/artifactUrl）。
+     */
+    function attachAudio(run, def, stage, prev) {
+        const shots = run.stages?.storyboard?.output?.shots || [];
+        const project = projectOf(run);
+        const design = run.stages?.design?.output || null;
+        const scriptCharacters = Array.isArray(project?.script?.characters) ? project.script.characters : [];
+        const characters = scriptCharacters.length ? scriptCharacters : undefined;
+        const { profiles } = projectVoiceProfiles({ project, design, characters });
+        const charList = Array.isArray(characters) ? characters : [];
+        const profileById = new Map(profiles.map((profile) => [String(profile.id), profile]));
+        const profileByCharacter = new Map(profiles.filter((profile) => profile.characterId).map((profile) => [String(profile.characterId), profile]));
+        const charById = new Map(charList.filter((character) => character?.id).map((character) => [String(character.id), character]));
+        // 只保留真正要朗读的对白/旁白（sfx/ambience/music 不是 TTS 文本；空文本不产音频）。
+        const cues = projectAudioCues({ project, storyboard: shots, voiceProfiles: profiles })
+            .filter((cue) => DIALOGUE_TYPES.has(cue.type) && String(cue.text ?? "").trim() !== "");
+        const shotById = new Map(shots.map((shot) => [String(shot?.id ?? shot?.shotId), shot]));
+        const prevItems = Array.isArray(prev?.audio) ? prev.audio : [];
+        const template = String(pipelineConfig.audioTemplate || "audio_qwen3_tts");
+        const device = String(pipelineConfig.audioDevice || "cuda");
+
+        const items = [];
+        for (const cue of cues) {
+            const old = prevItems.find((entry) => entry.id === cue.id);
+            const item = {
+                id: cue.id,
+                shotId: cue.shotId,
+                startSec: cue.startSec,
+                endSec: cue.endSec,
+                durationSec: cue.durationSec,
+                type: cue.type,
+                text: cue.text,
+                performance: cue.performance ?? "",
+                speed: cue.speed ?? null,
+                characterId: cue.characterId ?? null,
+                voiceProfileId: cue.voiceProfileId ?? null,
+                candidates: old?.candidates ? old.candidates.map((candidate) => ({ ...candidate })) : [],
+                artifactUrl: old?.artifactUrl ?? null,
+                selected: old?.selected ?? null,
+                jobId: null,
+                status: "queued",
+            };
+            // 已有候选（resume / 重跑）→ 不重复入队，只同步派生字段。
+            if (item.candidates.length) {
+                syncItem(item);
+                items.push(item);
+                continue;
+            }
+            const { profile, fallback } = resolveAudioProfile(cue, shotById.get(String(cue.shotId)), { profileById, profileByCharacter, characters: charList, profiles });
+            if (fallback) appendWarning(item, `对白「${cue.text}」未能从分镜确定说话角色，已回落使用音色「${profile?.name || profile?.id}」`);
+            if (!profile) {
+                item.status = "blocked";
+                item.blockedReason = "没有可用的角色音色（VoiceProfile），无法合成该对白";
+                items.push(item);
+                continue;
+            }
+            item.voiceProfileId = profile.id;
+            item.characterId = item.characterId || profile.characterId;
+            // design 与 timbre 常常是同一段描述（无显式 design 时 projectVoiceProfiles 会回落到 timbre），去重避免重复。
+            const instruct = [...new Set([profile.design, profile.timbre].filter(Boolean))].join("，");
+            const params = {
+                TEXT: cue.text,
+                SPEAKER: qwen3Speaker(profile, charById.get(String(profile.characterId))),
+                INSTRUCT: instruct,
+                LANGUAGE: qwen3Language(profile.language),
+                DEVICE: device,
+                SEED: stableSeed(run.id, cue.shotId, profile.version),
+                OUTPUT_PREFIX: outputPrefixFor(run.id, cue.id),
+            };
+            enqueueAttempt(run, def, item, { kind: "audio", template, params, ready: true });
+            if (item.candidates.length) syncItem(item);
+            items.push(item);
+        }
+        stage.output = { audio: items };
+        recomputeStage(stage, run);
+        // 没有可跑任务（无对白 / 未接 runJob）→ 阶段完成；有任务则停在 running 等 Job 终态回写。
+        if (!items.some((item) => (item.candidates || []).length)) {
+            stage.status = items.some((item) => item.status === "blocked") ? "blocked" : "done";
+            stage.finishedAt = nowIso();
+        }
+    }
+
     /** Job 终态投影：按 meta 反查 run/stage/item，幂等回写候选与派生字段，并让前置刚就绪的下游条目入队。 */
     function projectJob(job) {
         if (!job || !TERMINAL_JOB.has(job.status)) return null;
@@ -2639,6 +2792,8 @@ ${JSON.stringify(partials, null, 2)}
         if (!def || !item) return null;
         upsertCandidate(item, job);
         syncItem(item);
+        // 配音失败只降级记 warning（该对白不进成片音轨），绝不影响成片能否产出。
+        if (def.id === "audio" && job.status === "error") appendWarning(item, `配音失败（${job.error || "TTS 任务失败"}），该对白不进成片音轨`);
         const shots = run.stages?.storyboard?.output?.shots || [];
         if (def.id === "keyframe") enqueueReady(run, def, stage, items, items, shots);
         else if (def.id === "assembly") enqueueReady(run, def, stage, items, run.stages?.keyframe?.output?.frames || [], shots);
@@ -2731,10 +2886,14 @@ ${JSON.stringify(partials, null, 2)}
         try {
             // 生成型阶段重排前的产物，用于继承旧候选（重跑只追加候选，不清空旧 jobId/artifactUrl）。
             // design 也保留 prev：它现在会真正产出参考图（与基类生成型阶段相同的候选继承语义）。
-            const prevOutput = GENERATIVE_STAGES.has(def.id) || def.id === "design" ? stage.output : null;
-            // 五个阶段都先由 LLM 按「输出契约」产出 JSON；生成型阶段再回填生成参数并入队。
-            await composeWithLlm(run, def, stage, provider, { signal: runOptions.signal, resume: Boolean(runOptions.resume), estSecondsPerChunk });
-            if (GENERATIVE_STAGES.has(def.id)) {
+            const prevOutput = GENERATIVE_STAGES.has(def.id) || def.id === "design" || def.id === "audio" ? stage.output : null;
+            // 配音阶段不调 LLM：Cue 由分镜台词与角色音色确定性派生（见 attachAudio）。
+            if (def.id !== "audio") {
+                await composeWithLlm(run, def, stage, provider, { signal: runOptions.signal, resume: Boolean(runOptions.resume), estSecondsPerChunk });
+            }
+            if (def.id === "audio") {
+                attachAudio(run, def, stage, prevOutput);
+            } else if (GENERATIVE_STAGES.has(def.id)) {
                 // 语言适配预编译：入队前用注入的 llmCall 把「仅英文有官方依据」的模型提示词英文化（异步、失败只降级不阻塞）。
                 const genItems = def.id === "keyframe" ? stage.output?.frames : stage.output?.clips;
                 const genFrames = def.id === "keyframe" ? genItems : run.stages?.keyframe?.output?.frames || [];
@@ -2792,6 +2951,22 @@ ${JSON.stringify(partials, null, 2)}
     /** 同步等整段跑完（测试与内部调用用）；HTTP 路由走 beginStage + executeStage 以便立刻返回 202。 */
     async function runStage(runId, stageId, runOptions = {}) {
         return executeStage(beginStage(runId, stageId, runOptions), runOptions);
+    }
+
+    /**
+     * 成片混音入参：调用方未显式给 audio 时，从配音阶段产物派生。
+     * 只把**已有产物**的 audio item 交给 delivery（带 `shotId + startSec`）；无产物（TTS 失败/未跑配音）
+     * 自动跳过 —— delivery 的 normalizeAudioItems 也会丢弃空 ref，因此配音失败绝不阻塞出片。
+     */
+    function audioForAssemble(run) {
+        const items = run?.stages?.audio?.output?.audio;
+        if (!Array.isArray(items) || !items.length) return [];
+        const cues = items
+            .filter((item) => item && item.artifactUrl)
+            .map((item) => ({ id: item.id, ref: item.artifactUrl, shotId: item.shotId, startSec: item.startSec, type: item.type, gainDb: item.gainDb }));
+        if (!cues.length) return [];
+        const clips = run?.stages?.assembly?.output?.clips || [];
+        return buildMixInput({ clips, cues }).audio;
     }
 
     /** 片段就绪判定：任一未成功的片段都会阻止合成，并给出人能看懂的原因。 */
@@ -2863,7 +3038,7 @@ ${JSON.stringify(partials, null, 2)}
                     id,
                     quality: options.quality,
                     transitionDurationSec: options.transitionDurationSec,
-                    audio: options.audio,
+                    audio: Array.isArray(options.audio) && options.audio.length ? options.audio : audioForAssemble(run),
                     subtitles: options.subtitles,
                     cover: options.cover,
                 },

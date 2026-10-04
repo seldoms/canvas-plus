@@ -191,7 +191,15 @@ body：`{ template, family, shot, scene?, characters?, style?, slots?, overlays?
 
 `Progress` = `{ runId, stage, phase: "map"\|"reduce"\|"single"\|"done"\|"failed", done?, total?, label?, reused?, resumed?, avgMsPerChunk?, etaMs?, error?, startedAt?, finishedAt?, updatedAt? }`
 
-阶段 id 固定为：`script`（小说→剧本）、`storyboard`（分镜拆解）、`design`（服化道）、`keyframe`（关键帧）、`assembly`（片段合成拼接）。
+阶段 id 固定为：`script`（小说→剧本）、`storyboard`（分镜拆解）、`design`（服化道）、`keyframe`（关键帧）、`audio`（配音）、`assembly`（片段合成拼接）。
+
+**配音（`audio` 阶段）**：`skills/registry.json` 新增的生成型阶段，插在 `keyframe` 与 `assembly` 之间（`requires: ["storyboard","design"]`，
+与关键帧并行）。它**不调 LLM**，而是把分镜台词与角色音色确定性派生为逐条 AudioCue（`audio.js` / `audio-track.js`），
+**只为有对白的镜头**逐条入队 TTS（`config.pipeline.audioTemplate`，默认 `audio_qwen3_tts`），产物登记成带
+`shotId + startSec` 的 audio item（`run.stages.audio.output.audio[]`）。`assembly` 合成成片时若调用方未显式传 `audio`，
+会自动从该阶段产物派生混音入参 —— **只有已有产物的条目进混音，TTS 失败/未跑配音自动跳过，绝不阻塞出片**
+（`assembly.requires` 里不含 `audio`）。音色描述 → 具体 TTS 模型音色枚举的映射属**后端适配**，写在编排层（`qwen3Speaker`），
+内容层只给模型无关的音色事实。
 
 **成片音轨按镜头时间轴混入（路径 B）**：分镜台词经 TTS（`audio_qwen3_tts`）出音后，**不改 H3 视频图**，
 而是在 `assembly` 阶段由 `src/delivery.js` 把已有 TTS 产物混进成片——`buildAssemblyPlan` 把每条音轨的

@@ -47,6 +47,8 @@
     "editTemplate": "img_boogu_outfit_edit",
     "videoTemplate": "video_h3_i2v",
     "upscaleTemplate": "upscale_4x",
+    "audioTemplate": "audio_qwen3_tts",
+    "audioDevice": "cuda",
     "imageWidth": 768,
     "imageHeight": 1344,
     "imageBatch": 1,

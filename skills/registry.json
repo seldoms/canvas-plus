@@ -5,6 +5,14 @@
         { "id": "storyboard", "title": "分镜拆解", "skill": "02-storyboard", "requires": ["script"], "produces": "storyboard" },
         { "id": "design", "title": "服化道", "skill": "03-costume-props", "requires": ["script"], "produces": "design" },
         { "id": "keyframe", "title": "关键帧", "skill": "04-keyframes", "requires": ["storyboard", "design"], "produces": "keyframes" },
+        {
+            "id": "audio",
+            "title": "配音",
+            "skill": "06-audio",
+            "requires": ["storyboard", "design"],
+            "produces": "audio",
+            "_note": "配音（TTS）：逐条对白 Cue 出音，产物登记成带 shotId+startSec 的 audio item，供成片按时间轴混音。与 keyframe 并行、不阻塞 assembly（assembly.requires 仍只有 keyframe）。"
+        },
         { "id": "assembly", "title": "片段合成拼接", "skill": "05-clip-assembly", "requires": ["keyframe"], "produces": "clips" }
     ]
 }

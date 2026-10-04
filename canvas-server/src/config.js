@@ -62,6 +62,10 @@ const DEFAULTS = {
         editTemplate: "img_boogu_outfit_edit",
         videoTemplate: "video_h3_i2v",
         upscaleTemplate: "upscale_4x",
+        // 配音阶段（audio）用的 TTS 工作流模板与设备：任何带 {{TEXT}}/{{SPEAKER}}/{{INSTRUCT}}/{{LANGUAGE}} 的
+        // 文本→音频模板都可用；默认 Qwen3-TTS 命名音色。DEVICE 默认 cuda，显存/内存紧张时可切 cpu。
+        audioTemplate: "audio_qwen3_tts",
+        audioDevice: "cuda",
         // 关键帧/片段生成时补进模板的尺寸参数；模板要求的 token 缺一个就会在渲染阶段报错。
         imageWidth: 768,
         imageHeight: 1344,
