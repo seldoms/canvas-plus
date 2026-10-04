@@ -2,7 +2,7 @@ import { existsSync, readdirSync, readFileSync, renameSync, writeFileSync } from
 import { randomBytes } from "node:crypto";
 import { dirname, join } from "node:path";
 
-import { ID_PREFIX } from "./contracts.js";
+import { AUDIO_MODE, ID_PREFIX } from "./contracts.js";
 import { ensureDir, safeJoin } from "./files.js";
 import { createEpisodes } from "./episodes.js";
 import { createSources } from "./sources.js";
@@ -23,8 +23,20 @@ const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 /** 26 位 ULID 的正则：10 位时间戳 + 16 位随机。 */
 const ULID_PATTERN = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 
-/** Plan 必填字段默认值（D8：项目级默认）。 */
-const PLAN_DEFAULTS = Object.freeze({ genre: "", tone: "", visualStyle: "", ratio: "9:16", episodeDurationSec: 60, dramaMode: "短剧向", audience: "", episodeCount: 1 });
+/** Plan 必填字段默认值（D8：项目级默认）。audioMode 默认「独立配音」（见产品决策：视频归 H3、台词归独立 TTS）。 */
+const PLAN_DEFAULTS = Object.freeze({ genre: "", tone: "", visualStyle: "", ratio: "9:16", episodeDurationSec: 60, dramaMode: "短剧向", audience: "", episodeCount: 1, audioMode: AUDIO_MODE.SEPARATE_DIALOGUE_TRACK });
+
+const PLAN_AUDIO_MODES = new Set(Object.values(AUDIO_MODE));
+
+/**
+ * Plan.audioMode 归一：只接受契约两取值（separate_dialogue_track / embedded）；
+ * §11.5.1 的 separate_track 为同义别名；缺省/非法一律回落默认「独立配音」。
+ */
+function normalizePlanAudioMode(value) {
+    const raw = String(value ?? "").trim();
+    if (raw === "separate_track") return AUDIO_MODE.SEPARATE_DIALOGUE_TRACK;
+    return PLAN_AUDIO_MODES.has(raw) ? raw : AUDIO_MODE.SEPARATE_DIALOGUE_TRACK;
+}
 
 /**
  * 01 剧本阶段 planSuggestion 可回填的字段白名单。
@@ -78,6 +90,7 @@ function normalizePlan(plan) {
     const count = Number(merged.episodeCount);
     merged.episodeDurationSec = duration > 0 ? duration : PLAN_DEFAULTS.episodeDurationSec;
     merged.episodeCount = count > 0 ? count : PLAN_DEFAULTS.episodeCount;
+    merged.audioMode = normalizePlanAudioMode(merged.audioMode);
     return merged;
 }
 

@@ -1,4 +1,4 @@
-import { App, Form, Input, InputNumber, Modal, Select, Tag } from "antd";
+import { App, Form, Input, InputNumber, Modal, Segmented, Select, Tag } from "antd";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -12,6 +12,7 @@ import {
     VISUAL_STYLE_PRESETS,
     type DramaPresetOption,
 } from "@/constant/drama-presets";
+import type { AudioMode } from "@/types/domain";
 import type { ProjectCreateInput } from "@/services/api/projects";
 import { fetchGatewayProviders, probeGatewayBaseUrl, type GatewayTemplateInfo } from "@/services/api/gateway";
 
@@ -31,6 +32,8 @@ export type CreateProjectFormValues = {
     dramaMode?: string[];
     audience?: string[];
     episodeCount?: number;
+    /** 配音方式：separate_dialogue_track（独立配音，默认）/ embedded（原声）。 */
+    audioMode?: AudioMode;
 };
 
 /** 预置项 → Select option；hint 作为下拉里的次要提示，选中后标签只显示 value。 */
@@ -67,6 +70,7 @@ function toCreateInput(values: CreateProjectFormValues): ProjectCreateInput {
             dramaMode: joinPresets(values.dramaMode) || "短剧向",
             audience: joinPresets(values.audience),
             episodeCount: values.episodeCount || 1,
+            audioMode: values.audioMode || "separate_dialogue_track",
         },
     };
 }
@@ -178,7 +182,7 @@ export function CreateProjectModal({
             onOk={() => void form.submit()}
             destroyOnHidden
         >
-            <Form form={form} layout="vertical" requiredMark={false} initialValues={{ ratio: "9:16", episodeDurationSec: 15, dramaMode: ["短剧向"], episodeCount: 1 }} onFinish={handleFinish}>
+            <Form form={form} layout="vertical" requiredMark={false} initialValues={{ ratio: "9:16", episodeDurationSec: 15, dramaMode: ["短剧向"], episodeCount: 1, audioMode: "separate_dialogue_track" }} onFinish={handleFinish}>
                 <Form.Item name="title" label={t("projects.form.title")} rules={[{ required: true, message: t("projects.form.titleRequired") }]}>
                     <Input size="large" placeholder={t("projects.form.titlePlaceholder")} />
                 </Form.Item>
@@ -208,6 +212,15 @@ export function CreateProjectModal({
                     </Form.Item>
                     <Form.Item name="ratio" label={t("projects.form.ratio")}>
                         <Select options={ratioOptions.map((option) => ({ value: option.value, label: t(`projects.form.${option.labelKey}`) }))} />
+                    </Form.Item>
+                    <Form.Item name="audioMode" label={t("projects.form.audioMode")}>
+                        {/* 二选一：独立配音（视频归 H3、台词归独立 TTS）/ 原声（保留片段内嵌音频）。 */}
+                        <Segmented
+                            options={[
+                                { value: "separate_dialogue_track", label: t("projects.form.audioModeSeparate") },
+                                { value: "embedded", label: t("projects.form.audioModeEmbedded") },
+                            ]}
+                        />
                     </Form.Item>
                     <Form.Item name="dramaMode" label={t("projects.form.dramaMode")}>
                         <Select mode="tags" optionLabelProp="value" allowClear maxCount={1} placeholder={multiPlaceholder} options={presetOptions(DRAMA_MODE_PRESETS)} />

@@ -70,6 +70,8 @@ export type Plan = {
     dramaMode: string;
     audience: string;
     episodeCount: number;
+    /** 配音方式（项目级）：separate_dialogue_track = 独立配音（默认），embedded = 原声。 */
+    audioMode: AudioMode;
 };
 
 /** 完成度检查表条目；内部形态待 P0-a。开放容器。 */

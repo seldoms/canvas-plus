@@ -3,6 +3,7 @@ import { statSync, writeFileSync } from "node:fs";
 import { basename, extname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { splitDialogue } from "./audio.js";
 import { artifactUrl, ensureDir, safeJoin, sanitizeName } from "./files.js";
 
 /**
@@ -15,6 +16,16 @@ import { artifactUrl, ensureDir, safeJoin, sanitizeName } from "./files.js";
 export const TRANSITION_MAP = { cut: null, fade: "fade", dissolve: "dissolve", slide: "slideleft" };
 
 export const DEFAULT_TRANSITION_SEC = 0.6;
+
+/**
+ * 成片字幕的默认样式（ffmpeg subtitles 滤镜 force_style 串）。
+ * 只定字体与描边，让 libass 的其余默认（字号/居中/底部留白）生效：中文台词用系统中文字体，
+ * 白字描黑边保证任意画面上可读。调用方可用 options.subtitleStyle 覆盖（原样透传）。
+ */
+export const DEFAULT_SUBTITLE_STYLE = "FontName=Noto Sans CJK SC,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=0";
+
+/** 两位补零（SRT 时间码格式化用）。 */
+const pad2 = (value) => String(value).padStart(2, "0");
 
 /**
  * 成片质量档 → ffmpeg 编码参数。ffmpeg 参数只在这里拼装，编排器只传档名（standard/draft/high）。
@@ -133,6 +144,79 @@ function normalizeAudioItems(audio, offsetByShot) {
         });
     }
     return items;
+}
+
+/** 毫秒 → SRT 时间码（HH:MM:SS,mmm）。 */
+export function formatSrtTime(ms) {
+    const total = Math.max(0, Math.round(Number(ms) || 0));
+    const h = Math.floor(total / 3600000);
+    const m = Math.floor((total % 3600000) / 60000);
+    const sec = Math.floor((total % 60000) / 1000);
+    const rest = total % 1000;
+    return `${pad2(h)}:${pad2(m)}:${pad2(sec)},${String(rest).padStart(3, "0")}`;
+}
+
+/**
+ * 纯函数：从「台词 Cue + 镜头时间轴」生成**逐句 SRT**（成片阶段烧入用）。
+ *
+ * 与 `audio.js` 的 Cue 契约同源：cue 带 `shotId + startSec`（镜头内相对偏移）与 `durationSec`；
+ * 本函数用 `clipStartOffsets` 把镜头内偏移映射到成片绝对时间轴（与 `normalizeAudioItems` 同一口径，
+ * 转场重叠自动扣除），再逐句落时间码。字幕文本取 `splitDialogue` 清洗后的**纯台词正文**
+ * （剥掉括号表演注解；不做任何翻译），因此与 TTS 送读文本逐字一致。
+ *
+ * 降级契约（绝不失败）：
+ *   - 没有片段、没有 Cue、或所有 Cue 文本为空 → 返回空串（调用方据此不烧字幕）；
+ *   - cue 缺 `durationSec` 时用 1.5s 兜底；同起点相邻句重叠时前一句收在下一句起点，保证不叠字。
+ *
+ * @param {{ clips?: Array, order?: Array, transition?: string, transitionDurationSec?: number, cues?: Array }} input
+ * @returns {string} SRT 文本；无可烧内容时为空串。
+ */
+export function buildCueSrt({ clips = [], order = null, transition = "cut", transitionDurationSec = 0, cues = [] } = {}) {
+    const list = Array.isArray(clips) ? clips : [];
+    if (!list.length) return "";
+    const byId = new Map();
+    for (const clip of list) if (clip?.id !== undefined && clip?.id !== null) byId.set(String(clip.id), clip);
+    const ids = Array.isArray(order) && order.length ? order.map(String) : list.map((clip) => String(clip?.id));
+    const ordered = ids.map((id) => byId.get(id)).filter(Boolean);
+    if (!ordered.length) return "";
+
+    const overlap = transition === "cut" ? 0 : num(transitionDurationSec) || 0;
+    const offsets = clipStartOffsets({ clips: ordered, transition, transitionDurationSec: overlap });
+    const offsetByShot = new Map();
+    ordered.forEach((clip, index) => {
+        if (clip.shotId === null || clip.shotId === undefined) return;
+        const key = String(clip.shotId);
+        if (!offsetByShot.has(key)) offsetByShot.set(key, offsets[index]);
+    });
+
+    const rows = [];
+    for (const cue of Array.isArray(cues) ? cues : []) {
+        const { text } = splitDialogue(typeof cue?.text === "string" ? cue.text : "");
+        if (!text) continue;
+        const key = cue?.shotId === null || cue?.shotId === undefined ? null : String(cue.shotId);
+        const shotStart = key !== null && offsetByShot.has(key) ? offsetByShot.get(key) : 0;
+        const startMs = shotStart + Math.max(0, Math.round((num(cue?.startSec) ?? 0) * 1000));
+        const explicitDur = num(cue?.durationSec);
+        const start = num(cue?.startSec);
+        const end = num(cue?.endSec);
+        const durMs = explicitDur !== null && explicitDur > 0
+            ? Math.round(explicitDur * 1000)
+            : start !== null && end !== null && end > start
+                ? Math.round((end - start) * 1000)
+                : 1500;
+        rows.push({ startMs, endMs: startMs + Math.max(200, durMs), text });
+    }
+    if (!rows.length) return "";
+
+    rows.sort((a, b) => a.startMs - b.startMs || a.endMs - b.endMs);
+    for (let i = 0; i < rows.length - 1; i += 1) {
+        if (rows[i].endMs > rows[i + 1].startMs) {
+            rows[i].endMs = Math.max(rows[i].startMs + 200, rows[i + 1].startMs);
+        }
+    }
+    return rows
+        .map((row, index) => `${index + 1}\n${formatSrtTime(row.startMs)} --> ${formatSrtTime(row.endMs)}\n${row.text}\n`)
+        .join("\n");
 }
 
 /**
@@ -446,6 +530,15 @@ export async function assembleEpisode({
     const filename = sanitizeName(options.filename || `${episodeId || "episode"}-final.mp4`, "final.mp4");
     const outputPath = resolve(dir, filename);
 
+    // 字幕：调用方给「纯文本 SRT」（如按台词时间轴逐句生成）时落盘成 .srt 并交 ffmpeg 烧入。
+    // 无文本 / 已有显式 subtitles 路径时不动 —— 无字幕也照样出片，绝不因此失败。
+    if (!plan.subtitles && typeof options.subtitlesText === "string" && options.subtitlesText.trim()) {
+        const srtName = sanitizeName(options.subtitlesFilename || `${episodeId || "episode"}.srt`, "subtitles.srt");
+        const srtPath = resolve(dir, srtName);
+        writeFileSync(srtPath, options.subtitlesText.endsWith("\n") ? options.subtitlesText : `${options.subtitlesText}\n`, "utf8");
+        plan.subtitles = srtPath;
+    }
+
     const inputPaths = plan.clips.map((clip) => resolveMediaPath(config, clip.ref));
     const audioPaths = plan.audio.map((item) => resolveMediaPath(config, typeof item === "string" ? item : item.ref));
 
@@ -506,6 +599,7 @@ export async function assembleEpisode({
         dir,
         status: "done",
         outputPath,
+        subtitles: plan.subtitles || null,
         url: manifest.output.url,
         bytes: manifest.output.bytes,
         info,

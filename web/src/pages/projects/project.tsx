@@ -213,8 +213,10 @@ export default function ProjectOverviewPage() {
 }
 
 /** 把规划参数摊成 Descriptions items；空值显示「未设置」。 */
-function planItems(plan: { genre: string; tone: string; visualStyle: string; ratio: string; episodeDurationSec: number; dramaMode: string; audience: string; episodeCount: number }, t: (key: string) => string) {
+function planItems(plan: { genre: string; tone: string; visualStyle: string; ratio: string; episodeDurationSec: number; dramaMode: string; audience: string; episodeCount: number; audioMode?: string }, t: (key: string) => string) {
     const value = (input: string | number) => (input === "" || input === undefined || input === null ? t("projects.detail.styleAnchorEmpty") : String(input));
+    // 配音方式：旧项目未落该字段时按默认「独立配音」显示（与后端默认一致）。
+    const audioModeLabel = (mode?: string) => (mode === "embedded" ? t("projects.form.audioModeEmbedded") : t("projects.form.audioModeSeparate"));
     return [
         { key: "genre", label: t("projects.form.genre"), children: value(plan.genre) },
         { key: "tone", label: t("projects.form.tone"), children: value(plan.tone) },
@@ -224,5 +226,6 @@ function planItems(plan: { genre: string; tone: string; visualStyle: string; rat
         { key: "episodeDurationSec", label: t("projects.form.episodeDurationSec"), children: value(plan.episodeDurationSec) },
         { key: "episodeCount", label: t("projects.form.episodeCount"), children: value(plan.episodeCount) },
         { key: "audience", label: t("projects.form.audience"), children: value(plan.audience) },
+        { key: "audioMode", label: t("projects.form.audioMode"), children: audioModeLabel(plan.audioMode) },
     ];
 }

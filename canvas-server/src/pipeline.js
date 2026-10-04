@@ -5,8 +5,8 @@ import { dirname, join } from "node:path";
 import { splitNovelIntoChunks } from "./chunk-novel.js";
 import { buildMixInput, resolveDialogueLines } from "./audio.js";
 import { projectAudioCues, projectVoiceProfiles } from "./audio-track.js";
-import { ASSET_ROLE } from "./contracts.js";
-import { assembleEpisode } from "./delivery.js";
+import { ASSET_ROLE, AUDIO_MODE } from "./contracts.js";
+import { assembleEpisode, buildCueSrt, DEFAULT_SUBTITLE_STYLE } from "./delivery.js";
 // D1：模型时长档位（与「模型清单」同源）。骨架对齐、plan 时长校验都从这里取口径。
 import { durationsForTemplate, durationMetaForTemplate, frameCountForDuration, isDurationAllowed, skeletonAlignment } from "./durations.js";
 import { artifactUrl, ensureDir, safeJoin } from "./files.js";
@@ -2023,6 +2023,7 @@ ${JSON.stringify(partials, null, 2)}
         return {
             ratio: String(plan?.ratio ?? "").trim(),
             episodeDurationSec: Number(plan?.episodeDurationSec) > 0 ? Number(plan.episodeDurationSec) : null,
+            audioMode: String(plan?.audioMode ?? "").trim() === AUDIO_MODE.EMBEDDED ? AUDIO_MODE.EMBEDDED : AUDIO_MODE.SEPARATE_DIALOGUE_TRACK,
             anchor,
             context: [anchor, flavor].filter(Boolean).join("。"),
             filmLayer: anchor && FILM_ANCHOR_PATTERN.test(anchor) ? LUSTER_FILM_LAYER : "",
@@ -2907,7 +2908,14 @@ ${JSON.stringify(partials, null, 2)}
                 await composeWithLlm(run, def, stage, provider, { signal: runOptions.signal, resume: Boolean(runOptions.resume), estSecondsPerChunk });
             }
             if (def.id === "audio") {
-                attachAudio(run, def, stage, prevOutput);
+                if (audioModeOf(run) === AUDIO_MODE.EMBEDDED) {
+                    // 项目级「原声」模式：不产独立配音（不入队 TTS），成片保留片段原声并逐句烧字幕。
+                    stage.output = { audio: [] };
+                    stage.status = "done";
+                    stage.finishedAt = nowIso();
+                } else {
+                    attachAudio(run, def, stage, prevOutput);
+                }
             } else if (GENERATIVE_STAGES.has(def.id)) {
                 // 语言适配预编译：入队前用注入的 llmCall 把「仅英文有官方依据」的模型提示词英文化（异步、失败只降级不阻塞）。
                 const genItems = def.id === "keyframe" ? stage.output?.frames : stage.output?.clips;
@@ -2966,6 +2974,26 @@ ${JSON.stringify(partials, null, 2)}
     /** 同步等整段跑完（测试与内部调用用）；HTTP 路由走 beginStage + executeStage 以便立刻返回 202。 */
     async function runStage(runId, stageId, runOptions = {}) {
         return executeStage(beginStage(runId, stageId, runOptions), runOptions);
+    }
+
+    /**
+     * 项目级「配音方式」（Plan.audioMode）：独立配音（默认）走 TTS 音轨，原声则保留片段内嵌音频。
+     * 未绑项目 / 未填时回落默认「独立配音」。
+     */
+    function audioModeOf(run) {
+        return productionDefaults(run).audioMode === AUDIO_MODE.EMBEDDED ? AUDIO_MODE.EMBEDDED : AUDIO_MODE.SEPARATE_DIALOGUE_TRACK;
+    }
+
+    /**
+     * 成片字幕的逐句 Cue：从分镜台词的 AudioCue（audio.js 纯派生，带 shotId + startSec + durationSec）
+     * 取对白/旁白正文，与 TTS 产物解耦 —— TTS 失败或原声模式下字幕照常有。
+     * 无台词时返回空数组（成片降级为无字幕，绝不失败）。
+     */
+    function subtitleCuesFor(run) {
+        const shots = run.stages?.storyboard?.output?.shots || [];
+        if (!Array.isArray(shots) || !shots.length) return [];
+        return projectAudioCues({ project: projectOf(run), storyboard: shots })
+            .filter((cue) => (cue.type === "dialogue" || cue.type === "narration") && String(cue.text ?? "").trim() !== "");
     }
 
     /**
@@ -3044,6 +3072,24 @@ ${JSON.stringify(partials, null, 2)}
         writeProgress(run.id, { runId: run.id, stage: def.id, phase: "assembling", label: `正在把 ${clips.length} 个片段合成成片` });
         // 成片尺寸与片段同一口径：都从「该视频模型的官方规格登记表」取（H3 竖屏 = 768x1344），避免片段与成片不一致被二次重采样。
         const assembleDims = sizeForRatio(pipelineConfig.videoTemplate, productionDefaults(run).ratio, { base: Math.min(Number(pipelineConfig.videoWidth) || 768, Number(pipelineConfig.videoHeight) || 1344) });
+        // ── 配音方式（项目级 Plan.audioMode）+ 逐句字幕（按台词时间轴）────────────────────────────
+        const audioMode = audioModeOf(run);
+        const separate = audioMode !== AUDIO_MODE.EMBEDDED;
+        // 独立配音：用现有 audio 阶段产物（TTS 音轨）；原声：不混独立音轨，片段原声即人声事实源。
+        const assembleAudio = separate
+            ? (Array.isArray(options.audio) && options.audio.length ? options.audio : audioForAssemble(run))
+            : [];
+        // 独立配音且有 TTS 音轨 → 不保留片段原声（delivery 亦有硬规则兜底）；无音轨时交 delivery 自动判定，避免哑片。
+        const includeClipAudio = separate ? (assembleAudio.length ? false : undefined) : true;
+        // 字幕与 TTS 产物解耦：从分镜台词的 Cue（shotId + startSec）逐句生成 SRT；无台词/无时间轴 → 空串（不烧、不失败）。
+        const subtitleCues = subtitleCuesFor(run);
+        const srt = buildCueSrt({
+            clips,
+            order: assembly.order,
+            transition: assembly.transition,
+            transitionDurationSec: options.transitionDurationSec ?? assembly.transitionDurationSec,
+            cues: subtitleCues,
+        });
         try {
             const result = await assemble({
                 config,
@@ -3057,12 +3103,25 @@ ${JSON.stringify(partials, null, 2)}
                     height: assembleDims.height ?? config.pipeline?.videoHeight,
                     quality: options.quality,
                     transitionDurationSec: options.transitionDurationSec,
-                    audio: Array.isArray(options.audio) && options.audio.length ? options.audio : audioForAssemble(run),
+                    audio: assembleAudio,
+                    includeClipAudio,
                     subtitles: options.subtitles,
+                    subtitlesText: options.subtitlesText || srt || null,
+                    subtitleStyle: (options.subtitles || options.subtitlesText || srt) ? (options.subtitleStyle || DEFAULT_SUBTITLE_STYLE) : null,
                     cover: options.cover,
                 },
                 now: nowIso(),
             });
+            // 字幕结果与降级告警（无台词/无时间轴 → 无字幕 + warning，绝不让出片失败）。
+            const burned = Boolean(result.subtitles);
+            assembly.subtitleCues = subtitleCues.length;
+            assembly.subtitles = { burned, cueCount: subtitleCues.length };
+            if (!burned) {
+                const reason = subtitleCues.length === 0 ? "没有台词，无可烧字幕" : "缺少可对齐的片段时间轴，字幕未生成";
+                assembly.subtitles.reason = reason;
+                const prior = Array.isArray(stage.warnings) ? stage.warnings.filter((w) => !String(w).startsWith("成片未烧字幕：")) : [];
+                stage.warnings = [...prior, `成片未烧字幕：${reason}（降级为无字幕，成片照常产出）`];
+            }
             assembly.status = "done";
             assembly.deliverableId = result.id;
             assembly.url = result.url;
