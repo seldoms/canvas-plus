@@ -6,6 +6,7 @@ import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import { getImagePreviewRevision, subscribeImagePreviews } from "@/services/image-storage";
 import { assetCoverUrl, useAssetStore, type Asset } from "@/stores/use-asset-store";
+import { artifactThumbSrc } from "@/lib/artifact-thumb";
 
 export type InsertAssetPayload = { kind: "text"; content: string; title: string } | { kind: "image"; dataUrl: string; title: string; storageKey?: string } | { kind: "video"; url: string; title: string; storageKey?: string; width?: number; height?: number };
 
@@ -38,7 +39,7 @@ function PickerCard({ title, kind, cover, onClick }: { title: string; kind: stri
             onClick={onClick}
         >
             {cover ? (
-                <img src={cover} alt={title} className="aspect-[4/3] w-full object-cover" />
+                <img src={artifactThumbSrc(cover)} alt={title} className="aspect-[4/3] w-full object-cover" />
             ) : (
                 <div className="flex aspect-[4/3] items-center justify-center bg-stone-100 p-3 text-center text-xs leading-5 text-stone-500 dark:bg-stone-800 dark:text-stone-400">{title}</div>
             )}

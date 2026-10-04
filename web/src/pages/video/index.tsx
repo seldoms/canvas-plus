@@ -4,13 +4,13 @@ import { ArrowLeft, ArrowRight, BookOpen, ClipboardPaste, Download, FolderPlus, 
 import { nanoid } from "nanoid";
 import { useTranslation } from "react-i18next";
 
-import { ArtifactActions } from "@/components/artifact-actions";
+import { ArtifactActions, type ArtifactTarget } from "@/components/artifact-actions";
 import { AssetPickerModal, type InsertAssetPayload } from "@/components/canvas/asset-picker-modal";
 import { ModelPicker } from "@/components/model-picker";
 import { PromptSelectDialog } from "@/components/prompts/prompt-select-dialog";
 import { VideoSettingsPanel, normalizeVideoResolutionValue, normalizeVideoSizeValue, videoModeLabel, videoSizeLabel } from "@/components/video-settings-panel";
 // 工作台共享件：任务队列 / 参数快照 / 取消·归档 卡片 —— 与生图工作台同一套。
-import { QueuePanel, SnapshotPanel, FailedMediaCard, PendingMediaCard, buildQueueEntries, countTaskJobs, deriveTaskStatus, isActiveJobStatus, jobDurationMs, taskPercent, taskStatusColor, taskStatusLabelKey, usePreviewVerticalArrows, type WorkbenchJob, type WorkbenchLogView, type WorkbenchQueueEntry, type WorkbenchSnapshotTag, type WorkbenchTask, type WorkbenchThumb } from "@/components/workbench";
+import { QueuePanel, SnapshotPanel, FailedMediaCard, PendingMediaCard, archiveTargetsFromJobs, buildQueueEntries, cancelWorkbenchJobs, countTaskJobs, deriveTaskStatus, isActiveJobStatus, jobDurationMs, jobIdsForItemIds, taskPercent, taskStatusColor, taskStatusLabelKey, usePreviewVerticalArrows, type WorkbenchJob, type WorkbenchLogView, type WorkbenchQueueEntry, type WorkbenchSnapshotTag, type WorkbenchTask, type WorkbenchThumb } from "@/components/workbench";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { formatBytes, formatDuration } from "@/lib/image-utils";
 import { clampVideoSeconds, inferVideoRatio, readVideoDimensions } from "@/lib/media-size";
@@ -473,15 +473,22 @@ export default function VideoPage() {
         setSelectedId(null);
     };
 
-    /** 取消单个 job：调后端 POST /api/jobs/:id/cancel，回来后以服务端状态为准。 */
-    const cancelJob = async (jobId: string) => {
-        try {
-            const job = await cancelVideoJob(jobId);
+    /**
+     * 取消一组 job：**与生图工作台走同一个 `cancelWorkbenchJobs`**（共享件，口径不再各写一套）。
+     * 先筛掉已结束的，再逐个调服务端 cancel，回来后以服务端状态/产物为准；失败只提示、不抛。
+     */
+    const cancelJobs = async (jobIds: string[]) => {
+        const active = jobIds.filter((id) => isActiveJobStatus(jobs[id]?.status));
+        if (!active.length) return;
+        const { failed } = await cancelWorkbenchJobs(active, async (id) => {
+            const job = await cancelVideoJob(id);
             setJobs((value) => ({ ...value, [job.id]: job }));
-        } catch (error) {
-            message.error(error instanceof Error ? error.message : String(error));
-        }
+        });
+        if (failed) message.error(t("tasks.cancelFailed"));
     };
+
+    /** 取消单个 job。 */
+    const cancelJob = (jobId: string) => cancelJobs([jobId]);
 
     /** 重试：按同一快照再入队一个 job，替换掉失败那条（记录 id 不变）。 */
     const retryTask = async (task: VideoTask) => {
@@ -609,6 +616,11 @@ export default function VideoPage() {
     const selectedLog = selectedTask ? null : (logs.find((log) => log.id === selectedId) ?? null);
     const detailTask = selectedTask ?? (selectedLog ? null : (tasks[0] ?? null));
     const detailLog = selectedLog ?? (detailTask ? null : (logs[0] ?? null));
+    // 归档目标（规范 §2.5）：**从该次任务的产物清单现算**（与生图工作台同一个 `archiveTargetsFromJobs`），
+    // 记录里即使没存 artifactUrl / jobIds 也出得来归档入口。
+    const logArchiveTargets = detailLog
+        ? archiveTargetsFromJobs(jobIdsForItemIds([detailLog.id], jobs).map((id) => jobs[id]), [detailLog.url])
+        : [];
     // 队列时间线：本次任务 ∪ 历史记录（按 id 去重 + 时间倒序），交给共享队列面板渲染。
     const queueEntries: WorkbenchQueueEntry[] = buildQueueEntries({ tasks, logs, jobs, taskThumbnails: videoTaskThumbnails });
 
@@ -716,13 +728,13 @@ export default function VideoPage() {
                         {detailTask ? (
                             <div className="space-y-4">
                                 <SnapshotPanel prompt={detailTask.prompt} tags={videoSnapshotTags(detailTask.snapshot)} references={detailTask.snapshot.references} />
-                                <VideoTaskGroup task={detailTask} jobs={detailTask.jobIds.map((id) => jobs[id]).filter((job): job is WorkbenchJob => Boolean(job))} now={nowTick} onCancelJob={(jobId) => void cancelJob(jobId)} onRetryJob={(jobId) => void retryJob(jobId)} onDownload={downloadVideo} onSaveAsset={saveResultToAssets} />
+                                <VideoTaskGroup task={detailTask} jobs={detailTask.jobIds.map((id) => jobs[id]).filter((job): job is WorkbenchJob => Boolean(job))} now={nowTick} onCancelJob={(jobId) => void cancelJob(jobId)} onCancelJobs={(ids) => void cancelJobs(ids)} onRetryJob={(jobId) => void retryJob(jobId)} onDownload={downloadVideo} onSaveAsset={saveResultToAssets} />
                             </div>
                         ) : detailLog ? (
                             <div className="space-y-4">
                                 <SnapshotPanel prompt={detailLog.prompt} tags={videoSnapshotTags(detailLog.snapshot)} references={detailLog.snapshot.references} />
                                 {detailLog.url ? (
-                                    <VideoResultCard url={detailLog.url} onDownload={downloadVideo} onSaveAsset={saveResultToAssets} />
+                                    <VideoResultCard url={detailLog.url} archiveTargets={logArchiveTargets} onDownload={downloadVideo} onSaveAsset={saveResultToAssets} />
                                 ) : (
                                     <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={detailLog.status === "canceled" ? t("workbench.canceled") : t("videoWorkbench.empty")} className="!my-16" />
                                 )}
@@ -779,7 +791,7 @@ function GenerationSettings({ config, model, updateConfig, openConfigDialog }: {
 }
 
 /** 生视频结果卡片（视频播放 + 加入资产 / 下载 / 归档）。 */
-function VideoResultCard({ url, onDownload, onSaveAsset }: { url: string; onDownload: (url: string) => void; onSaveAsset: (url: string) => void }) {
+function VideoResultCard({ url, archiveTargets, onDownload, onSaveAsset }: { url: string; archiveTargets?: ArtifactTarget[]; onDownload: (url: string) => void; onSaveAsset: (url: string) => void }) {
     const { t } = useTranslation();
     return (
         <div className="overflow-hidden rounded-lg border border-stone-200 bg-background dark:border-stone-800">
@@ -793,15 +805,16 @@ function VideoResultCard({ url, onDownload, onSaveAsset }: { url: string; onDown
                         {t("common.download")}
                     </Button>
                 </div>
-                {/* 生产动线只给「归档」（可逆）；彻底删除只在「我的资产」页。 */}
-                <ArtifactActions targets={[{ url }]} />
+                {/* 生产动线只给「归档」（可逆）；彻底删除只在「我的资产」页。
+                    归档目标优先取**该任务的产物清单**（规范 §2.5），记录里缺字段时退回单个 url。 */}
+                <ArtifactActions targets={archiveTargets?.length ? archiveTargets : [{ url }]} />
             </div>
         </div>
     );
 }
 
 /** 进行中任务的详情：状态 / 进度 / 取消 + 结果卡片（视频）。 */
-function VideoTaskGroup({ task, jobs, now, onCancelJob, onRetryJob, onDownload, onSaveAsset }: { task: VideoTask; jobs: WorkbenchJob[]; now: number; onCancelJob: (jobId: string) => void; onRetryJob: (jobId: string) => void; onDownload: (url: string) => void; onSaveAsset: (url: string) => void }) {
+function VideoTaskGroup({ task, jobs, now, onCancelJob, onCancelJobs, onRetryJob, onDownload, onSaveAsset }: { task: VideoTask; jobs: WorkbenchJob[]; now: number; onCancelJob: (jobId: string) => void; onCancelJobs: (jobIds: string[]) => void; onRetryJob: (jobId: string) => void; onDownload: (url: string) => void; onSaveAsset: (url: string) => void }) {
     const { t } = useTranslation();
     const jobById = new Map(jobs.map((job) => [job.id, job] as const));
     const total = task.jobIds.length;
@@ -835,7 +848,8 @@ function VideoTaskGroup({ task, jobs, now, onCancelJob, onRetryJob, onDownload, 
                     </Tag>
                     {status === "running" ? <span className="text-xs text-stone-500 dark:text-stone-400">{formatDuration(elapsedMs)}</span> : null}
                     {hasActive ? (
-                        <Button size="small" danger onClick={() => task.jobIds.forEach((id) => onCancelJob(id))}>
+                        /* 整条任务取消：**一次性交给共享的 cancelWorkbenchJobs**（不再自己 forEach）。 */
+                        <Button size="small" danger onClick={() => onCancelJobs(task.jobIds)}>
                             {t("workbench.cancel")}
                         </Button>
                     ) : null}
@@ -849,7 +863,7 @@ function VideoTaskGroup({ task, jobs, now, onCancelJob, onRetryJob, onDownload, 
                         const job = jobById.get(id);
                         if (job?.status === "done" && job.outputs?.length) {
                             const output = job.outputs.find((item) => item.url);
-                            return output ? <VideoResultCard key={id} url={resolveGatewayUrl(output.url)} onDownload={onDownload} onSaveAsset={onSaveAsset} /> : null;
+                            return output ? <VideoResultCard key={id} url={resolveGatewayUrl(output.url)} archiveTargets={archiveTargetsFromJobs([job])} onDownload={onDownload} onSaveAsset={onSaveAsset} /> : null;
                         }
                         if (job?.status === "canceled") return <FailedMediaCard key={id} canceled error={t("workbench.canceled")} aspectClassName="aspect-video" />;
                         if (job?.status === "error") return <FailedMediaCard key={id} error={job.error || t("workbench.generationFailed")} onRetry={() => onRetryJob(id)} aspectClassName="aspect-video" />;

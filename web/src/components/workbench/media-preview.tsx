@@ -1,5 +1,5 @@
 import { Modal } from "antd";
-import { AudioLines, ChevronLeft, ChevronRight } from "lucide-react";
+import { AudioLines, ChevronLeft, ChevronRight, Play } from "lucide-react";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -73,6 +73,7 @@ export function PreviewableMedia({
     id,
     kind,
     src,
+    thumbSrc,
     title,
     className,
     children,
@@ -80,6 +81,8 @@ export function PreviewableMedia({
     id: string;
     kind: PreviewMediaKind;
     src?: string;
+    /** 列表里显示的小图（服务端缩略图）；预览弹窗仍用 `src`（原图）。不传则用 `src`。 */
+    thumbSrc?: string;
     title?: string;
     className?: string;
     children?: ReactNode;
@@ -106,16 +109,29 @@ export function PreviewableMedia({
                 title={item.title}
                 aria-label={item.title}
             >
-                {children ?? <DefaultThumb item={item} />}
+                {children ?? <DefaultThumb item={item} thumbSrc={thumbSrc} />}
             </button>
             {!group ? <MediaPreviewModal items={[item]} index={selfOpen ? 0 : null} onSelect={() => undefined} onClose={() => setSelfOpen(false)} /> : null}
         </>
     );
 }
 
-function DefaultThumb({ item }: { item: PreviewMediaItem }) {
+function DefaultThumb({ item, thumbSrc }: { item: PreviewMediaItem; thumbSrc?: string }) {
+    const poster = thumbSrc || item.src;
     if (item.kind === "video") {
-        return <video src={item.src} muted preload="metadata" playsInline className="h-full w-full object-cover" />;
+        // 列表里视频也用**静帧封面**（有缩略图就用图），不再让浏览器为一张卡去拉整段视频元数据；播放交给预览弹窗。
+        return (
+            <span className="relative block h-full w-full">
+                {thumbSrc ? (
+                    <img src={poster} alt={item.title || ""} loading="lazy" className="h-full w-full object-cover" />
+                ) : (
+                    <video src={item.src} muted preload="metadata" playsInline className="h-full w-full object-cover" />
+                )}
+                <span className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/20">
+                    <Play className="size-1/4 min-h-4 min-w-4 text-white" fill="currentColor" />
+                </span>
+            </span>
+        );
     }
     if (item.kind === "audio") {
         return (
@@ -124,7 +140,7 @@ function DefaultThumb({ item }: { item: PreviewMediaItem }) {
             </span>
         );
     }
-    return <img src={item.src} alt={item.title || ""} loading="lazy" className="h-full w-full object-cover" />;
+    return <img src={poster} alt={item.title || ""} loading="lazy" className="h-full w-full object-cover" />;
 }
 
 /**

@@ -582,20 +582,25 @@ export default function ImagePage() {
         }
     };
 
-    /** 取消单个 job：调后端 POST /api/jobs/:id/cancel，回来后以服务端状态/产物为准（取消不留半成品）。 */
-    const cancelJob = async (jobId: string) => {
-        try {
-            const job = await cancelImageJob(jobId);
+    /**
+     * 取消一组 job：**走共享的 `cancelWorkbenchJobs`**（生图 / 视频工作台同一套，口径不再各写一遍）。
+     * 先筛掉已结束的，再逐个调服务端 cancel；回来后以服务端状态/产物为准（取消不留半成品）；失败只提示。
+     */
+    const cancelJobs = async (jobIds: string[]) => {
+        const active = jobIds.filter((id) => isActiveJobStatus(jobs[id]?.status));
+        if (!active.length) return;
+        const { failed } = await cancelWorkbenchJobs(active, async (id) => {
+            const job = await cancelImageJob(id);
             setJobs((value) => ({ ...value, [job.id]: job }));
-        } catch (error) {
-            message.error(error instanceof Error ? error.message : String(error));
-        }
+        });
+        if (failed) message.error(t("tasks.cancelFailed"));
     };
 
-    /** 取消整条任务里所有未结束的 job（逐个走后端 cancel）。 */
-    const cancelTask = async (task: Task) => {
-        for (const id of task.jobIds.filter((jobId) => isActiveJobStatus(jobs[jobId]?.status))) await cancelJob(id);
-    };
+    /** 取消单个 job。 */
+    const cancelJob = (jobId: string) => cancelJobs([jobId]);
+
+    /** 取消整条任务里所有未结束的 job。 */
+    const cancelTask = (task: Task) => cancelJobs(task.jobIds);
 
     // 进页先拉一次：把未结束的任务恢复出来（刷新 / 切页 / 重开浏览器后任务与进度不丢）。
     useEffect(() => {

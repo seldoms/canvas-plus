@@ -12,6 +12,7 @@ import { isGenerativeStage, isVideoArtifact, orphanArtifacts, stageItems, stageM
 import type { PipelineStageView } from "../use-pipeline-run";
 import { CandidateStrip } from "./candidate-strip";
 import { StageSteps, stepsFromRunStage } from "./stage-steps";
+import { artifactThumbSrc } from "@/lib/artifact-thumb";
 
 const STATUS_CLASS: Record<GatewayStageStatus, string> = {
     pending: "text-stone-500 dark:text-stone-400",
@@ -212,12 +213,14 @@ export function StageCard({ index, view, busy, progress, resumeChunks, disabledR
 
 function StageArtifact({ artifact }: { artifact: GatewayArtifact }) {
     const src = resolveGatewayUrl(artifact.url);
+    // 列表用小图：原图交给预览弹窗（图片）/ 播放时再取（视频）。
+    const thumbSrc = artifactThumbSrc(src);
     // 视频自带控件即可播放；图片本身没有可点暗示 → 走共享可预览组件，站内弹窗看大图。
-    if (isVideoArtifact(artifact)) return <video src={src} controls preload="metadata" className="h-28 max-w-52 rounded-md" />;
+    if (isVideoArtifact(artifact)) return <video src={src} poster={thumbSrc} controls preload="none" className="h-28 max-w-52 rounded-md" />;
     if (artifact.type === "image") {
         return (
-            <PreviewableMedia id={`artifact:${artifact.url}`} kind="image" src={src} title={artifact.filename} className="h-28 max-w-52 cursor-zoom-in overflow-hidden rounded-md">
-                <img src={src} alt={artifact.filename} className="h-28 max-w-52 rounded-md object-cover" />
+            <PreviewableMedia id={`artifact:${artifact.url}`} kind="image" src={src} thumbSrc={thumbSrc} title={artifact.filename} className="h-28 max-w-52 cursor-zoom-in overflow-hidden rounded-md">
+                <img src={thumbSrc} alt={artifact.filename} className="h-28 max-w-52 rounded-md object-cover" />
             </PreviewableMedia>
         );
     }

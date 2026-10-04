@@ -8,6 +8,7 @@ import { useTranslation } from "react-i18next";
 import { canvasThemes, type CanvasTheme } from "@/lib/canvas-theme";
 import { exportCanvasNodes } from "@/lib/canvas/canvas-export";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
+import { artifactThumbSrc } from "@/lib/artifact-thumb";
 import { cn } from "@/lib/utils";
 import { PromptDetailDialog } from "@/pages/prompts/components/prompt-detail-dialog";
 import { fetchSourcePrompts, type Prompt } from "@/services/api/prompts";
@@ -240,7 +241,7 @@ function CanvasNodesTab({ nodes, selectedNodeIds, onFocusNode, onPreviewNode, th
                                     <button type="button" onClick={() => (selectMode ? toggleChecked(node.id) : onFocusNode(node.id))} className={cn("flex min-w-0 flex-1 items-center gap-3 py-2 pr-2 text-left", node.type === CanvasNodeType.Group && hasChildren ? "pl-0" : "pl-2")} title={selectMode ? undefined : t("canvas.sidePanel.focusNode")}>
                                         {selectMode ? <CheckMark checked={isChecked} theme={theme} /> : null}
                                         <span className="grid size-10 shrink-0 place-items-center overflow-hidden rounded-md">
-                                            {isImage ? <img src={previewUrlFor(node.metadata?.storageKey) || node.metadata?.content} alt={node.title} className="size-full object-cover" /> : <Icon className="size-5 opacity-60" />}
+                                            {isImage ? <img src={artifactThumbSrc(previewUrlFor(node.metadata?.storageKey) || node.metadata?.content)} alt={node.title} className="size-full object-cover" /> : <Icon className="size-5 opacity-60" />}
                                         </span>
                                         <span className="min-w-0 flex-1 space-y-0.5">
                                             <span className="block truncate text-sm font-medium leading-snug">{node.title || getNodeDefinition(node.type)?.title || t("canvas.node.untitled")}</span>
@@ -455,10 +456,10 @@ function AssetCard({ asset, theme, onInsert, onRemove }: { asset: Asset; theme: 
 function AssetCover({ asset }: { asset: Asset }) {
     if (asset.kind === "text") return <div className="size-full overflow-hidden whitespace-pre-wrap break-words p-2.5 text-[11px] leading-snug opacity-80">{asset.data.content}</div>;
     if (asset.kind === "video") {
-        if (asset.coverUrl) return <img src={asset.coverUrl} alt="" className="size-full object-cover transition duration-300 group-hover:scale-[1.04]" />;
-        return <video src={`${asset.data.url}#t=0.1`} muted playsInline preload="metadata" className="size-full object-cover transition duration-300 group-hover:scale-[1.04]" />;
+        if (asset.coverUrl) return <img src={artifactThumbSrc(asset.coverUrl)} alt="" className="size-full object-cover transition duration-300 group-hover:scale-[1.04]" />;
+        return <video src={`${asset.data.url}#t=0.1`} poster={artifactThumbSrc(asset.data.url)} muted playsInline preload="none" className="size-full object-cover transition duration-300 group-hover:scale-[1.04]" />;
     }
-    return <img src={asset.coverUrl || asset.data.dataUrl} alt="" className="size-full object-cover transition duration-300 group-hover:scale-[1.04]" />;
+    return <img src={artifactThumbSrc(asset.coverUrl || asset.data.dataUrl)} alt="" className="size-full object-cover transition duration-300 group-hover:scale-[1.04]" />;
 }
 
 // ---------------------------------------------------------------------------

@@ -3,6 +3,7 @@ import { Download, ExternalLink, ImageOff, Play } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { ArtifactActions } from "@/components/artifact-actions";
+import { artifactThumbSrc } from "@/lib/artifact-thumb";
 import { resolveGatewayUrl } from "@/services/api/gateway";
 import { PreviewableMedia } from "@/components/workbench";
 import type { AssetOverviewRef } from "@/services/api/projects";
@@ -40,6 +41,8 @@ export function AssetRefCard({
     const { t } = useTranslation();
     const isVideo = mediaKindOf(refItem) === "video";
     const src = refItem.url ? resolveGatewayUrl(refItem.url) : "";
+    // 列表用小图（服务端缩略图），预览弹窗仍用原图 `src`。
+    const thumbSrc = artifactThumbSrc(src);
     const roleLabel = t(`assets.roles.${refItem.role}`, { defaultValue: refItem.role });
 
     return (
@@ -48,14 +51,15 @@ export function AssetRefCard({
                 {src ? (
                     isVideo ? (
                         <button type="button" className="group block h-full w-full cursor-pointer" onClick={() => onPreviewVideo(refItem)} title={refItem.name}>
-                            <video src={src} muted playsInline preload="metadata" className="h-full w-full object-cover" />
+                            {/* 列表里视频也只用**静帧缩略图**（原视频交给弹窗播放），不再为每张卡去拉视频元数据。 */}
+                            <img src={thumbSrc} alt={refItem.name} loading="lazy" decoding="async" className="h-full w-full object-cover" />
                             <span className="absolute inset-0 flex items-center justify-center bg-black/25 transition group-hover:bg-black/40">
                                 <Play className="size-8 text-white" fill="currentColor" />
                             </span>
                         </button>
                     ) : (
-                        <PreviewableMedia id={refItem.id} kind="image" src={src} title={refItem.name} className="block h-full w-full">
-                            <img src={src} alt={refItem.name} loading="lazy" decoding="async" className="h-full w-full object-cover" />
+                        <PreviewableMedia id={refItem.id} kind="image" src={src} thumbSrc={thumbSrc} title={refItem.name} className="block h-full w-full">
+                            <img src={thumbSrc} alt={refItem.name} loading="lazy" decoding="async" className="h-full w-full object-cover" />
                         </PreviewableMedia>
                     )
                 ) : (

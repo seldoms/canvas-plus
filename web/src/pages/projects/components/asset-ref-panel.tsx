@@ -11,6 +11,7 @@ import type { AssetRef } from "@/types/domain";
 
 import { assetRefAdopted, assetRefCover, assetRefScope, bindingName, buildAssetRefPatch, groupAssetRefs, shortId } from "../asset-ref-model";
 import { AddAssetRefModal } from "./add-asset-ref-modal";
+import { artifactThumbSrc } from "@/lib/artifact-thumb";
 
 /**
  * 资产工作区看板：按 role 分组列出**项目 AssetRef**，每条带产物缩略图（点开站内弹窗预览）、绑定名、候选数与采用状态，
@@ -125,10 +126,11 @@ function AssetRefRow({ refItem, script, saving, onPatch }: { refItem: AssetRef; 
                     id={refItem.id}
                     kind="image"
                     src={resolveGatewayUrl(cover)}
+                    thumbSrc={artifactThumbSrc(resolveGatewayUrl(cover))}
                     title={name}
                     className="block size-24 shrink-0 cursor-zoom-in overflow-hidden rounded border border-stone-200/80 bg-black/5 dark:border-stone-700/80 dark:bg-white/5"
                 >
-                    <img src={resolveGatewayUrl(cover)} alt={name} loading="lazy" className="size-24 object-cover" />
+                    <img src={artifactThumbSrc(resolveGatewayUrl(cover))} alt={name} loading="lazy" className="size-24 object-cover" />
                 </PreviewableMedia>
             ) : (
                 <span

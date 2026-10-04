@@ -37,6 +37,8 @@ import { plan as impactPlan } from "./impact.js";
 import { createModelRegistry } from "./model-registry.js";
 // 产物归档 / 彻底删除内核（索引落 data/artifacts-index.json，从 jobs.outputs[] 懒构建）。
 import { createArtifacts } from "./artifacts.js";
+// 产物**真缩略图**：列表/卡片用的小图（按需 ffmpeg 生成 + 落盘缓存），复用平台已有的外部 ffmpeg，不引新依赖。
+import { createThumbnails, isThumbnailable, normalizeThumbWidth } from "./thumbnails.js";
 import { scanTemplateDir } from "./tool-adapter.js";
 
 // 启动耗时探针：把「进程起来到监听端口」拆成各阶段计时，直接回答「这 100 秒花在哪」。
@@ -280,6 +282,11 @@ const artifacts = createArtifacts({
     resolveProjectName: (projectId) => projects.get(projectId)?.title || null,
 });
 startupMark("artifacts 内核");
+
+// 缩略图内核：列表/卡片用的小图。落 data/thumbnails/<jobId>/<原名>.<宽>.webp，
+// 按需生成 + 落盘缓存（源文件更新才重跑）；同时最多 3 个 ffmpeg，防止一页上百张打满机器。
+const thumbnails = createThumbnails({ dataDir: config.dataDir });
+startupMark("thumbnails 内核");
 
 /**
  * 解析该次提交的**实际输入图**真实宽高（只对**视频模板**做：图生/参考生视频才会被 first_frame 拉伸）。
@@ -762,10 +769,18 @@ router.any("/api/artifacts/archive", artifactsWrite((body) => artifacts.archive(
 router.any("/api/artifacts/restore", artifactsWrite((body) => artifacts.restore(body)));
 router.any("/api/artifacts/delete", artifactsWrite((body) => artifacts.remove(body)));
 
-router.get("/api/artifacts/:jobId/:filename", (req, res, { params }) => {
+// 产物文件。`?variant=thumb[&w=320]` 走**真缩略图**（按需生成 + 缓存，列表/卡片用）：
+// 生成不了就回退原图（宁可退回大图，也绝不裂图）；下载仍取原图（download=1）。
+router.get("/api/artifacts/:jobId/:filename", async (req, res, { params, url }) => {
     const dir = safeJoin(config.dataDir, "artifacts", params.jobId);
     const file = dir && safeJoin(dir, params.filename);
     if (!file) return sendError(res, 400, "非法路径");
+    if (url.searchParams.get("variant") === "thumb" && isThumbnailable(params.filename)) {
+        const thumb = await thumbnails
+            .generate({ jobId: params.jobId, filename: params.filename, sourcePath: file, width: normalizeThumbWidth(url.searchParams.get("w")) })
+            .catch(() => null);
+        if (thumb?.path) return serveFile(req, res, thumb.path);
+    }
     serveFile(req, res, file, { download: req.url.includes("download=1") });
 });
 

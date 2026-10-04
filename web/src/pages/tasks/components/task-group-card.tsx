@@ -11,6 +11,7 @@ import { formatTaskTime } from "@/lib/task-time";
 import { cn } from "@/lib/utils";
 
 import { isActiveStatus, jobDurationMs, groupProgress, type TaskGroup, type TaskGroupStatus } from "../task-utils";
+import { artifactThumbSrc } from "@/lib/artifact-thumb";
 
 const GROUP_STATUS_DOT: Record<TaskGroupStatus, string> = {
     running: "bg-blue-500",
@@ -138,7 +139,7 @@ export function TaskGroupCard({ group, runLabel, now, onCancelQueued, onCancelJo
                                                     className="size-9 overflow-hidden rounded border border-stone-200 dark:border-stone-700"
                                                     onClick={() => onPreviewVideo(job, output.url)}
                                                 >
-                                                    <video src={resolveGatewayUrl(output.url)} muted playsInline preload="metadata" className="size-9 object-cover" />
+                                                    <video src={resolveGatewayUrl(output.url)} poster={artifactThumbSrc(resolveGatewayUrl(output.url))} muted playsInline preload="none" className="size-9 object-cover" />
                                                 </button>
                                             ) : (
                                                 <PreviewableMedia
@@ -146,10 +147,11 @@ export function TaskGroupCard({ group, runLabel, now, onCancelQueued, onCancelJo
                                                     id={`task:${job.id}:${output.url}`}
                                                     kind="image"
                                                     src={resolveGatewayUrl(output.url)}
+                                                    thumbSrc={artifactThumbSrc(resolveGatewayUrl(output.url))}
                                                     title={job.name}
                                                     className="size-9 overflow-hidden rounded border border-stone-200 dark:border-stone-700"
                                                 >
-                                                    <img src={resolveGatewayUrl(output.url)} alt={job.name} loading="lazy" decoding="async" className="size-9 object-cover" />
+                                                    <img src={artifactThumbSrc(resolveGatewayUrl(output.url))} alt={job.name} loading="lazy" decoding="async" className="size-9 object-cover" />
                                                 </PreviewableMedia>
                                             ),
                                         )

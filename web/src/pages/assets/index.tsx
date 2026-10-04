@@ -181,8 +181,11 @@ export default function AssetsPage() {
                 )}
             </div>
 
-            <Modal open={Boolean(videoRef)} title={videoRef?.name || undefined} footer={null} width={960} destroyOnHidden onCancel={() => setVideoRef(null)}>
-                {videoRef?.url ? <video src={resolveGatewayUrl(videoRef.url)} controls autoPlay className="mt-2 w-full rounded-lg bg-black" /> : null}
+            {/* 响应式小窗（规范 §1.3）：宽不超视口−96px、长边 70vh、按原始比例 contain —— 竖版视频也不再撑破整屏。 */}
+            <Modal open={Boolean(videoRef)} title={videoRef?.name || undefined} footer={null} centered width="min(960px, calc(100vw - 96px))" destroyOnHidden onCancel={() => setVideoRef(null)}>
+                {videoRef?.url ? (
+                    <video src={resolveGatewayUrl(videoRef.url)} controls autoPlay playsInline className="mx-auto max-h-[70vh] w-auto max-w-full rounded-lg bg-black object-contain" />
+                ) : null}
             </Modal>
         </div>
     );

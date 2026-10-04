@@ -6,6 +6,7 @@ import { useTranslation } from "react-i18next";
 import { ArtifactActions } from "@/components/artifact-actions";
 import { archiveArtifacts, deleteArtifacts, listArtifacts, restoreArtifacts, type ArtifactItem } from "@/services/api/artifacts";
 import { resolveGatewayUrl } from "@/services/api/gateway";
+import { artifactThumbSrc } from "@/lib/artifact-thumb";
 
 /**
  * 「我的资产」→ 全部产物：素材生命周期管理。
@@ -202,6 +203,7 @@ export function ArtifactManager() {
                         const checked = selected.has(item.id);
                         const video = mediaKindOf(item) === "video";
                         const src = resolveGatewayUrl(item.url);
+                        const thumbSrc = artifactThumbSrc(src);
                         return (
                             <div
                                 key={item.id}
@@ -209,9 +211,11 @@ export function ArtifactManager() {
                             >
                                 <div className="relative aspect-[4/3] w-full overflow-hidden bg-stone-100 dark:bg-stone-900">
                                     {video ? (
-                                        <video src={src} muted playsInline preload="metadata" controls className="h-full w-full object-contain" />
+                                        /* 封面用缩略图、不预拉视频；点播放才取原视频。 */
+                                        <video src={src} poster={thumbSrc} muted playsInline preload="none" controls className="h-full w-full object-contain" />
                                     ) : (
-                                        <Image src={src} alt={item.filename} className="h-full w-full object-cover" style={{ height: "100%", width: "100%", objectFit: "cover" }} preview={{ closeIcon: false }} />
+                                        /* 缩略图走服务端小图；点开预览仍给**原图**（preview.src）。 */
+                                        <Image src={thumbSrc} alt={item.filename} className="h-full w-full object-cover" style={{ height: "100%", width: "100%", objectFit: "cover" }} preview={{ closeIcon: false, src }} />
                                     )}
                                     <Checkbox className="absolute left-2 top-2" checked={checked} onChange={(event) => toggle(item.id, event.target.checked)} />
                                     {item.refs.length ? (

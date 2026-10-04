@@ -7,6 +7,7 @@ import { PreviewableMedia } from "@/components/workbench";
 import type { CastingScope, CastingVoice } from "@/services/api/casting";
 
 import type { CastingCharacterView } from "../casting-model";
+import { artifactThumbSrc } from "@/lib/artifact-thumb";
 
 /**
  * 一张「身份卡」：只做两件事 —— 定脸（正脸特写 + 三视图，可生成 / 确认）与定声音（音色库选音色 + 试听 + 确认）。
@@ -77,10 +78,11 @@ export function IdentityCard({
                                 id={`${character.characterId}:closeup`}
                                 kind="image"
                                 src={character.closeupUrl}
+                                thumbSrc={artifactThumbSrc(character.closeupUrl)}
                                 title={character.name}
                                 className="block size-20 overflow-hidden rounded border border-stone-200/80 bg-black/5 dark:border-stone-700/80 dark:bg-white/5"
                             >
-                                <img src={character.closeupUrl} alt={character.name} className="h-full w-full object-cover" />
+                                <img src={artifactThumbSrc(character.closeupUrl)} alt={character.name} className="h-full w-full object-cover" />
                             </PreviewableMedia>
                         ) : null}
                         {character.turnaroundUrls.map((url) => (
@@ -89,10 +91,11 @@ export function IdentityCard({
                                 id={`${character.characterId}:turnaround:${url}`}
                                 kind="image"
                                 src={url}
+                                thumbSrc={artifactThumbSrc(url)}
                                 title={character.name}
                                 className="block size-20 overflow-hidden rounded border border-stone-200/80 bg-black/5 dark:border-stone-700/80 dark:bg-white/5"
                             >
-                                <img src={url} alt={character.name} className="h-full w-full object-cover" />
+                                <img src={artifactThumbSrc(url)} alt={character.name} className="h-full w-full object-cover" />
                             </PreviewableMedia>
                         ))}
                         <Button size="small" icon={<Sparkles className="size-4" />} onClick={onGenerateFace}>

@@ -7,6 +7,7 @@ import { ArtifactActions } from "@/components/artifact-actions";
 import { MediaPreviewGroup, PreviewableMedia } from "@/components/workbench";
 
 import type { KeyframeShot } from "../keyframes-model";
+import { artifactThumbSrc } from "@/lib/artifact-thumb";
 
 /** 镜头状态 → AntD Tag 颜色；文案统一走 pipeline.candidates.status.*。 */
 const STATUS_COLORS: Record<GatewayGenerationStatus, string> = {
@@ -144,6 +145,7 @@ function ShotGroup({ shot, onChanged }: { shot: KeyframeShot; onChanged: () => v
                             id={candidate.jobId}
                             kind="image"
                             src={resolveGatewayUrl(candidate.artifactUrl || "")}
+                            thumbSrc={artifactThumbSrc(resolveGatewayUrl(candidate.artifactUrl || ""))}
                             title={[candidate.template, candidate.seed ? `seed ${candidate.seed}` : ""].filter(Boolean).join(" · ")}
                             className={cn(
                                 "block size-24 overflow-hidden rounded border border-stone-200/80 bg-black/5 dark:border-stone-700/80 dark:bg-white/5",
@@ -151,7 +153,7 @@ function ShotGroup({ shot, onChanged }: { shot: KeyframeShot; onChanged: () => v
                             )}
                         >
                             <img
-                                src={resolveGatewayUrl(candidate.artifactUrl || "")}
+                                src={artifactThumbSrc(resolveGatewayUrl(candidate.artifactUrl || ""))}
                                 alt={candidate.template}
                                 loading="lazy"
                                 className="h-full w-full object-cover"

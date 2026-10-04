@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import { resolveGatewayUrl, type GatewayGenerationItem, type GatewayJobStatus, type GatewayTemplateInfo } from "@/services/api/gateway";
 import { PreviewableMedia } from "@/components/workbench";
 import { candidateViews, type CandidateView } from "../pipeline-utils";
+import { artifactThumbSrc } from "@/lib/artifact-thumb";
 
 const CANDIDATE_STATUS_CLASS: Record<GatewayJobStatus, string> = {
     queued: "text-stone-400 dark:text-stone-500",
@@ -82,6 +83,7 @@ function CandidateThumb({ candidate, kind }: { candidate: CandidateView; kind: "
     const { t } = useTranslation();
     const [failed, setFailed] = useState(false);
     const src = candidate.artifactUrl ? resolveGatewayUrl(candidate.artifactUrl) : "";
+    const thumbSrc = artifactThumbSrc(src);
     const tone = CANDIDATE_STATUS_CLASS[candidate.status];
     const status = t(`pipeline.candidates.status.${candidate.status}`);
     const title = [candidate.template, status, candidate.selected ? t("pipeline.candidates.selected") : ""].filter(Boolean).join(" · ");
@@ -102,11 +104,11 @@ function CandidateThumb({ candidate, kind }: { candidate: CandidateView; kind: "
     return (
         <Tooltip title={title}>
             <div className={box}>
-                <PreviewableMedia id={candidate.jobId} kind={kind} src={src} title={title} className="size-full">
+                <PreviewableMedia id={candidate.jobId} kind={kind} src={src} thumbSrc={thumbSrc} title={title} className="size-full">
                     {kind === "video" ? (
-                        <video src={src} muted preload="metadata" className="size-full object-cover" onError={() => setFailed(true)} />
+                        <video src={src} poster={thumbSrc} muted preload="none" className="size-full object-cover" onError={() => setFailed(true)} />
                     ) : (
-                        <img src={src} alt={candidate.template} className="size-full object-cover" onError={() => setFailed(true)} />
+                        <img src={thumbSrc} alt={candidate.template} className="size-full object-cover" onError={() => setFailed(true)} />
                     )}
                 </PreviewableMedia>
                 <span className={cn("absolute left-1 top-1 size-1.5 rounded-full bg-current", tone)} />

@@ -19,6 +19,7 @@ import { artifactKind, buildStages, textSummary, type TimelineArtifact, type Tim
 import { useProjectTimeline } from "../hooks/use-project-timeline";
 import type { StageStatusMap } from "../workspace-gates";
 import { NextStepPanel } from "./next-step-panel";
+import { artifactThumbSrc } from "@/lib/artifact-thumb";
 
 const DOT_CLASS: Record<GatewayStageStatus, string> = {
     pending: "bg-stone-300 dark:bg-stone-600",
@@ -236,6 +237,7 @@ function StageRow({
 function Thumb({ artifact, kind, registered }: { artifact: TimelineArtifact; kind: "image" | "video" | "file"; registered: boolean }) {
     const { t } = useTranslation();
     const src = resolveGatewayUrl(artifact.url);
+    const thumbSrc = artifactThumbSrc(src);
     const label = lastSegment(artifact.url);
     const box =
         "relative h-16 w-16 shrink-0 overflow-hidden rounded border border-stone-200/80 bg-black/5 transition hover:border-amber-400 dark:border-stone-700/80 dark:bg-white/5";
@@ -248,11 +250,11 @@ function Thumb({ artifact, kind, registered }: { artifact: TimelineArtifact; kin
     if (kind === "file") return null;
     return (
         <div className={cn(box, "block")}>
-            <PreviewableMedia id={`timeline:${artifact.url}`} kind={kind} src={src} title={label} className="block h-full w-full">
+            <PreviewableMedia id={`timeline:${artifact.url}`} kind={kind} src={src} thumbSrc={thumbSrc} title={label} className="block h-full w-full">
                 {kind === "video" ? (
-                    <video src={src} muted preload="metadata" className="h-full w-full object-cover" />
+                    <video src={src} poster={thumbSrc} muted preload="none" className="h-full w-full object-cover" />
                 ) : (
-                    <img src={src} alt={label} loading="lazy" className="h-full w-full object-cover" />
+                    <img src={thumbSrc} alt={label} loading="lazy" className="h-full w-full object-cover" />
                 )}
             </PreviewableMedia>
             {badge}

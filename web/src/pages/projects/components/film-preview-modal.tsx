@@ -67,7 +67,7 @@ export function FilmPreviewModal({
     return (
         <Modal open={open} footer={null} centered closable={false} destroyOnHidden width={880} onCancel={onClose}>
             {/* 站内弹窗播放，禁跳新页；无 SRT 时不渲染 `<track>`，不留空壳。 */}
-            <video ref={videoRef} src={resolveGatewayUrl(filmUrl)} controls autoPlay playsInline className="block max-h-[76vh] w-full rounded-md bg-black">
+            <video ref={videoRef} src={resolveGatewayUrl(filmUrl)} controls autoPlay playsInline className="mx-auto block max-h-[70vh] w-auto max-w-full rounded-md bg-black object-contain">
                 {vttUrl ? <track kind="subtitles" src={vttUrl} srcLang="zh" label={t("projects.assembly.subtitleTrackLabel")} default /> : null}
             </video>
         </Modal>
