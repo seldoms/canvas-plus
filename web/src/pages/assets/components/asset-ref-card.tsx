@@ -2,6 +2,7 @@ import { Button, Tag } from "antd";
 import { Download, ExternalLink, ImageOff, Play } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
+import { ArtifactActions } from "@/components/artifact-actions";
 import { resolveGatewayUrl } from "@/services/api/gateway";
 import { PreviewableMedia } from "@/components/workbench";
 import type { AssetOverviewRef } from "@/services/api/projects";
@@ -10,15 +11,28 @@ import { mediaKindOf } from "../asset-overview-model";
 
 /**
  * 总览里的单张资产卡：缩略图（图片走站内预览、视频点开弹窗）+ 名称 + 所属项目 + 类型 + 产物数。
- * 卡片本身不发请求；预览/下载/跳转由父级编排。
+ * 卡片本身不发请求；预览/下载/跳转/归档由父级编排。
+ *
+ * 归档入口（本轮补）：**直接放在卡片上、一眼可见**（规范 §2.1）。
+ * 之前归档只在另一个 Segmented 视图「全部产物」里，本视图 157 张卡一个归档按钮都没有。
+ * - 归档态由父级**批量**取回（url→state），卡片只同步查表，不各自发请求；
+ * - 已归档 → 缩略图上打「已归档」标 + 按钮变「恢复」（规范 §2.2，选“打标”并全站一致）；
+ * - **不提供「彻底删除」**（规范 §2.4：彻底删除只在「我的资产 →全部产物」的产物管理器里）。
+ *   产物未登记进后端产物索引时（archivable=false）不渲染归档按钮，避免点了必然失败。
  */
 export function AssetRefCard({
     refItem,
+    archived = false,
+    archivable = false,
+    onArtifactsChanged,
     onPreviewVideo,
     onDownload,
     onOpenProject,
 }: {
     refItem: AssetOverviewRef;
+    archived?: boolean;
+    archivable?: boolean;
+    onArtifactsChanged?: () => void;
     onPreviewVideo: (ref: AssetOverviewRef) => void;
     onDownload: (ref: AssetOverviewRef) => void;
     onOpenProject: (projectId: string) => void;
@@ -41,7 +55,7 @@ export function AssetRefCard({
                         </button>
                     ) : (
                         <PreviewableMedia id={refItem.id} kind="image" src={src} title={refItem.name} className="block h-full w-full">
-                            <img src={src} alt={refItem.name} loading="lazy" className="h-full w-full object-cover" />
+                            <img src={src} alt={refItem.name} loading="lazy" decoding="async" className="h-full w-full object-cover" />
                         </PreviewableMedia>
                     )
                 ) : (
@@ -49,6 +63,11 @@ export function AssetRefCard({
                         <ImageOff className="size-6" />
                     </span>
                 )}
+                {archived ? (
+                    <Tag className="!absolute !left-2 !top-2 !m-0 !border-0 !bg-amber-100 !text-amber-700 dark:!bg-amber-900/60 dark:!text-amber-200">
+                        {t("artifacts.archivedTag")}
+                    </Tag>
+                ) : null}
             </div>
 
             <div className="min-w-0 p-3">
@@ -69,6 +88,13 @@ export function AssetRefCard({
                 <div className="mt-2 flex items-center justify-between gap-2">
                     <span className="shrink-0 text-xs text-stone-400 dark:text-stone-500">{t("assets.overview.artifactCount", { count: refItem.artifactCount })}</span>
                     <div className="flex items-center gap-1">
+                        {archivable ? (
+                            <ArtifactActions
+                                targets={[{ url: refItem.url }]}
+                                state={archived ? "archived" : "active"}
+                                onChanged={onArtifactsChanged}
+                            />
+                        ) : null}
                         <Button size="small" type="text" icon={<Download className="size-3.5" />} disabled={!src} onClick={() => onDownload(refItem)}>
                             {t("assets.overview.download")}
                         </Button>

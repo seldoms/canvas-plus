@@ -6,7 +6,7 @@ import { saveAs } from "file-saver";
 import { useTranslation } from "react-i18next";
 
 import { ImageSettingsPanel } from "@/components/image-settings-panel";
-import { ArtifactActions } from "@/components/artifact-actions";
+import { ArtifactActions, type ArtifactTarget } from "@/components/artifact-actions";
 import { ModelPicker } from "@/components/model-picker";
 import { PromptSelectDialog } from "@/components/prompts/prompt-select-dialog";
 import { AssetPickerModal, type InsertAssetPayload } from "@/components/canvas/asset-picker-modal";
@@ -26,7 +26,7 @@ import { useWorkbenchAgentStore } from "@/stores/use-workbench-agent-store";
 import type { ReferenceImage } from "@/types/image";
 import i18n from "@/i18n";
 // 工作台共享件：任务队列 / 参数快照 / 取消·归档 卡片 —— 与视频创作台同一套（抽出来复用，不各写一份）。
-import { QueuePanel, SnapshotPanel, FailedMediaCard, PendingMediaCard, ImageThumb, UnavailableImage, buildQueueEntries, countTaskJobs, deriveTaskStatus, jobDurationMs, taskPercent, taskStatusColor, taskStatusLabelKey, usePreviewVerticalArrows, type WorkbenchJob, type WorkbenchLogView, type WorkbenchQueueEntry, type WorkbenchTask, type WorkbenchThumb } from "@/components/workbench";
+import { QueuePanel, SnapshotPanel, FailedMediaCard, PendingMediaCard, ImageThumb, UnavailableImage, archiveTargetsFromJobs, buildQueueEntries, cancelWorkbenchJobs, countTaskJobs, deriveTaskStatus, jobDurationMs, jobIdsForItemIds, taskPercent, taskStatusColor, taskStatusLabelKey, usePreviewVerticalArrows, type WorkbenchJob, type WorkbenchLogView, type WorkbenchQueueEntry, type WorkbenchTask, type WorkbenchThumb } from "@/components/workbench";
 
 type GeneratedImage = {
     id: string;
@@ -712,6 +712,14 @@ export default function ImagePage() {
     const selectedLog = selectedTask ? null : (logs.find((log) => log.id === selectedId) ?? null);
     const detailTask = selectedTask ?? (selectedLog ? null : (tasks[0] ?? null));
     const detailLog = selectedLog ?? (detailTask ? null : (logs[0] ?? null));
+    // 归档目标（规范 §2.5）：从该次任务的**产物清单**现算，而不是记录里可能缺失的 artifactUrl / jobIds。
+    // 记录条目 id 形如 `<jobId>-<文件名>`，据此反查后端 job 再取 outputs；老记录即使没存 artifactUrl 也能出归档入口。
+    const logArchiveTargets = detailLog
+        ? archiveTargetsFromJobs(
+              jobIdsForItemIds(detailLog.images.map((image) => image.id), jobs).map((id) => jobs[id]),
+              detailLog.images.map((image) => image.artifactUrl),
+          )
+        : [];
     // 队列时间线：本次任务 ∪ 历史记录（按 id 去重 + 时间倒序），交给共享队列面板渲染。
     const queueEntries: WorkbenchQueueEntry[] = buildQueueEntries({ tasks, logs: logs.map(imageLogView), jobs, taskThumbnails: imageTaskThumbnails });
 
@@ -986,12 +994,15 @@ function GenerationSettings({ config, model, updateConfig, openConfigDialog, ima
 function ResultImageCard({
     image,
     index,
+    archiveTargets,
     onEdit,
     onDownload,
     onSaveAsset,
 }: {
     image: GeneratedImage;
     index: number;
+    /** 归档目标：**由父级从该次任务的产物（job.outputs）现算**（规范 §2.5）；缺省时退回记录里存的产物地址。 */
+    archiveTargets?: ArtifactTarget[];
     onEdit: (image: GeneratedImage, index: number) => void;
     onDownload: (image: GeneratedImage, index: number) => void;
     onSaveAsset: (image: GeneratedImage, index: number) => void;
@@ -1046,8 +1057,10 @@ function ResultImageCard({
                         </Button>
                     </Tooltip>
                 </div>
-                {/* 生产动线只给「归档」（可逆）；彻底删除只在「我的资产」页。归档只认网关产物原始地址。 */}
-                {unavailable ? null : <ArtifactActions targets={[{ url: image.artifactUrl || image.dataUrl }]} />}
+                {/* 生产动线只给「归档」（可逆）；彻底删除只在「我的资产」页。归档优先认该次任务的产物地址。 */}
+                {unavailable ? null : (
+                    <ArtifactActions targets={archiveTargets?.length ? archiveTargets : [{ url: image.artifactUrl || image.dataUrl }]} />
+                )}
             </div>
         </div>
     );
@@ -1096,7 +1109,7 @@ function TaskGroup({
             return job.outputs
                 .filter((output) => !output.type || output.type === "image")
                 .map((output, outputIndex) => (
-                    <ResultImageCard key={`${id}-${output.filename || outputIndex}`} image={jobOutputToImage(job, output)} index={jobIndex} onEdit={onEdit} onDownload={onDownload} onSaveAsset={onSaveAsset} />
+                    <ResultImageCard key={`${id}-${output.filename || outputIndex}`} image={jobOutputToImage(job, output)} index={jobIndex} archiveTargets={archiveTargetsFromJobs([job])} onEdit={onEdit} onDownload={onDownload} onSaveAsset={onSaveAsset} />
                 ));
         }
         if (job?.status === "canceled") {

@@ -8,6 +8,7 @@ import { saveAs } from "file-saver";
 import { cn } from "@/lib/utils";
 import { resolveGatewayUrl } from "@/services/api/gateway";
 import { MediaPreviewGroup } from "@/components/workbench";
+import { listArtifacts, type ArtifactState } from "@/services/api/artifacts";
 import { listAssetRefsOverview, type AssetOverview, type AssetOverviewRef } from "@/services/api/projects";
 
 import { artifactFileName, filterAssetRefs, roleFilterOptions } from "./asset-overview-model";
@@ -30,20 +31,36 @@ export default function AssetsPage() {
     const [roleFilter, setRoleFilter] = useState("all");
     const [projectFilter, setProjectFilter] = useState("all");
     const [videoRef, setVideoRef] = useState<AssetOverviewRef | null>(null);
+    /**
+     * 产物状态表（产物 url → active/archived）。
+     * **一次批量取全量产物**（GET /api/artifacts?state=all），而不是每张卡各自查一次 ——
+     * 157 张卡若各发一次请求就是 157 次异步读；这里 1 次拿全，卡片只做同步 map 查表。
+     */
+    const [artifactStates, setArtifactStates] = useState<Map<string, ArtifactState>>(new Map());
     /** 视图切换：资产引用（跨项目 AssetRef）↔ 全部产物（归档 / 彻底删除）。 */
     const [view, setView] = useState<"refs" | "artifacts">("refs");
+
+    const loadArtifactStates = useCallback(async () => {
+        try {
+            const result = await listArtifacts({ state: "all", limit: 500 });
+            setArtifactStates(new Map(result.items.map((item) => [item.url, item.state])));
+        } catch {
+            setArtifactStates(new Map());
+        }
+    }, []);
 
     const load = useCallback(async () => {
         setLoading(true);
         try {
-            setOverview(await listAssetRefsOverview());
+            const [overviewResult] = await Promise.all([listAssetRefsOverview(), loadArtifactStates()]);
+            setOverview(overviewResult);
             setError("");
         } catch (loadError) {
             setError(loadError instanceof Error ? loadError.message : String(loadError));
         } finally {
             setLoading(false);
         }
-    }, []);
+    }, [loadArtifactStates]);
 
     useEffect(() => {
         void load();
@@ -141,7 +158,16 @@ export default function AssetsPage() {
                         <MediaPreviewGroup>
                             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
                                 {filtered.map((refItem) => (
-                                    <AssetRefCard key={refItem.id} refItem={refItem} onPreviewVideo={setVideoRef} onDownload={download} onOpenProject={openProject} />
+                                    <AssetRefCard
+                                        key={refItem.id}
+                                        refItem={refItem}
+                                        archived={artifactStates.get(refItem.url) === "archived"}
+                                        archivable={artifactStates.has(refItem.url)}
+                                        onArtifactsChanged={loadArtifactStates}
+                                        onPreviewVideo={setVideoRef}
+                                        onDownload={download}
+                                        onOpenProject={openProject}
+                                    />
                                 ))}
                             </div>
                         </MediaPreviewGroup>

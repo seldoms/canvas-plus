@@ -1,4 +1,4 @@
-import { App, Button, Empty, Input, Modal, Segmented, Select, Spin } from "antd";
+import { App, Button, Empty, Input, Modal, Pagination, Segmented, Select, Spin } from "antd";
 import { RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -61,6 +61,21 @@ export default function TasksPage() {
     const overview = useMemo(() => summarizeJobs(jobs), [jobs]);
     const groups = useMemo(() => buildTaskGroups(jobs), [jobs]);
     const visibleGroups = useMemo(() => filterTaskGroups(groups, { scope, source, kind, status }, now), [groups, scope, source, kind, status, now]);
+
+    /**
+     * 分组列表分页（不用虚拟滚动）：分组卡高度可变（展开明细会变高），固定行高虚拟滚动会算错位置；
+     * 仓库里也没有虚拟滚动依赖且本轮不许引新依赖。分页把 DOM 数量压到「一页 N 组」，
+     * 与顶部已有的「来源/类型/状态/范围」筛选天然叠加，且时间线顺序不变。
+     */
+    const PAGE_SIZE = 10;
+    const [page, setPage] = useState(1);
+    // 任一筛选或刷新导致可见集合变化时回到第 1 页，避免停在空页。
+    useEffect(() => {
+        setPage(1);
+    }, [scope, source, kind, status, jobs]);
+    const pageCount = Math.max(1, Math.ceil(visibleGroups.length / PAGE_SIZE));
+    const currentPage = Math.min(page, pageCount);
+    const pagedGroups = useMemo(() => visibleGroups.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE), [visibleGroups, currentPage]);
 
     const cancelQueued = (group: TaskGroup) => {
         const targets = group.jobs.filter((job) => job.status === "queued");
@@ -178,7 +193,7 @@ export default function TasksPage() {
                     ) : visibleGroups.length ? (
                         <MediaPreviewGroup>
                             <div className="space-y-3">
-                                {visibleGroups.map((group) => (
+                                {pagedGroups.map((group) => (
                                     <TaskGroupCard
                                         key={group.key}
                                         group={group}
@@ -191,6 +206,17 @@ export default function TasksPage() {
                                     />
                                 ))}
                             </div>
+                            {pageCount > 1 ? (
+                                <div className="mt-5 flex justify-center">
+                                    <Pagination
+                                        current={currentPage}
+                                        pageSize={PAGE_SIZE}
+                                        total={visibleGroups.length}
+                                        showSizeChanger={false}
+                                        onChange={(nextPage) => setPage(nextPage)}
+                                    />
+                                </div>
+                            ) : null}
                         </MediaPreviewGroup>
                     ) : (
                         <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} className="py-24" description={jobs.length ? t("tasks.emptyFiltered") : t("tasks.empty")} />

@@ -138,7 +138,7 @@ export function TaskGroupCard({ group, runLabel, now, onCancelQueued, onCancelJo
                                                     className="size-9 overflow-hidden rounded border border-stone-200 dark:border-stone-700"
                                                     onClick={() => onPreviewVideo(job, output.url)}
                                                 >
-                                                    <video src={resolveGatewayUrl(output.url)} muted className="size-9 object-cover" />
+                                                    <video src={resolveGatewayUrl(output.url)} muted playsInline preload="metadata" className="size-9 object-cover" />
                                                 </button>
                                             ) : (
                                                 <PreviewableMedia
@@ -149,7 +149,7 @@ export function TaskGroupCard({ group, runLabel, now, onCancelQueued, onCancelJo
                                                     title={job.name}
                                                     className="size-9 overflow-hidden rounded border border-stone-200 dark:border-stone-700"
                                                 >
-                                                    <img src={resolveGatewayUrl(output.url)} alt={job.name} className="size-9 object-cover" />
+                                                    <img src={resolveGatewayUrl(output.url)} alt={job.name} loading="lazy" decoding="async" className="size-9 object-cover" />
                                                 </PreviewableMedia>
                                             ),
                                         )

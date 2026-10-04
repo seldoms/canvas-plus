@@ -1,15 +1,23 @@
+import { lazy, Suspense } from "react";
 import { Bot, Menu } from "lucide-react";
 import { Button, Tooltip } from "antd";
 import { Link, useLocation } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 
 import { navigationTools, type NavigationToolSlug } from "@/constant/navigation-tools";
-import { AppConfigModal } from "@/components/layout/app-config-modal";
 import { MobileNavDrawer } from "@/components/layout/mobile-nav-drawer";
 import { UserStatusActions } from "@/components/layout/user-status-actions";
 import { cn } from "@/lib/utils";
 import { useEffect, useRef, useState } from "react";
 import { useAgentStore } from "@/stores/use-agent-store";
+import { useConfigStore } from "@/stores/use-config-store";
+
+/**
+ * 配置弹窗（内含通道编辑器 → CodeMirror 脚本编辑器，约 506KB）按需加载：
+ * 之前它被静态 import 进顶栏 → 进首屏关键路径，即使用户从不打开配置也要先下完。
+ * 改成「首次打开才加载、加载后常驻」，既挪走 500KB+，又保留开合动画（不反复卸载）。
+ */
+const AppConfigModal = lazy(() => import("@/components/layout/app-config-modal").then((module) => ({ default: module.AppConfigModal })));
 
 export function AppTopNav() {
     const { t } = useTranslation();
@@ -25,6 +33,12 @@ export function AppTopNav() {
     const hideHeader = /^\/canvas\/[^/]+/.test(pathname);
     const slug = pathname.split("/").filter(Boolean)[0];
     const activeToolSlug = navigationTools.some((tool) => tool.slug === slug) ? (slug as NavigationToolSlug) : undefined;
+    const isConfigOpen = useConfigStore((state) => state.isConfigOpen);
+    // 首次打开过就常驻：不反复卸载，保住 Modal 关闭动画与内部状态。
+    const [configEverOpened, setConfigEverOpened] = useState(false);
+    useEffect(() => {
+        if (isConfigOpen) setConfigEverOpened(true);
+    }, [isConfigOpen]);
 
     useEffect(() => {
         if (autoConnectRef.current || agentEnabled || agentConnected || !agentToken.trim()) return;
@@ -93,7 +107,11 @@ export function AppTopNav() {
             ) : null}
 
             <MobileNavDrawer open={mobileNavOpen} activeToolSlug={activeToolSlug} onClose={() => setMobileNavOpen(false)} />
-            <AppConfigModal />
+            {configEverOpened ? (
+                <Suspense fallback={null}>
+                    <AppConfigModal />
+                </Suspense>
+            ) : null}
         </>
     );
 }

@@ -4,6 +4,7 @@
  */
 export * from "./types";
 export * from "./task-utils";
+export * from "./logic";
 export { usePreviewVerticalArrows } from "./use-preview-arrows";
 export { ImageThumb, UnavailableImage } from "./media";
 export { MediaPreviewGroup, PreviewableMedia, type PreviewMediaItem, type PreviewMediaKind } from "./media-preview";

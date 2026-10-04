@@ -180,18 +180,20 @@ function MediaPreviewModal({
             centered
             closable={false}
             destroyOnHidden
-            width={960}
+            width="min(960px, calc(100vw - 96px))"
             onCancel={onClose}
             styles={{ body: { padding: 0, background: "transparent" } }}
         >
             {current ? (
                 <div className="relative flex items-center justify-center">
                     {current.kind === "image" ? (
-                        <img src={current.src} alt={current.title || ""} className="mx-auto max-h-[76vh] w-auto rounded-md object-contain" />
+                        // 响应式小窗（规范 §1.3）：长边留边距、按原始宽高比 contain 完整显示，绝不铺满整屏。
+                        // 之前写死 max-h-[76vh] + 固定 960 宽，大图几乎占满屏；现在长边 70vh、宽不超视口−96px。
+                        <img src={current.src} alt={current.title || ""} className="mx-auto max-h-[70vh] w-auto max-w-full rounded-md object-contain" />
                     ) : current.kind === "video" ? (
-                        <video src={current.src} controls autoPlay playsInline className="mx-auto max-h-[76vh] w-full rounded-md bg-black" />
+                        <video src={current.src} controls autoPlay playsInline className="mx-auto max-h-[70vh] w-auto max-w-full rounded-md bg-black object-contain" />
                     ) : (
-                        <audio src={current.src} controls autoPlay className="w-full" />
+                        <audio src={current.src} controls autoPlay className="w-full max-w-md" />
                     )}
                     {many ? (
                         <>
