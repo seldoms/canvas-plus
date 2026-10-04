@@ -26,6 +26,13 @@ export const QUALITY_PRESETS = {
     high: { preset: "slow", crf: 18 },
 };
 
+/** 数值归一：非有限值（含空串/null/NaN）返回 null，便于跨层（audio.js → delivery）对账。 */
+const num = (value) => {
+    if (value === null || value === undefined || value === "") return null;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+};
+
 /** 本机是否装有 ffmpeg（测试与非 Linux 环境用来决定是否跳过真机用例）。 */
 export function ffmpegAvailable(bin = "ffmpeg") {
     const result = spawnSync(bin, ["-version"], { stdio: "ignore" });
@@ -66,6 +73,66 @@ export function resolveMediaPath(config, ref) {
     if (text.startsWith("file://")) return fileURLToPath(text);
     if (/^https?:\/\//i.test(text)) throw new Error(`暂不支持远端 URL 片段（${text}），请先把片段落盘为 /api/artifacts 或本机路径`);
     return resolve(text);
+}
+
+/**
+ * 计算每个片段在成片时间轴上的绝对起点（毫秒）。
+ * cut 档无重叠；转场档每个片段起点前移 index×转场时长（与 buildConcatArgs 的 xfade offset 公式同源）。
+ * 供「按镜头时间轴混音」（路径 B）把镜头内的 Cue 偏移映射到成片时间轴。
+ */
+export function clipStartOffsets(plan) {
+    const clips = Array.isArray(plan?.clips) ? plan.clips : [];
+    const overlap = plan?.transition === "cut" ? 0 : num(plan?.transitionDurationSec) || 0;
+    const offsets = [];
+    let acc = 0;
+    clips.forEach((clip, index) => {
+        offsets.push(Math.max(0, Math.round((acc - index * overlap) * 1000)));
+        const durationSec = num(clip?.durationSec);
+        acc += durationSec !== null && durationSec > 0 ? durationSec : 0;
+    });
+    return offsets;
+}
+
+/**
+ * 归一外部音轨清单，产出「成片时间轴」上的绝对落点（毫秒）。
+ *
+ * 契约（喂给 buildConcatArgs / assembleEpisode）：
+ *   - `ref` 为空的条目**直接跳过**（镜头没音频 / TTS 产物未就绪 → 不进混音，绝不让合成失败）；
+ *   - 条目 `shotId` 能在片段清单里对上镜头时：`delayMs = 该镜头成片起点 + startSec×1000`
+ *     （`startSec` 是镜头内相对偏移，与 audio.js cuesFromShots 语义一致）；转场重叠已自动扣除；
+ *   - 对不上镜头时：用条目自带的绝对 `delayMs`；没有就用 `startSec×1000`；再没有就 0；
+ *   - 保留 `gainDb` 供 buildConcatArgs 施加音量。
+ */
+function normalizeAudioItems(audio, offsetByShot) {
+    const items = [];
+    for (const raw of Array.isArray(audio) ? audio : []) {
+        if (raw === null || raw === undefined) continue;
+        const source = typeof raw === "string" ? { ref: raw } : raw;
+        const ref = typeof source.ref === "string" ? source.ref.trim() : "";
+        if (!ref) continue;
+        const shotId = source.shotId === null || source.shotId === undefined ? null : String(source.shotId);
+        const withinSec = num(source.startSec);
+        const explicitMs = num(source.delayMs);
+        const shotStart = shotId !== null && offsetByShot.has(shotId) ? offsetByShot.get(shotId) : null;
+        let delayMs;
+        if (shotStart !== null) {
+            delayMs = shotStart + Math.max(0, Math.round((withinSec ?? 0) * 1000));
+        } else if (explicitMs !== null) {
+            delayMs = Math.max(0, Math.round(explicitMs));
+        } else {
+            delayMs = Math.max(0, Math.round((withinSec ?? 0) * 1000));
+        }
+        items.push({
+            ref,
+            cueId: source.cueId ?? null,
+            shotId: source.shotId ?? null,
+            type: source.type ?? null,
+            startSec: withinSec,
+            gainDb: num(source.gainDb),
+            delayMs,
+        });
+    }
+    return items;
 }
 
 /**
@@ -125,6 +192,15 @@ export function buildAssemblyPlan({
         if (duration >= shortest) throw new Error(`转场时长 ${duration}s 不小于最短片段 ${shortest}s，会拼不出成片`);
     }
 
+    // 外部音轨（TTS 对白等）按镜头时间轴落点：把镜头内偏移映射到成片时间轴（路径 B）。
+    const offsets = clipStartOffsets({ clips: ordered, transition, transitionDurationSec: duration });
+    const offsetByShot = new Map();
+    ordered.forEach((clip, index) => {
+        if (clip.shotId === null || clip.shotId === undefined) return;
+        const key = String(clip.shotId);
+        if (!offsetByShot.has(key)) offsetByShot.set(key, offsets[index]);
+    });
+
     return {
         version: 1,
         episodeId,
@@ -136,7 +212,7 @@ export function buildAssemblyPlan({
         fps: Number(fps) || 24,
         quality,
         clips: ordered,
-        audio: Array.isArray(audio) ? audio : [],
+        audio: normalizeAudioItems(audio, offsetByShot),
         subtitles: subtitles || null,
         subtitleStyle: subtitleStyle || null,
         includeClipAudio: includeClipAudio === true,
@@ -218,16 +294,25 @@ export function buildConcatArgs(plan, { inputPaths, audioPaths = [], outputPath 
     if (audioPaths.length) {
         const base = inputPaths.length;
         audioPaths.forEach((_, index) => {
+            const item = Array.isArray(plan.audio) ? plan.audio[index] : null;
             const label = `a${index}`;
-            parts.push(`[${base + index}:a]aresample=44100[${label}]`);
+            const chain = [];
+            const delayMs = num(item?.delayMs);
+            if (delayMs !== null && delayMs > 0) chain.push(`adelay=${Math.round(delayMs)}|${Math.round(delayMs)}`);
+            chain.push("aresample=44100");
+            const gainDb = num(item?.gainDb);
+            if (gainDb !== null && gainDb !== 0) chain.push(`volume=${gainDb}dB`);
+            parts.push(`[${base + index}:a]${chain.join(",")}[${label}]`);
             audioLabels.push(`[${label}]`);
         });
     }
     if (audioLabels.length === 1) {
-        parts.push(`${audioLabels[0]}anull[aout]`);
+        // apad：把音轨补静音到与视频等长，否则 -shortest 会把「音频比视频短」的成片截短。
+        parts.push(`${audioLabels[0]}apad[aout]`);
         maps.push("-map", "[aout]", "-shortest");
     } else if (audioLabels.length > 1) {
-        parts.push(`${audioLabels.join("")}amix=inputs=${audioLabels.length}:duration=longest:normalize=0[aout]`);
+        parts.push(`${audioLabels.join("")}amix=inputs=${audioLabels.length}:duration=longest:normalize=0[amixed]`);
+        parts.push("[amixed]apad[aout]");
         maps.push("-map", "[aout]", "-shortest");
     }
 

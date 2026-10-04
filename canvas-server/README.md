@@ -193,6 +193,13 @@ body：`{ template, family, shot, scene?, characters?, style?, slots?, overlays?
 
 阶段 id 固定为：`script`（小说→剧本）、`storyboard`（分镜拆解）、`design`（服化道）、`keyframe`（关键帧）、`assembly`（片段合成拼接）。
 
+**成片音轨按镜头时间轴混入（路径 B）**：分镜台词经 TTS（`audio_qwen3_tts`）出音后，**不改 H3 视频图**，
+而是在 `assembly` 阶段由 `src/delivery.js` 把已有 TTS 产物混进成片——`buildAssemblyPlan` 把每条音轨的
+`shotId + startSec`（镜头内相对偏移）换算成成片时间轴上的**绝对 `delayMs`**（转场档自动扣除重叠），
+`buildConcatArgs` 对每轨施加 `adelay=<ms>` 后再 `amix`，末尾 `apad` 把音轨补静音到与视频等长
+（否则 `-shortest` 会把「音轨比视频短」的成片截短）。**无 `ref` 的音轨（镜头没音频/产物未就绪）直接跳过，绝不让合成失败。**
+`clipStartOffsets(plan)` 是同一套时间轴公式的纯函数出口。
+
 **运行是异步的**：`POST .../run` **立刻返回 202**，返回的 `run` 里该阶段是 `running`，工作在后台跑。
 不要指望这个请求解析时阶段已完成 —— 一个 163 块 / 83 分钟的阶段用一个阻塞式 POST 扛，隧道、反向代理、
 浏览器都会在几分钟内掐断连接，前端 `await` 抛错后按钮复位、页面「毫无反应」，而后端仍在继续跑并消耗 LLM 额度。

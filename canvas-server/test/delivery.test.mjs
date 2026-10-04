@@ -10,6 +10,7 @@ import {
     buildAssemblyPlan,
     buildConcatArgs,
     buildCoverArgs,
+    clipStartOffsets,
     ffmpegAvailable,
     probeMedia,
     resolveMediaPath,
@@ -145,7 +146,7 @@ test("buildConcatArgs 外部音轨走 amix，字幕烧入接在最终视频标�
     const filter = args[args.indexOf("-filter_complex") + 1];
     assert.match(filter, /\[2:a\]aresample=44100\[a0\]/);
     assert.match(filter, /\[3:a\]aresample=44100\[a1\]/);
-    assert.match(filter, /\[a0\]\[a1\]amix=inputs=2:duration=longest:normalize=0\[aout\]/);
+    assert.match(filter, /\[a0\]\[a1\]amix=inputs=2:duration=longest:normalize=0\[amixed\];\[amixed\]apad\[aout\]/);
     assert.match(filter, /\[vcat\]subtitles=filename='\/x\/sub.srt'\[vsub\]/);
     assert.deepEqual(args.slice(args.indexOf("-map"), args.indexOf("-map") + 5), ["-map", "[vsub]", "-map", "[aout]", "-shortest"]);
     assert.ok(args.includes("aac"));
@@ -154,6 +155,104 @@ test("buildConcatArgs 外部音轨走 amix，字幕烧入接在最终视频标�
 test("buildConcatArgs 输入数与片段数不一致报错", () => {
     const plan = buildAssemblyPlan({ clips: [clip("a"), clip("b")], now: "t" });
     assert.throws(() => buildConcatArgs(plan, { inputPaths: ["/x/a.mp4"], outputPath: "/out/final.mp4" }), /不一致/);
+});
+
+// ---------- 路径 B：TTS 音轨按镜头时间轴混入成片 ----------
+
+const shotClip = (id, shotId, durationSec) => ({ id, shotId, artifactUrl: `/api/artifacts/job-${id}/${id}.mp4`, durationSec });
+
+test("clipStartOffsets：cut 按累计时长，转场扣重叠", () => {
+    const cut = clipStartOffsets({ clips: [{ durationSec: 2 }, { durationSec: 3 }, { durationSec: 4 }], transition: "cut" });
+    assert.deepEqual(cut, [0, 2000, 5000]);
+    const fade = clipStartOffsets({ clips: [{ durationSec: 2 }, { durationSec: 3 }, { durationSec: 4 }], transition: "fade", transitionDurationSec: 0.5 });
+    assert.deepEqual(fade, [0, 1500, 4000]);
+});
+
+test("buildAssemblyPlan 把音轨按镜头时间轴落到成片绝对延迟（cut）", () => {
+    const plan = buildAssemblyPlan({
+        clips: [shotClip("c1", "sh1", 2), shotClip("c2", "sh2", 3), shotClip("c3", "sh3", 4)],
+        transition: "cut",
+        audio: [
+            { ref: "/a/sh2.flac", shotId: "sh2", startSec: 0.5, cueId: "cue2" },
+            { ref: "/a/sh3.flac", shotId: "sh3" },
+        ],
+        now: "t",
+    });
+    assert.equal(plan.audio.length, 2);
+    assert.equal(plan.audio[0].ref, "/a/sh2.flac");
+    assert.equal(plan.audio[0].cueId, "cue2");
+    assert.equal(plan.audio[0].delayMs, 2500, "sh2 起点 2s + 镜头内 0.5s");
+    assert.equal(plan.audio[1].delayMs, 5000, "sh3 起点 5s");
+});
+
+test("buildAssemblyPlan 转场档音轨延迟扣掉转场重叠", () => {
+    const plan = buildAssemblyPlan({
+        clips: [shotClip("c1", "sh1", 2), shotClip("c2", "sh2", 3)],
+        transition: "fade",
+        transitionDurationSec: 0.5,
+        audio: [{ ref: "/a/sh2.flac", shotId: "sh2", startSec: 0.2 }],
+        now: "t",
+    });
+    assert.equal(plan.audio[0].delayMs, 1700, "sh2 起点 = 2 - 1×0.5，再加 0.2s");
+});
+
+test("buildAssemblyPlan 无音频/空 ref 的镜头不进混音，且不因此报错", () => {
+    const plan = buildAssemblyPlan({
+        clips: [shotClip("c1", "sh1", 2), shotClip("c2", "sh2", 2), shotClip("c3", "sh3", 2)],
+        transition: "cut",
+        audio: [
+            { ref: "", shotId: "sh2" },
+            { shotId: "sh3" },
+            "/a/sh1.flac",
+        ],
+        now: "t",
+    });
+    assert.deepEqual(plan.audio.map((item) => item.ref), ["/a/sh1.flac"]);
+    assert.equal(plan.audio[0].delayMs, 0);
+});
+
+test("buildConcatArgs 每轨按 delayMs 施加 adelay，混音轨补静音到视频等长", () => {
+    const plan = buildAssemblyPlan({
+        clips: [shotClip("c1", "sh1", 2), shotClip("c2", "sh2", 3)],
+        transition: "cut",
+        audio: [
+            { ref: "/a/sh1.flac", shotId: "sh1" },
+            { ref: "/a/sh2.flac", shotId: "sh2", startSec: 0.25, gainDb: -3 },
+        ],
+        now: "t",
+    });
+    const args = buildConcatArgs(plan, { inputPaths: ["/x/c1.mp4", "/x/c2.mp4"], audioPaths: ["/a/sh1.flac", "/a/sh2.flac"], outputPath: "/out/final.mp4" });
+    const filter = args[args.indexOf("-filter_complex") + 1];
+    assert.match(filter, /\[2:a\]aresample=44100\[a0\]/, "延迟 0 不加 adelay");
+    assert.match(filter, /\[3:a\]adelay=2250\|2250,aresample=44100,volume=-3dB\[a1\]/);
+    assert.match(filter, /\[a0\]\[a1\]amix=inputs=2:duration=longest:normalize=0\[amixed\];\[amixed\]apad\[aout\]/);
+    assert.deepEqual(args.slice(args.indexOf("-map"), args.indexOf("-map") + 5), ["-map", "[vcat]", "-map", "[aout]", "-shortest"]);
+});
+
+test("真机：TTS 音轨按镜头时间轴混入，短音轨不截短成片（无音频镜头不失败）", { skip: !hasFfmpeg && "本机无 ffmpeg/ffprobe" }, async () => {
+    const dir = makeScratch("delivery-shot-audio-");
+    const a = makeClip(join(dir, "sh1.mp4"), { color: "red", duration: 1 });
+    const b = makeClip(join(dir, "sh2.mp4"), { color: "blue", duration: 2 });
+    const vo = join(dir, "sh1.flac");
+    const voResult = spawnSync("ffmpeg", ["-y", "-f", "lavfi", "-i", "sine=frequency=330:duration=0.6", vo], { encoding: "utf8" });
+    assert.equal(voResult.status, 0, voResult.stderr);
+
+    const result = await assembleEpisode({
+        config: { dataDir: dir, pipeline: config.pipeline },
+        clips: [
+            { id: "c1", shotId: "sh1", artifactUrl: a, durationSec: 1 },
+            { id: "c2", shotId: "sh2", artifactUrl: b, durationSec: 2 },
+        ],
+        transition: "cut",
+        options: { id: "shot-audio-delivery", audio: [{ ref: vo, shotId: "sh1", startSec: 0.2 }] },
+    });
+
+    assert.equal(result.status, "done");
+    assert.equal(result.info.hasAudio, true, "成片应带混入的对白音轨");
+    assert.ok(result.info.durationSec > 2.8, `短对白不得截短成片，实际 ${result.info.durationSec}`);
+    const manifest = JSON.parse(readFileSync(result.manifestPath, "utf8"));
+    assert.equal(manifest.plan.audio[0].delayMs, 200, "延迟应为镜头1起点 0 + 0.2s");
+    assert.ok(manifest.commands[0].includes("adelay=200|200"), "真实 ffmpeg 命令应含 adelay");
 });
 
 test("buildCoverArgs 抽单帧", () => {
