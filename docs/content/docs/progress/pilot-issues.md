@@ -893,3 +893,25 @@ H3 走 I2VA **只是忠实保留关键帧**，它是无辜的。
 
 **新接口**：`GET /api/tts/voices`（音色榜，服务端注册表，**前端禁硬编码**）、
 `POST /api/tts/preview`（试听：合成一句样句返回音频 artifact URL，失败给可读错误）。
+
+### 2026-10-04 【高·待修】浏览器本地图库大面积损坏：22 个文件里 19 个是 70 字节空壳
+
+**现象**：生图工作台点开记录**看不到生成结果**（缩略图渲染成 1×1、预览点不开）。
+
+**一线证据（CDP 直读 IndexedDB `infinite-canvas` 库）**：
+```
+image_files 共 22 条：
+  正常 3 条：1344x768/944168B、768x1344/1355095B、768x1344/1275451B   ← 真图
+  损坏 19 条：**清一色 70 字节**，createImageBitmap 直接 decode-failed
+记录 log 引用的 storageKey 在 image_files 里**存在**，但那条 blob 只有 70B
+```
+**70 字节 ≈ 一张 1×1 空白 PNG** → **有代码路径把空壳写进了原图槽位**（疑似覆盖，**可能是数据丢失**）。
+另注：生成记录里图片的 `dataUrl` 为空（只剩 `storageKey`），
+而展示是 `<Image src={previewUrlFor(storageKey) || dataUrl} preview={{src: dataUrl}}>` ——
+缩略图走 `previewUrlFor`（同步缓存，未命中即 undefined），大图走 `dataUrl`（空）→ **两头都拿不到图**。
+
+**要查**：① 谁把 70B 空壳写进 `image_files`（`image-storage.ts` 的 `uploadImage`/`setImageBlob`/
+`queueImagePreview`/canvas `toBlob` 失败路径值得先看）② 是否**覆盖**了原图（数据丢失？）
+③ 已损坏的能否从服务端 artifact 重新取回 ④ 展示侧对"取不到图"要有**明确降级**，不能渲染成空白 1×1。
+
+**影响**：生图工作台「点开记录看生成结果」这条需求**当前不可用**（也连带影响预览方向键的验收）。
