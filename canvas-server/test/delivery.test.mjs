@@ -395,8 +395,10 @@ test("成片片段原声：不显式指定时自动判定（H3 片段自带音�
     assert.equal(shouldIncludeClipAudio({ probes: [{ hasAudio: true }, { hasAudio: false }] }), false);
     // ffprobe 失败（null）→ 不开，宁可哑也不炸
     assert.equal(shouldIncludeClipAudio({ probes: [{ hasAudio: true }, null] }), false);
-    // 传了独立音轨（TTS 配音）→ 不保留片段原声，避免双重人声
+    // 传了独立音轨（TTS 配音）→ 不保留片段原声，避免双重人声（`amix normalize=0` 是原始求和）
     assert.equal(shouldIncludeClipAudio({ audioCount: 2, probes: [{ hasAudio: true }] }), false);
+    // ⚠️ 硬规则优先：**显式 true 也不能绕过** —— 否则双重人声
+    assert.equal(shouldIncludeClipAudio({ explicit: true, audioCount: 1 }), false, "有独立音轨时显式 true 也不保留片段原声");
     // 空输入 → 不开
     assert.equal(shouldIncludeClipAudio({}), false);
 });

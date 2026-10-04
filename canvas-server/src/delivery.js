@@ -201,6 +201,22 @@ export function buildAssemblyPlan({
         if (!offsetByShot.has(key)) offsetByShot.set(key, offsets[index]);
     });
 
+    // ── 硬规则：一个镜头只能有一个「人声事实源」（会诊结论）──────────────────────────────
+    // 片段原声（H3 native 自合成台词）与独立对白音轨（TTS）若同时进混音，`amix normalize=0` 是
+    // **原始求和** → 两把人声叠一起（音效也翻倍）。
+    // 优先级：**独立对白轨 > 片段内嵌对白**（`development-plan.md` 已定「成片以独立对白轨为事实源」）。
+    // 这里做防御性收敛（记 warning 而不抛错，避免打挂既有调用方），不再依赖两个调用方各自自觉。
+    const normalizedAudio = normalizeAudioItems(audio, offsetByShot);
+    let clipAudio = includeClipAudio === true;
+    const warnings = [];
+    if (clipAudio && normalizedAudio.length > 0) {
+        clipAudio = false;
+        warnings.push({
+            code: "clip_audio_overridden",
+            message: `已提供 ${normalizedAudio.length} 条独立对白音轨，片段原声不再混入（避免双重人声）`,
+        });
+    }
+
     return {
         version: 1,
         episodeId,
@@ -212,10 +228,11 @@ export function buildAssemblyPlan({
         fps: Number(fps) || 24,
         quality,
         clips: ordered,
-        audio: normalizeAudioItems(audio, offsetByShot),
+        audio: normalizedAudio,
         subtitles: subtitles || null,
         subtitleStyle: subtitleStyle || null,
-        includeClipAudio: includeClipAudio === true,
+        includeClipAudio: clipAudio,
+        warnings,
         cover: cover !== false,
     };
 }
@@ -343,8 +360,10 @@ export function buildCoverArgs({ inputPath, outputPath, atSec = 0 } = {}) {
  * @param {{ explicit?: unknown, audioCount?: number, probes?: Array<{hasAudio?: boolean}|null> }} input
  */
 export function shouldIncludeClipAudio({ explicit, audioCount = 0, probes = [] } = {}) {
-    if (typeof explicit === "boolean") return explicit;
+    // 硬规则优先：只要提供了独立对白音轨，片段原声一律不保留（会诊结论：一个镜头一个人声事实源，
+    // 两者同时进 `amix normalize=0` 会双重人声）。**这一条不能被显式参数绕过**。
     if (audioCount > 0) return false;
+    if (typeof explicit === "boolean") return explicit;
     return probes.length > 0 && probes.every((media) => media?.hasAudio === true);
 }
 
