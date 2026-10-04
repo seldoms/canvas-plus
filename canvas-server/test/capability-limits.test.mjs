@@ -267,12 +267,34 @@ test("时长自适应：LENGTH 不在 17k+5 网格 → 向上吸附（100 → 10
     }
 });
 
-test("时长自适应：超出模型档位上限 → 吸附到最大合法档 362 帧并留痕（给可读结果）", () => {
-    const result = adaptDurationParams("video_h3_i2v", { LENGTH: 500 });
+test("时长自适应：超出训练区间不截断 —— LENGTH=480 按网格吸附到 481，绝不静默压成 362 帧", () => {
+    const result = adaptDurationParams("video_h3_i2v", { LENGTH: 480 });
     assert.equal(result.ok, true);
-    assert.equal(result.params.LENGTH, 362);
-    assert.equal(result.durationAdjust.to, 362);
-    assert.match(result.durationAdjust.reason, /365|362|上限/);
+    // 旧实现把 480 帧静默压成 362 帧（15.08s），截短后 H3 prompt 的「总时长=目标时长」必然失配。
+    assert.notEqual(result.params.LENGTH, 362, "绝不静默截断到 362 帧（旧 bug）");
+    assert.equal(result.params.LENGTH, 481, "480 不在 17k+5 网格 → 向上吸附到 481（节点自己也会吸附）");
+    assert.equal(result.durationAdjust.from, 480);
+    assert.equal(result.durationAdjust.to, 481);
+    assert.equal(result.durationAdjust.frames, 481);
+    assert.deepEqual(result.durationAdjust.range, [124, 362]);
+    assert.match(result.durationAdjust.reason, /训练区间/);
+    assert.match(result.durationAdjust.reason, /质量/);
+
+    // 已在网格上但超训练区间 → **参数原样返回**，只在 durationAdjust 里留痕（不改参数）。
+    const onGrid = adaptDurationParams("video_h3_i2v", { LENGTH: 481 });
+    assert.equal(onGrid.params.LENGTH, 481, "481 在网格上 → 原样返回");
+    assert.equal(onGrid.durationAdjust.from, 481);
+    assert.equal(onGrid.durationAdjust.to, 481);
+    assert.deepEqual(onGrid.durationAdjust.range, [124, 362]);
+    assert.match(onGrid.durationAdjust.reason, /训练区间/);
+    assert.match(onGrid.durationAdjust.reason, /可能影响质量/);
+
+    // 低于训练区间（线上实测 LENGTH=90 / 3.750s 有 11 条 done）同样不截断、只留痕。
+    const low = adaptDurationParams("video_h3_i2v", { LENGTH: 90 });
+    assert.equal(low.params.LENGTH, 90, "90 帧在网格上 → 原样返回，不因低于训练区间被改");
+    assert.equal(low.durationAdjust.frames, 90);
+    assert.deepEqual(low.durationAdjust.range, [124, 362]);
+    assert.match(low.durationAdjust.reason, /训练区间/);
 });
 
 test("时长自适应：无档位模型 / 缺 LENGTH → 原样放行", () => {

@@ -772,7 +772,7 @@
       "prompt": {
         "input_language": "zh",
         "translate_to": "en",
-        "translate_note": "中文提示词即可（官方云端手册，上限 7000 字符）；官方改写规范要求改写正文用英文、字段名固定英文，台词/歌词/画面文字保留原语言",
+        "translate_note": "云端手册接受中文输入（上限 7000 字符），但官方改写规范要求正文英文（字段名/结构已英文）；台词/歌词/画面文字保留原语言逐字不翻译",
         "negative": "none",
         "negative_default": null,
         "negative_note": "没有负面字段（官方手册「负向词：无」）；负向约束并入正向句写避免/不要；不要 BGM 写 non_diegetic_music: N/A",

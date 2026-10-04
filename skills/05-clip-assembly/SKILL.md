@@ -87,7 +87,7 @@ description: |
 方法论接管自 `06-*`（`06-core-format.md` §三.6、§6.2-6.4 等）。本阶段**不写视频提示词正文**（正文由编排器从分镜 `prompt` + `action` 拼成，见「三」），只负责把每个镜头规划成「一段」并定好时长与衔接。
 
 1. **一段只解决一个情绪转折**：一个片段对应一个镜头一个转折，不要把多个场景或多次情绪反转塞进同一段；分镜已经切好的镜头不要再合并。
-2. **时长落在合法帧网格**：本项目生视频的 `LENGTH` 是 **17n+5 帧 @ 24fps**（`canvas-server/src/pipeline.js` 的 `frameCountFor` 吸附），即 `5s≈124 帧`、`2.3s≈56 帧`、`10s≈243 帧`。`durationSec` 应取能吸附到合法帧数的值；**不要照搬云端的 15 秒单段上限或 4~15 秒区间**，单段时长以分镜的 `durationSec` 为准。
+2. **时长落在合法帧网格**：本项目生视频的 `LENGTH` 是 **17k+5 帧 @ 24fps**（`canvas-server/src/durations.js` 的 `frameCountForDuration` 向上吸附），即 `5s≈124 帧`、`2.3s≈56 帧`、`10s≈243 帧`。`durationSec` 应取能吸附到合法帧数的值；模型接受任意 `17k+5` 帧（5/10/15s 只是**推荐档、非硬约束**），**不要照搬云端的 15 秒单段上限或 4~15 秒区间**，单段时长以分镜的 `durationSec` 为准。
 3. **慢必须有功能**：分镜给出的长镜头 / 停顿要有情绪、悬念、关系、信息或视觉记忆点功能；无功能的空转不要在 `durationSec` 上放大。
 4. **不重新分合镜头**：镜头数、每镜的动作与长度以分镜、关键帧为准；本阶段只定时长、顺序与转场。
 
@@ -156,7 +156,7 @@ description: |
 
 - 编排器（`canvas-server/src/pipeline.js` 的 `readPromptTemplate` → `extractSection`）只把本文的 **`## 提示词模板`** 一节发给模型；其余章节是给人 / Agent 看的，不会进模型上下文。因此新方法论必须写进「提示词模板」（用 `###` 子标题，`^##\s` 不会在其中截断）。
 - **视频提示词不由本阶段生成**：`generativePlan` 用 `[storyboard.shots[].prompt, .action]` 拼 `PROMPT`，本阶段产出的 `clips[].*` 里**没有**提示词字段。所以「视频提示词 7 段结构 / 9 步转换 / 负向约束」等写法要落在**分镜阶段（02）的 `shots[].prompt`**；本阶段只影响 `durationSec` / `assembly.order` / `assembly.transition`，不重复写视频提示词（这也是本技能的 `## 提示词模板` 第 3 条）。
-- **时长网格**：`LENGTH = frameCountFor(durationSec, config.pipeline.videoFps)`，17n+5 帧网格，`videoFps` 默认 24；写 15 秒会渲染出错误帧数。宽高须为 32 的倍数（竖屏常用 `480×864` / `768×1344`），由 `config.pipeline.videoWidth/videoHeight` 决定。
+- **时长网格**：`LENGTH` 在 `canvas-server/src/durations.js` 按 `17k+5` 帧网格 @24fps 向上吸附（`videoFps` 默认 24）；推荐档 5/10/15s 分别对应 124/243/362 帧，均为合法网格点（15 秒不会渲染出错误帧数）；非网格帧数会被向上吸附。宽高须为 32 的倍数（竖屏常用 `480×864` / `768×1344`），由 `config.pipeline.videoWidth/videoHeight` 决定。
 - **本机是单卡串行队列**，一次只能跑一个生成任务；不要写云端的「单批最多 2 个视频」这类配额上限。
 - **拼接执行体已存在**：`canvas-server/src/delivery.js`（`planAssembly` → ffmpeg concat / xfade）只认契约里的 `cut` / `fade` / `dissolve` / `slide`，非 `cut` 转场要求每段都有有效 `durationSec`。
 - **声音不在契约内**：没有音频字段，07 的 BGM Cue Sheet 只能作为后续独立产物 / 独立阶段落地，不得塞进 `clips` / `assembly`（塞进去就破坏机器契约）。

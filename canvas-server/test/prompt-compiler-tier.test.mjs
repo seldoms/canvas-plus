@@ -6,6 +6,7 @@ import {
     compileGenericPrompt,
     compilePromptForTemplate,
     compilePromptForTemplateAsync,
+    stripUntranslatedMarker,
 } from "../src/prompt-compiler.js";
 import { promptTierPolicy, ruleKeyForTemplate } from "../src/model-rules.js";
 
@@ -17,7 +18,8 @@ import { promptTierPolicy, ruleKeyForTemplate } from "../src/model-rules.js";
  *   ② 改写器拿不到一级（回显假 llmCall：一级不在它收到/返回的内容里）；
  *   ③ 二级出现相反画幅 → 一级保留、二级被纠正 → 产物无相反画幅断言（真实故障句）；
  *   ④ 合法句式不误伤（horizontal pan / a horizontal band of sky / a portrait of a man）。
- * 另加兼容红线：无官方改写器模型产物与既有逐字一致（generic 兜底 / H3 结构不动）。
+ * 另加兼容红线：无官方改写器模型产物与既有逐字一致（generic 兜底）；H3 字段结构不动，
+ * 但**正文按模型要求英文化**（专用整段入口，见 prompt-compiler-h3-rewrite.test.mjs）。
  */
 
 const STYLE = {
@@ -179,12 +181,16 @@ test("兼容红线：无官方改写器模型走通用兜底，产物逐字与 c
     }
 });
 
-test("兼容红线：H3 结构不动（同步/异步产物都从对齐指令行起、结构一致）", async () => {
+test("兼容红线：H3 结构不动、正文按模型要求英文化（同步稿带 [untranslated]，无效改写稿回落同步稿）", async () => {
     const input = { template: "video_h3_i2v", family: "video", shot: SHOT, scene: SCENE, characters: [], style: {}, slots: { images: [{ url: "/a/f.png", kind: "first_frame" }] }, durationSec: 5 };
     const sync = compilePromptForTemplate(input);
     assert.ok(sync.startsWith("For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced."));
+    // H3 规则表 translate_to="en"：没有改写稿时必须显式标记未英文化，流水线据此打开英文化闸门。
+    assert.match(sync, /\[untranslated: MiniMax H3/);
+    assert.ok(stripUntranslatedMarker(sync).includes("integrated_multimodal_description:"), "标记只加末尾，字段结构照旧");
+    // 拿不到可用改写稿（这里是无标签的垃圾稿）→ 异步出口逐字回落同步稿。
     const asyncOut = await compilePromptForTemplateAsync({ ...input, llmCall: async () => "ignored" });
-    assert.equal(asyncOut, sync, "H3 无官方改写器 → 异步出口结构照旧");
+    assert.equal(asyncOut, sync, "H3 无有效改写稿 → 异步出口回落同步稿（带标记）");
 });
 
 /* ————————————————————— 规则表口径 ————————————————————— */
@@ -201,7 +207,11 @@ test("规则表口径：prompt_tier_policy 与编译器分级范围一致", () =
     for (const template of ["img_qwen21_t2i", "img_qwen21_edit", "img_krea2_artistic", "img_flux_artistic"]) {
         assert.ok(policy.rewritable_models.includes(ruleKeyForTemplate(template)), `${template} 应在分级范围`);
     }
-    for (const template of ["video_h3_i2v", "img_zimage_artistic", "img_boogu_outfit_edit", "scail2_action_transfer", "video_wan_animate", "upscale_4x"]) {
+    // H3 不进分级表：它是**整段正文**改写（专用入口，锚点全由编译器拼），不是「一级直拼 + 二级改写」。
+    // 它确实消费 rewrite —— 由 prompt-compiler-h3-rewrite.test.mjs 的行为用例覆盖，不靠这份表登记。
+    assert.equal(ruleKeyForTemplate("video_h3_i2v"), "minimax_h3");
+    assert.ok(!policy.rewritable_models.includes("minimax_h3"), "H3 走专用整段改写入口，不进分级表");
+    for (const template of ["img_zimage_artistic", "img_boogu_outfit_edit", "scail2_action_transfer", "video_wan_animate", "upscale_4x"]) {
         assert.ok(!policy.rewritable_models.includes(ruleKeyForTemplate(template)), `${template} 不应在分级范围`);
     }
 });

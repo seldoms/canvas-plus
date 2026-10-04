@@ -1564,3 +1564,44 @@ test("首句锚点只由一层负责：模型已写锚点时最终 PROMPT 不重
     assert.equal(prompt, body, "锚点已在首句时不再前置，也不追加胶片层");
     assert.equal(prompt.split(ANIM_PROJECT.styleAnchor).length - 1, 1, "锚点只能出现一次（两头写已消除）");
 });
+
+// ——— 分镜根因修复：推荐档 / 训练区间 / 单集目标时长注入 buildContext.options ———
+
+const DURATION_PROJECT = { id: "prj_dur_inject", styleAnchor: "写实真人", plan: { episodeDurationSec: 30, episodeCount: 2 } };
+
+/** 把 04-keyframes 技能模板改成引用四个时长占位符，用于验证 buildContext 的注入链路。 */
+function useDurationInjectionSkill(env) {
+    writeFileSync(
+        join(env.skillsDir, "04-keyframes", "SKILL.md"),
+        `---\nname: keyframes\ndescription: |\n  测试：时长注入\n---\n\n# keyframes\n\n## 提示词模板\n\n你是关键帧提示词工程师。单镜推荐档：{{options.videoDurationTiers}}\n单镜档位元数据：{{options.videoDurationMeta}}\n单集目标：{{options.episodeDurationSec}} 秒 / {{options.episodeCount}} 集\n分镜：\n{{storyboard}}\n`,
+    );
+}
+
+test("时长注入：buildContext 把推荐档 / 训练区间 / 单集目标时长注入 options，技能占位符被真替换", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    env.config.pipeline.videoTemplate = "video_h3_i2v";
+    useDurationInjectionSkill(env);
+    const { llm } = await toProjectKeyframe(env, DURATION_PROJECT);
+
+    const call = llm.calls.find((entry) => entry.messages.at(-1).content.includes("关键帧提示词工程师"));
+    assert.ok(call, "关键帧阶段应调用过 LLM");
+    const sent = call.messages.at(-1).content;
+    // ① 四个注入键都被真替换，字面占位符不落给模型（旧代码只注 styleAnchor/plan，这四个会原样漏出）。
+    assert.ok(!sent.includes("{{options.videoDurationTiers}}"), "推荐档占位符必须被替换");
+    assert.ok(!sent.includes("{{options.videoDurationMeta}}"), "档位元数据占位符必须被替换");
+    assert.ok(!sent.includes("{{options.episodeDurationSec}}"), "单集时长占位符必须被替换");
+    assert.ok(!sent.includes("{{options.episodeCount}}"), "集数占位符必须被替换");
+    // ② 值是事实源：推荐档 [5,10,15] + 训练区间 124–362 帧（含推荐档语义说明）。
+    assert.match(sent, /\[\s*5,\s*10,\s*15\s*\]/);
+    assert.match(sent, /"trainedFrameRange":\s*\[\s*124,\s*362\s*\]/);
+    assert.match(sent, /推荐档/);
+    assert.match(sent, /单集目标：30 秒 \/ 2 集/);
+
+    // ③ 未登记模板 → 注入 null（不臆造档位），元数据 note 标「待查证」。
+    env.config.pipeline.videoTemplate = "video_some_new_model";
+    const unknown = await toProjectKeyframe(env, DURATION_PROJECT);
+    const unknownSent = unknown.llm.calls.find((entry) => entry.messages.at(-1).content.includes("关键帧提示词工程师")).messages.at(-1).content;
+    assert.match(unknownSent, /单镜推荐档：null/);
+    assert.match(unknownSent, /待查证/);
+});

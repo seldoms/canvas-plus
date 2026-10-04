@@ -10,7 +10,8 @@ import { createPipeline } from "../src/pipeline.js";
 /**
  * 流水线「语言适配」接线回归（离线、假 llmCall，不真跑 DeepSeek / 模型）：
  *   ① 关键帧（image，Qwen-Image 2.1 仅英文有官方依据）注入可用 llmCall → 入队前 precompilePrompts
- *      英文化成功 → job.params.PROMPT 无 [untranslated]、含改写正文；片段（video / H3）结构照旧；
+ *      英文化成功 → job.params.PROMPT 无 [untranslated]、含改写正文；
+ *      片段（video / H3）同样按模型要求英文化（专用整段入口，台词/画面文字逐字锁）；失败只降级；
  *   ② llmCall 抛错 → 只降级不阻塞：同步结构照旧产出、PROMPT 不含排查标记、item.warning 记录，
  *      绝不假装已英文化，也绝不因 LLM 失败而放弃入队。
  * 用真实 workflows 目录（默认 imageTemplate=img_qwen21_t2i → 需锁角色时换 img_qwen21_edit；videoTemplate=video_h3_i2v）。
@@ -191,6 +192,20 @@ async function runToKeyframe(t, llmCall, { ratio = "" } = {}) {
     return { run, jobs, pipeline, startJob: jobs.get(`${run.id}-sh1-start`) };
 }
 
+/** 再跑到「片段入队」：关键帧产物就绪后推进 assembly 阶段（视频阶段的语言适配出口）。 */
+async function runToAssembly(t, llmCall, options = {}) {
+    const ctx = await runToKeyframe(t, llmCall, options);
+    const { run, jobs, pipeline } = ctx;
+    const start = jobs.get(`${run.id}-sh1-start`);
+    jobs.finish(start.id, "done", { outputs: [{ url: "/api/artifacts/start.png", type: "image" }] });
+    const end = jobs.get(`${run.id}-sh1-end`);
+    assert.ok(end, "start 完成后才入队 end 帧");
+    jobs.finish(end.id, "done", { outputs: [{ url: "/api/artifacts/end.png", type: "image" }] });
+    await pipeline.runStage(run.id, "assembly");
+    const clip = pipeline.get(run.id).stages.assembly.output.clips.find((entry) => entry.id === "sh1-clip");
+    return { ...ctx, clip };
+}
+
 test("语言适配生效：注入可用 llmCall → 关键帧 PROMPT 英文化、无 [untranslated]、不阻塞入队", async (t) => {
     const REWRITE = "A cinematic wide shot of Lin Wan in a cream jacket stepping out of the platform shadows onto a night bus, realistic lighting.";
     let calls = 0;
@@ -268,4 +283,43 @@ test("显式重跑重新编译并保留旧 Job 参数快照", async (t) => {
     assert.notEqual(retryJob.params.PROMPT, rewrites.at(-1), "产物不再等于改写稿：锚点已锁进一级");
     assert.equal(jobs.get(startJob.id).params.PROMPT, initialPrompt, "旧 Job 参数不可变");
     assert.ok(pipeline.get(run.id).stages.keyframe.output.frames.find((frame) => frame.id === "sh1-start").promptCompilation);
+});
+
+/* ————————————— 视频阶段（H3）语言适配：成功 / 失败两条链路 ————————————— */
+
+const H3_VISUAL_EN = "A cinematic wide shot of Lin Wan stepping out of the platform shadows onto a night bus.";
+const H3_DIALOGUE = "林晚 (S1) says: <d>[English] 姑娘，这么晚，去哪儿？</d>";
+const H3_OVERLAY = 'On-screen text kept verbatim: A screen (前挡风玻璃上方) reading "末班车".';
+
+function h3RewriteText({ visual = H3_VISUAL_EN, dialogue = H3_DIALOGUE } = {}) {
+    return ["【画面描述事实】", visual, `ANCHOR: ${dialogue}`, `ANCHOR: ${H3_OVERLAY}`, "", "【环境声与动作声】", "The bus engine idles.", "", "【配乐】", "N/A"].join("\n");
+}
+
+test("视频阶段语言适配成功：H3 正文英文、台词/画面文字逐字保留、无 [untranslated]、不阻塞入队", async (t) => {
+    const { clip, jobs } = await runToAssembly(t, async () => h3RewriteText());
+    assert.ok(clip && clip.jobId, "关键帧就绪 → 片段入队");
+    const job = jobs.get(clip.jobId);
+    const prompt = job.params.PROMPT;
+    assert.equal(typeof prompt, "string");
+    assert.ok(!prompt.includes("[untranslated"), "英文化成功后不得带未升级标记");
+    assert.ok(prompt.includes(H3_VISUAL_EN), "PROMPT 应包含改写器产出的英文正文");
+    assert.ok(prompt.includes("<d>[English] 姑娘，这么晚，去哪儿？</d>"), "台词逐字保留");
+    assert.match(prompt, /reading "末班车"/, "画面文字逐字保留");
+    assert.equal((prompt.match(/<d>\[English\]/g) || []).length, 1, "台词不得重复出现");
+    assert.ok(!/未英文化/.test(String(job.meta?.promptWarning || "")), "成功路径不该带未英文化 warning");
+});
+
+test("视频阶段语言适配失败：篡改台词 → 回落同步稿、PROMPT 无标记、warning 同时留条目与 job meta", async (t) => {
+    const tampered = h3RewriteText({ dialogue: "林晚 (S1) says: <d>[English] Where are you going?</d>" });
+    const { clip, jobs, pipeline, run } = await runToAssembly(t, async () => tampered);
+    assert.ok(clip && clip.jobId, "降级只回落，不阻塞入队");
+    const job = jobs.get(clip.jobId);
+    const prompt = job.params.PROMPT;
+    assert.ok(!prompt.includes("[untranslated"), "排查标记不得进入实际 PROMPT");
+    assert.ok(!prompt.includes("Where are you going?"), "被翻译的台词绝不能进 PROMPT");
+    assert.ok(prompt.includes("<d>[English] 姑娘，这么晚，去哪儿？</d>"), "回落到同步稿的逐字台词");
+    assert.match(prompt, /reading "末班车"/);
+    assert.match(String(job.meta?.promptWarning || ""), /提示词改写失败/, "job meta 要能看到失败原因");
+    const item = pipeline.get(run.id).stages.assembly.output.clips.find((entry) => entry.id === "sh1-clip");
+    assert.match(String(item.warning || ""), /提示词改写失败/, "条目上也要留下失败原因");
 });

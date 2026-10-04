@@ -88,13 +88,13 @@ test("D1 isDurationAllowed：所选时长必须属于档位集合", () => {
     assert.equal(isDurationAllowed("video_wan_animate", 5), false);
 });
 
-test("D1 skeletonAlignment：Σ段时长≠骨架时显式报出缺多少 / 超多少 / 不在档位", () => {
+test("D1 skeletonAlignment：Σ段时长≠骨架（硬约束）时显式报出缺多少 / 超多少；不在档位只是软提示", () => {
     const short = skeletonAlignment({ skeletonSeconds: 15, segments: [{ durationSec: 5 }, { durationSec: 5 }, { durationSec: 2 }], tiers: [5, 10, 15] });
     assert.equal(short.ok, false);
     assert.equal(short.totalSeconds, 12);
     assert.equal(short.missingSeconds, 3);
     assert.match(short.message, /还缺 3s/);
-    assert.deepEqual(short.invalidDurations, [2], "2 不在档位里，要报出来");
+    assert.deepEqual(short.invalidDurations, [2], "2 不在推荐档里，要报出来");
 
     const exact = skeletonAlignment({ skeletonSeconds: 15, segments: [{ durationSec: 5 }, { durationSec: 10 }], tiers: [5, 10, 15] });
     assert.equal(exact.ok, true);
@@ -108,6 +108,55 @@ test("D1 skeletonAlignment：Σ段时长≠骨架时显式报出缺多少 / 超�
     const missingSkeleton = skeletonAlignment({ skeletonSeconds: 0, segments: [{ durationSec: 5 }] });
     assert.equal(missingSkeleton.ok, false);
     assert.match(missingSkeleton.message, /未取到骨架时长/);
+});
+
+test("D1 skeletonAlignment 硬软分离：Σ 对齐 → ok=true，档位外 / 超训练区间只作软提示", () => {
+    // Σ = 3+2 = 5s 与骨架完全对齐；但两段都不在推荐档 [5,10,15]，且 2s/3s 都在训练区间 124–362 帧外。
+    // 硬约束（Σ == 骨架）满足 → ok=true；软提示照旧出现在返回结构（invalidDurations / outsideTrainedRange）与 message 里。
+    const soft = skeletonAlignment({ skeletonSeconds: 5, segments: [{ durationSec: 3 }, { durationSec: 2 }], tiers: [5, 10, 15] });
+    assert.equal(soft.ok, true, "「不在推荐档 / 超训练区间」是软提示，不得让 ok=false");
+    assert.equal(soft.totalSeconds, 5);
+    assert.equal(soft.missingSeconds, 0);
+    assert.deepEqual(soft.invalidDurations, [3, 2], "不在推荐档仍要报出来（软提示）");
+    assert.deepEqual(soft.trainedFrameRange, [124, 362]);
+    assert.deepEqual(
+        soft.outsideTrainedRange,
+        [{ durationSec: 3, frames: 73 }, { durationSec: 2, frames: 56 }],
+        "超训练区间仍要报出来（软提示）",
+    );
+    assert.match(soft.message, /不在推荐档/);
+    assert.match(soft.message, /推荐档非硬约束/);
+    assert.match(soft.message, /训练区间/);
+
+    // Σ 不齐（硬约束不满足）→ ok=false，哪怕所有段都在推荐档、都在训练区间内。
+    const hard = skeletonAlignment({ skeletonSeconds: 15, segments: [{ durationSec: 5 }, { durationSec: 5 }], tiers: [5, 10, 15] });
+    assert.equal(hard.ok, false, "Σ=10 ≠ 骨架 15 → 硬约束不满足，必须 ok=false");
+    assert.deepEqual(hard.invalidDurations, [], "两段都在推荐档内");
+    assert.deepEqual(hard.outsideTrainedRange, [], "5s 映射 124 帧，在训练区间内");
+    assert.match(hard.message, /还缺 5s/);
+});
+
+test("D1 档位元数据：durations 语义改成推荐档 + 训练区间 124–362 帧（非硬约束）", () => {
+    const meta = durationMetaForTemplate("video_h3_i2v");
+    assert.deepEqual(meta.durations, [5, 10, 15], "推荐档集合本身不变");
+    assert.equal(meta.recommended, true, "durations 语义应标为推荐档");
+    assert.deepEqual(meta.trainedFrameRange, [124, 362]);
+    assert.match(meta.note, /推荐档/);
+    assert.match(meta.note, /非硬约束/);
+    assert.match(meta.note, /124–362|124-362/);
+    assert.match(meta.note, /质量风险/);
+    assert.match(meta.note, /17k\+5/);
+
+    // Wan 未查证 → 不臆造训练区间（不拿 H3 的区间套在别的模型上）。
+    const wan = durationMetaForTemplate("video_wan_animate");
+    assert.equal(wan.recommended, false);
+    assert.equal(wan.trainedFrameRange, null);
+    assert.match(wan.note, /待查证/);
+
+    // 模板清单同源下发新字段（前端只读，不硬编码）。
+    const h3 = listTemplates(workflowsDir).find((template) => template.name === "video_h3_i2v");
+    assert.equal(h3.durationMeta.recommended, true);
+    assert.deepEqual(h3.durationMeta.trainedFrameRange, [124, 362]);
 });
 
 // ————————————————————— 编排器集成（假队列 / 假 LLM，不触发真实生成） —————————————————————

@@ -14,6 +14,9 @@
  *                       non_diegetic_music；参考素材用 <Picture 1>；没有负面字段（negative=none），
  *                       负向约束并进正向句；运镜用官方词表（类型+幅度+速度）写成自然句式；
  *                       台词说话人稳定 ID (S1)、内容 <d>[English] ...</d> 逐字不翻译；描述总时长=目标时长。
+ *                       官方改写规范要求**正文英文**（字段名/结构本就英文）；本模块在走专用整段英文化
+ *                       入口拿到**通过逐字锁校验**的改写稿时才输出英文正文，否则同步中文事实 + `[untranslated]`
+ *                       标记 —— 「H3 结构固定」不等于「正文不用改」，两者不得再混为一谈。
  *   · qwen_image_2_1  → 官方口径是「英文长 prompt（400~500 词）+ 多参考图 <image1>~<image10>」。
  *                       官方实现是专用 PE 权重/改写器；本模块 sync 出口在**拿不到 llmCall 改写结果**时
  *                       退化为中文 + 显式 `[untranslated]` 标记（绝不假装已英文化）。
@@ -743,18 +746,22 @@ function stringNegativeList(shot) {
 
 /**
  * H3 编译器：本地字段口径（T2VA/I2VA/FL2VA/L2VA 三字段；Ref2VA 六段）。
+ * 有**通过逐字锁校验**的 `rewrite` → 正文英文（锚点/运镜/字段仍由编译器直拼、不用 LLM 回显）；
+ * 否则同步中文稿；模型要求英文（translate_to==="en"）而本次没有可用 rewrite 时追加 `[untranslated]` 标记。
  * @returns {string}
  */
-export function compileH3VideoPrompt({ template, shot, scene, characters, cast = null, style, slots, overlays, durationSec } = {}) {
+export function compileH3VideoPrompt({ template, shot, scene, characters, cast = null, style, slots, overlays, durationSec, rewrite } = {}) {
     const seconds = Number(durationSec) > 0 ? Number(durationSec) : Number(shot?.durationSec) > 0 ? Number(shot.durationSec) : 5;
     const images = slotImages(slots);
     const mode = h3Mode(template, images);
-    const rule = ruleForTemplate(template) || ruleForTemplate("video_h3_i2v");
-    const textInImage = textInImageRule(template) ?? rule?.prompt?.text_in_image ?? null;
+    const input = { template, shot, scene, characters, cast, style, overlays, textInImage: h3TextInImage(template) };
+    const parsed = hasText(rewrite) ? h3ParseRewrite(rewrite, input) : null;
+    const marker = rewriteTargetLang(template) === "en" ? ` ${H3_UNTRANSLATED_MARKER}` : "";
 
     // Ref2VA：六段固定顺序（全参考模式）。
     if (mode === "Ref2VA") {
-        return compileH3Ref2VA({ shot, scene, characters, cast, template, style, slots, overlays, durationSec: seconds, images, textInImage });
+        const body = compileH3Ref2VA({ ...input, seconds, images, parsed });
+        return parsed ? body : `${body}${marker}`;
     }
 
     const blocks = [];
@@ -767,18 +774,20 @@ export function compileH3VideoPrompt({ template, shot, scene, characters, cast =
     const fieldOrder = Array.isArray(protocol?.fields_fixed_order)
         ? protocol.fields_fixed_order
         : ["integrated_multimodal_description", "overall_soundscape", "non_diegetic_music"];
-    const description = h3Description(shot, { scene, characters, cast, template, style, mode, durationSec: seconds, overlays, textInImage });
+    const description = parsed
+        ? h3RewriteDescription(parsed.visual, input, { mode })
+        : h3Description(shot, { ...input, mode, durationSec: seconds });
     const fieldValue = {
         integrated_multimodal_description: description,
-        overall_soundscape: h3Soundscape(shot),
-        non_diegetic_music: h3Music(shot),
+        overall_soundscape: parsed ? h3RewrittenAudio(parsed.soundscape, h3Soundscape(shot)) : h3Soundscape(shot),
+        non_diegetic_music: parsed ? h3RewrittenAudio(parsed.music, h3Music(shot)) : h3Music(shot),
     };
     blocks.push(fieldOrder.map((name) => `${name}: ${fieldValue[name] ?? ""}`).join("\n\n"));
-    return blocks.join("\n\n");
+    return blocks.join("\n\n") + (parsed ? "" : marker);
 }
 
 /** H3 Ref2VA：subject_definitions → summary → retention_analysis → detailed_description → soundscape → music。 */
-function compileH3Ref2VA({ shot, scene, characters, cast, template, style, slots, overlays, durationSec, images, textInImage }) {
+function compileH3Ref2VA({ shot, scene, characters, cast, template, style, slots, overlays, seconds, images, textInImage, parsed }) {
     const lines = [];
     const refs = images.map((image, index) => {
         const tag = `<Picture ${index + 1}>`;
@@ -793,25 +802,33 @@ function compileH3Ref2VA({ shot, scene, characters, cast, template, style, slots
     // retention_analysis（关系标记）
     const retention = refs.length ? refs.map((ref) => `${ref}: fully_preserved`).join("; ") : "N/A";
     lines.push(`retention_analysis: ${retention}`);
-    // detailed_description（350–500 英文词目标；此处按事实精炼，交由官方改写器扩写）
-    const place = hasText(scene?.name) ? String(scene.name).trim() : "";
-    const { anchor: styleAnchor } = readStyleFields(style);
-    // 台词：逐条带说话人、正文逐字不翻译、括号表演注解剥出；有正文才带描述层的表演提示（绝不塞回 <d>）。
-    const dialogueLine = h3DialogueSentence(shot, characters, { cast, template });
-    const detailParts = [
-        styleAnchor ? `${stripTail(styleAnchor)}.` : "Live-action, cinematic.",
-        place ? `The scene is set in ${place}.` : "",
-        refs.length ? `The subjects are defined by ${refs.join(", ")}.` : "",
-        stripTail(splitEndState(shot?.action).process) ? `${stripTail(splitEndState(shot?.action).process)}.` : "",
-        cameraSentence(shot),
-        dialogueLine,
-        dialogueLine ? h3PerformanceHint(shot, characters, cast) : "",
-        overlayClauseH3(overlays, textInImage),
-    ].filter(Boolean);
-    lines.push(`detailed_description: ${detailParts.join(" ")}`);
+    // detailed_description（350–500 英文词目标）
+    let detailed;
+    if (parsed) {
+        // 改写稿只供正文；参考素材引用句仍由编译器直拼（<Picture N> 是结构，不许 LLM 重写）。
+        const refsClause = refs.length ? `The subjects are defined by ${refs.join(", ")}.` : "";
+        detailed = [refsClause, h3RewriteDescription(parsed.visual, { shot, characters, cast, template, overlays, textInImage })].filter(Boolean).join(" ");
+    } else {
+        const place = hasText(scene?.name) ? String(scene.name).trim() : "";
+        const { anchor: styleAnchor } = readStyleFields(style);
+        // 台词：逐条带说话人、正文逐字不翻译、括号表演注解剥出；有正文才带描述层的表演提示（绝不塞回 <d>）。
+        const dialogueLine = h3DialogueSentence(shot, characters, { cast, template });
+        const detailParts = [
+            styleAnchor ? `${stripTail(styleAnchor)}.` : "Live-action, cinematic.",
+            place ? `The scene is set in ${place}.` : "",
+            refs.length ? `The subjects are defined by ${refs.join(", ")}.` : "",
+            stripTail(splitEndState(shot?.action).process) ? `${stripTail(splitEndState(shot?.action).process)}.` : "",
+            cameraSentence(shot),
+            dialogueLine,
+            dialogueLine ? h3PerformanceHint(shot, characters, cast) : "",
+            overlayClauseH3(overlays, textInImage),
+        ].filter(Boolean);
+        detailed = detailParts.join(" ");
+    }
+    lines.push(`detailed_description: ${detailed}`);
     // soundscape + music（Ref2VA 六段固定顺序的最后两段）
-    lines.push(`overall_soundscape: ${h3Soundscape(shot)}`);
-    lines.push(`non_diegetic_music: ${h3Music(shot)}`);
+    lines.push(`overall_soundscape: ${parsed ? h3RewrittenAudio(parsed.soundscape, h3Soundscape(shot)) : h3Soundscape(shot)}`);
+    lines.push(`non_diegetic_music: ${parsed ? h3RewrittenAudio(parsed.music, h3Music(shot)) : h3Music(shot)}`);
     return lines.join("\n\n");
 }
 
@@ -831,6 +848,215 @@ function imageKindCn(image) {
 }
 
 /* ------------------------------------------------------------------ *
+ * 编译器 1b：H3 英文化改写（整段正文，专用入口）
+ * ------------------------------------------------------------------ *
+ * 规则表 minimax_h3.prompt.translate_to = "en"：字段名与结构固定英文，**正文也必须英文**（官方改写规范）。
+ * 「结构固定」只约束字段名与顺序，不等于正文不用改 —— 此前把两者混为一谈，H3 既从不英文化、
+ * 也不追加 [untranslated] 标记，于是流水线那道英文化闸门（pipeline 的 untranslatedWarning）对它恒为关闭。
+ *
+ * 与分级路径（qwen / krea2 / flux）的区别：H3 是**整段正文**改写，不是「一级直拼 + 二级改写」，
+ * 故不进 prompt_tier_policy.rewritable_models，由 compilePromptForTemplateAsync 的专用入口喂源。
+ *
+ * 无论是否有改写稿，以下部分**恒由编译器自己拼**，绝不交给 LLM：
+ *   字段名 / 关键帧对齐指令行 / 模式引用句 / <d> 台词块 / 画面文字英文引号句 / 运镜句 / 负向句 /
+ *   overall_soundscape 与 non_diegetic_music 的字段名与 N/A 哨兵值。
+ * LLM 只产三样：画面描述正文、环境声·动作声、配乐。
+ *
+ * 台词与画面文字是**逐字锚点**：LLM 必须原样照抄（不得翻译）；编译器校验通过后仍**丢弃**其回显，
+ * 只采用自己拼的规范块 —— 漏写 / 篡改 / 混进正文任一条 → 整稿弃用、回落同步中文稿（不新造降级机制）。
+ * ------------------------------------------------------------------ */
+
+/** H3 未英文化排查标记（与图片侧同形；stripUntranslatedMarker 会剥离，绝不进模型 PROMPT）。 */
+const H3_UNTRANSLATED_MARKER = "[untranslated: MiniMax H3 官方改写规范要求正文英文，需经 llmCall 英文化]";
+
+/** 改写源 / 改写稿的段标签（system 要求 LLM 按同名标签返回）。 */
+const H3_REWRITE_LABELS = Object.freeze({
+    visual: "【画面描述事实】",
+    soundscape: "【环境声与动作声】",
+    music: "【配乐】",
+});
+
+/** 逐字锚点行前缀：LLM 必须整行原样照抄；编译器校验后剥离，不采用其回显正文。 */
+const H3_ANCHOR_PREFIX = "ANCHOR: ";
+
+/** 逐字锚点行（含行首缩进）。 */
+const H3_ANCHOR_LINE_RE = /^[ \t]*ANCHOR:.*$/gm;
+
+/**
+ * H3 英文化 system：写明「台词、歌词、画面文字原样逐字照抄，不翻译」，并要求按同名三段标签返回。
+ * 与图片侧 ENGLISH_TRANSLATION_SYSTEM 分开：图片口径明确排除台词，H3 恰恰相反 —— 台词必须逐字在场。
+ */
+const H3_REWRITE_SYSTEM =
+    "You rewrite a MiniMax H3 video shot brief into the exact H3 local-field prompt. " +
+    "Write the descriptive prose in fluent, natural English. " +
+    "Dialogue content inside <d>...</d>, any song lyrics, and every on-screen text inside double quotes are verbatim anchors: " +
+    "copy them character for character in their original language — never translate, never transliterate, never drop them. " +
+    "Lines starting with 'ANCHOR:' must each be copied unchanged on their own line, at the end of the visual section. " +
+    "Return exactly three labelled sections in this order: 【画面描述事实】 / 【环境声与动作声】 / 【配乐】, " +
+    "keeping the labels, and output nothing else.";
+
+/** H3 画面文字口径（与 compileH3VideoPrompt 同源，供改写源与校验共用）。 */
+function h3TextInImage(template) {
+    const rule = ruleForTemplate(template) || ruleForTemplate("video_h3_i2v");
+    return textInImageRule(template) ?? rule?.prompt?.text_in_image ?? null;
+}
+
+/** 逐字锚点正文（编译器直拼的那一份）：台词块 + 画面文字句。 */
+function h3RewriteAnchors(input) {
+    const { shot, characters, cast = null, template, overlays, textInImage } = input;
+    return {
+        dialogue: h3DialogueSentence(shot, characters, { cast, template }),
+        overlay: overlayClauseH3(overlays, textInImage),
+    };
+}
+
+/** 逐字锁清单：每条 <d> 台词正文 + 每个画面文字（原语言），外加台词包裹标签名。 */
+function h3VerbatimLock(input) {
+    const { shot, characters, cast = null, template, overlays } = input;
+    const meta = template ? dialogueMetaForTemplate(template) : null;
+    const tag = meta?.utteranceTag || "d";
+    const { lines } = resolveDialogueLines(shot, characters, cast);
+    const dialogue = lines.filter((line) => !line.onlyAnnotation && hasText(line.text)).map((line) => String(line.text).trim());
+    const overlay = effectiveOverlays(overlays).map((item) => item.text);
+    return { tag, dialogue, overlay };
+}
+
+function escapeRegExp(text) {
+    return String(text).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * 逐字锁校验：改写稿里每条 `<d>…</d>` 的**内容**必须逐字仍在同一标签块内，
+ * 每个英文双引号内的画面文字必须逐字仍在引号内。规则原文：「台词/歌词/画面文字保留原语言」。
+ * 不满足即视为失败（调用方记 onWarning 并回落同步稿）。
+ */
+function verifyH3Rewrite(raw, input) {
+    const text = String(raw ?? "");
+    if (!text.includes(H3_REWRITE_LABELS.visual)) return { ok: false, reason: `改写稿缺少「${H3_REWRITE_LABELS.visual}」标签，无法按字段回填` };
+    const { tag, dialogue, overlay } = h3VerbatimLock(input);
+    for (const line of dialogue) {
+        if (!text.includes(line)) return { ok: false, reason: `改写稿漏写或篡改台词（必须逐字保留原语言）：${line}` };
+        if (!new RegExp(`<${tag}>[\\s\\S]*?${escapeRegExp(line)}[\\s\\S]*?</${tag}>`).test(text)) {
+            return { ok: false, reason: `改写稿把台词移出 <${tag}> 块（必须原块逐字保留）：${line}` };
+        }
+    }
+    for (const item of overlay) {
+        if (!text.includes(`"${item}"`)) return { ok: false, reason: `改写稿漏写或篡改画面文字（必须逐字保留在英文双引号内）：${item}` };
+    }
+    return { ok: true };
+}
+
+/** 按同名标签切段；缺失 / 乱序的段回空串，由调用方回落同步值。 */
+function h3RewriteSections(raw) {
+    const text = String(raw ?? "");
+    const { visual, soundscape, music } = H3_REWRITE_LABELS;
+    const pick = (label, others) => {
+        const start = text.indexOf(label);
+        if (start < 0) return "";
+        const from = start + label.length;
+        const ends = others.map((other) => text.indexOf(other, from)).filter((at) => at >= 0);
+        return text.slice(from, ends.length ? Math.min(...ends) : text.length).trim();
+    };
+    return {
+        visual: pick(visual, [soundscape, music]),
+        soundscape: pick(soundscape, [music, visual]),
+        music: pick(music, [visual, soundscape]),
+    };
+}
+
+/** 剥掉逐字锚点回显（ANCHOR 行 + 残留 `<d>` 块 + 锚点字面串），保证正文里不再出现台词/画面文字。 */
+function stripH3VerbatimAnchors(visual, anchors, tag) {
+    let out = String(visual ?? "").replace(H3_ANCHOR_LINE_RE, " ");
+    if (hasText(anchors.dialogue)) out = out.split(anchors.dialogue).join(" ");
+    out = out.replace(new RegExp(`<${tag}>[\\s\\S]*?</${tag}>`, "gi"), " ");
+    if (hasText(anchors.overlay)) out = out.split(anchors.overlay).join(" ");
+    return out.replace(/[ \t]{2,}/g, " ").replace(/\n{2,}/g, "\n").trim();
+}
+
+/** 英文句尾补句号（LLM 正文若忘了收尾，别把它和下一句粘成一句）。 */
+function sentenceTail(text) {
+    const value = String(text ?? "").trim();
+    if (!value) return "";
+    return /[.!?。！？]$/.test(value) ? value : `${value}.`;
+}
+
+/**
+ * H3 改写源文本：三段带标签事实（画面描述事实 / 环境声·动作声 / 配乐）+ 逐字锚点行。
+ * 运镜句由编译器拼（不进改写源）；画幅作为不可改写的生产事实写进源里。
+ */
+function h3RewriteSourceText(input) {
+    const { shot, scene, characters, style } = input;
+    const facts = [];
+    const { anchor: styleAnchor } = readStyleFields(style);
+    if (styleAnchor) facts.push(`风格：${stripTail(styleAnchor)}`);
+    const aspect = aspectRatioFact(style);
+    if (aspect) facts.push(`画幅：${aspect.ratio}（${aspect.orientationCn}构图，严格保持，不得更改）`);
+    const names = characterNames(characters);
+    if (names.length) facts.push(`主体：${names.join("、")}`);
+    if (hasText(shot?.shotSize)) facts.push(`景别：${String(shot.shotSize).trim()}`);
+    const place = hasText(scene?.name) ? String(scene.name).trim() : hasText(scene?.location) ? String(scene.location).trim() : "";
+    if (place) facts.push(`场景：${place}`);
+    const { process, endState } = splitEndState(shot?.action);
+    if (hasText(process)) facts.push(`画面内容：${stripTail(process)}`);
+    if (hasText(endState)) facts.push(`段末可见状态：${stripTail(endState)}`);
+    const cuts = Array.isArray(shot?.cuts) ? shot.cuts : [];
+    cuts.forEach((cut, index) => {
+        if (cut && hasText(cut.text)) facts.push(`切镜 ${index + 2}（${fmtTimecode(cut.atSec)}）：${stripTail(cut.text)}`);
+    });
+    const anchors = h3RewriteAnchors(input);
+    const lines = [H3_REWRITE_LABELS.visual, facts.join("；")];
+    for (const anchor of [anchors.dialogue, anchors.overlay]) {
+        if (hasText(anchor)) lines.push(`${H3_ANCHOR_PREFIX}${anchor}`);
+    }
+    lines.push("", H3_REWRITE_LABELS.soundscape, h3Soundscape(shot), "", H3_REWRITE_LABELS.music, h3Music(shot));
+    return lines.join("\n");
+}
+
+/** 改写后的音轨字段：空 / N/A → 回编译器哨兵值（字段名与 N/A 恒由编译器写）。 */
+function h3RewrittenAudio(section, syncValue) {
+    const text = String(section ?? "").trim();
+    if (!text || /^n\/?a\.?$/i.test(text)) return syncValue;
+    return text;
+}
+
+/** 改写稿正文（描述层）：LLM 正文 + 编译器自拼的运镜 / 模式引用 / 台词 / 画面文字 / 负向句。 */
+function h3RewriteDescription(visual, input, { mode = null } = {}) {
+    const { shot, characters, cast = null, template, overlays, textInImage } = input;
+    const parts = [sentenceTail(visual)];
+    const camera = cameraSentence(shot);
+    if (camera) parts.push(camera);
+    if (mode === "I2VA") parts.push("The frame begins from <Picture 1>, preserving its composition, subjects, colours, and lighting.");
+    if (mode === "FL2VA") parts.push("The motion runs continuously from Picture 1 to Picture 2 with no cut in between.");
+    if (mode === "L2VA") parts.push("The described action gradually converges to <Picture 1> at the end of the video.");
+    const dialogue = h3DialogueSentence(shot, characters, { cast, template });
+    if (dialogue) {
+        parts.push(dialogue);
+        const performance = h3PerformanceHint(shot, characters, cast);
+        if (performance) parts.push(performance);
+    }
+    const overlay = overlayClauseH3(overlays, textInImage);
+    if (overlay) parts.push(overlay);
+    if (stringNegativeList(shot).length) parts.push(`${positiveCleanClause()}。`);
+    return parts.filter(Boolean).join(" ");
+}
+
+/**
+ * 解析 + 校验改写稿：三段可解析、逐字锚点全在、剥离后正文不再残留锚点 → 返回三段文本；否则 null。
+ * 任一条件不满足都回落同步稿（宁可中文，也绝不放翻译过的台词 / 丢字的画面文字进模型）。
+ */
+function h3ParseRewrite(raw, input) {
+    if (!verifyH3Rewrite(raw, input).ok) return null;
+    const sections = h3RewriteSections(raw);
+    const anchors = h3RewriteAnchors(input);
+    const { tag, dialogue, overlay } = h3VerbatimLock(input);
+    const visual = stripH3VerbatimAnchors(sections.visual, anchors, tag);
+    if (!hasText(visual)) return null;
+    // 剥离后仍残留台词 / 画面文字 → 会与编译器直拼的规范块重复（台词与画面文字被渲染两遍），弃稿。
+    if (dialogue.some((line) => visual.includes(line)) || overlay.some((item) => visual.includes(item))) return null;
+    return { visual, soundscape: sections.soundscape, music: sections.music };
+}
+
+/* ------------------------------------------------------------------ *
  * 分级（tier）：一级强约束 / 二级画面细节
  * ------------------------------------------------------------------ *
  * 产品口径：提示词工程必须分级 ——
@@ -847,7 +1073,8 @@ function imageKindCn(image) {
  * ⚠️ 兼容红线：分级只作用于「有会消费 rewrite 的编译器」的模型
  *   （qwen_image_2_1 / krea2_turbo / flux1_dev）。
  *   无官方改写器的模型（z_image_turbo / boogu_edit / scail2 / wan22_animate / upscale …）
- *   走通用兜底或 H3 口径，产物与既有行为**逐字一致**；H3 结构不动。
+ *   走通用兜底或 H3 口径；H3 的**字段结构与锚点恒由编译器拼**，只有正文走专用整段英文化入口
+ *   （见「编译器 1b」），不参与本分级表。
  */
 
 /** 一级块（同步 / 降级产物）：风格锚点 → 画幅·比例 → 负面策略 → 画面内文字，顺序固定。 */
@@ -1209,7 +1436,8 @@ async function rewriteTierTwoOnce(input, llmCall, { correction = false } = {}) {
  *   · 二级经官方改写器（rewriterForTemplate 命中）或项目补充的通用英文化路径改写；
  *   · 二级出现相反画幅 → **不整稿弃用**：先纠正/重写二级块一次；仍冲突 → 只保留一级 + 同步结构稿的二级，
  *     并记 warning（宁可少写二级细节，也绝不把错误的画幅方向交给生成模型）；
- *   · 无官方改写器的模板（如 scail2 / H3）沿用既有改写流程；无改写器的模型直接回落 sync 出口。
+ *   · H3 走**专用整段英文化入口**（三段标签源 + 逐字锚点锁），不进分级表；无改写稿时回落同步稿 + 标记；
+ *   · 无官方改写器的其它模板（如 scail2）沿用既有改写流程；无改写器的模型直接回落 sync 出口。
  * `onWarning` 收集失败原因，供 API/流水线写入排查元数据；不把异常静默吞掉。
  * @returns {Promise<string>}
  */
@@ -1244,7 +1472,29 @@ export async function compilePromptForTemplateAsync(input = {}) {
             }
             return compilePromptForTemplate(input);
         }
-        // —— 兼容：无分级编译器的模板（如 scail2 / H3）沿用既有改写流程 ——
+        // —— H3 专用入口：整段正文英文化（三段标签源 + 台词/画面文字逐字锁） ——
+        // 不复用 rewriteSourceText：那是图片口径，不含 audio/music、且明确排除台词；H3 恰恰要求台词逐字在场。
+        if (ruleKeyForTemplate(template) === "minimax_h3") {
+            const h3Input = { ...input, textInImage: h3TextInImage(template) };
+            const source = h3RewriteSourceText(h3Input);
+            if (hasText(source)) {
+                try {
+                    const out = await llmCall({ system: H3_REWRITE_SYSTEM, user: source });
+                    const rewritten = hasText(out) ? String(out).trim() : "";
+                    if (rewritten) {
+                        const compiled = compilePromptForTemplate({ ...h3Input, rewrite: rewritten });
+                        // 编译器对未过逐字锁的改写稿会回落同步稿（带标记）→ 这里补记原因，供流水线/API 排查。
+                        if (!compiled.includes("[untranslated")) return compiled;
+                        const check = verifyH3Rewrite(rewritten, h3Input);
+                        if (typeof input.onWarning === "function") input.onWarning(new Error(check.reason || "H3 改写稿未通过逐字锁校验，已回落同步稿"));
+                    }
+                } catch (error) {
+                    if (typeof input.onWarning === "function") input.onWarning(error);
+                }
+            }
+            return compilePromptForTemplate(input);
+        }
+        // —— 兼容：无分级编译器的模板（如 scail2）沿用既有改写流程 ——
         const source = rewriteSourceText(input);
         if (hasText(source)) {
             const rewriterId = rewriterForTemplate(template);

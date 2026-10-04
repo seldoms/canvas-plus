@@ -1121,3 +1121,43 @@ image_files 共 22 条：
 4. 冷缓存 `HEAD` 打可压缩文件时会声明 `content-encoding: gzip` 而 `content-length` 取自 `statSync`（与随后 GET 的压缩长度不一致）—— 这是「HEAD 不得读文件」优先于「头与 GET 逐字一致」的有意取舍，代码注释已写明。
 
 **测试基线**：`node --test test/*.test.mjs` → **884/884 pass / 0 fail**（860 基线 → +16 修复回归 → +8 收口回归）。
+
+### 2026-10-05 时长与提示词语言：根因与修复（承接同日审查）
+
+**本轮用户口径**：① 时长征求我的看法；② 视频提示词的语言跟着模型的能力和要求走；③ 可合入、可重启；④ 可删测试数据；⑤ 可补台账；遇到问题先讨论再选最优解推进。
+
+#### 结论一：`durations=[5,10,15]` 是**推荐档（软约束）**，不是模型硬约束 —— 一手证据推翻了 D1 的旧转述
+
+| 证据 | 内容 |
+| --- | --- |
+| 线上真实产物（最强） | `video_h3_i2v` `LENGTH=90`（3.75s）**11 条 done**、`LENGTH=141`（5.875s）3 条 done、`video_minimax_h3_t2v` `LENGTH=22` done；`ffprobe -count_frames` 复核 90 帧 / 3.750s、141 帧 / 5.875s |
+| 节点源码 | `comfyui-minimax-h3-audio-T8`：`length = Int(min=5, max=3600, step=17)`（`step` 只是 UI 步进、后端不校验）、`align_frame_count()` 只向上吸附、`conditioning.py` 对 length **零断言**；训练区间只在 `preflight.py` 告警，且生成链路**不经过**它 |
+| 官方工作流 | `ComfyMathExpression = max(5, round(a*24)) + (5 - (…)%17)%17`，默认输入 **2 秒** —— 官方模板根本没有档位表 |
+| 旧出处 | D1「只有 5/10/15 三档、帧数 = 24×秒+3」是从 skill 转抄的文档，且帧公式已被官方表达式证伪（`development-plan.md` 2026-10-04 已修订） |
+
+→ **真正的硬约束只有一条：Σ段时长 == 单集骨架**。3s / 4s 的性质是「模型收、能出片，但短于训练下界 124 帧 → 质量风险」，不是拒绝。
+
+#### 结论二：分镜时长失控的根因 = 约束只写在技能里、**从没注入 prompt**
+- `skills/02-storyboard/SKILL.md` 自相矛盾：「单镜默认 3~6 秒」（§一 / §六.1 / 校验规则 1~8）vs「必须属于模型档位，从后端 `GET /api/durations` 动态取」（§六.4①）。
+- `pipeline.js` 的 `buildContext` 只注入 `novel / title / options / pipeline / 各阶段产物`，而技能模板里只有 `{{script}}` 与 `{{title}}` → **模型既看不到档位、也看不到单集目标时长**，只能按「3~6 秒」写。
+- 实测：第一遍 5×3s = 15s（Σ 恰好等于骨架，但 3s 不在推荐档）；**第二遍 12 镜 3~5s = Σ51s，单集目标 10s，超 410%**。
+
+#### 结论三（静默 bug）：`capability-limits.js adaptDurationParams` 拿 `frameCountForDuration(max(tiers)) = 362` 当上限 → 20s（480 帧）被**静默压成 362 帧（15.08s）**，而 3s / 4s 原样放行；截短后 H3 prompt 里「总时长等于目标时长」直接失配。
+
+#### 结论四：视频提示词英文化**整段漏接线**（用户口径：语言跟模型走）
+- `[untranslated]` 标记只在图片侧三个编译器追加（`prompt-compiler.js:985/1024/1028`）；H3 的 `compileH3VideoPrompt`(`:748`) / `compileH3Ref2VA`(`:781`) 从不追加 → `pipeline.js` 的改写闸门（`untranslatedWarning` → `if (warning && rewriteLlmCall)`）恒不开。
+- 即使开了也没用：`:1265` 回灌 `rewrite`，但 H3 两个编译器**不接收 `rewrite`** → 静默丢弃（实测 H3 的 `asyncOut === sync`，图片侧不同）。
+- 规则层自相矛盾：`model-prompt-rules.json` 的 `rewritable_models` 把 H3 排除（"结构不变"），但 `minimax_h3.translate_to === "en"` → 承诺了英文化、实现没接。
+
+#### 本轮已修（全部带「还原旧代码必失败」的回归锁；Lead 亲跑全量 **903/903 pass / 0 fail**）
+1. `durations.js`：`durations` 语义改**推荐档** + 新增 `TRAINED_FRAME_RANGE=[124,362]`；`skeletonAlignment` **硬软分离**（只有 Σ≠骨架才 `ok=false`）。
+2. `capability-limits.js`：删静默截断，保留 `17k+5` 向上吸附 + 超训练区间留痕告警。
+3. `pipeline.js`：`buildContext` 注入 `videoDurationTiers` / `videoDurationMeta` / `episodeDurationSec` / `episodeCount`；`PROMPT_COMPILATION_VERSION` 升 **2** 并纳入两处快照命中判定（否则旧 run 的 H3 快照永不刷新）。
+4. `skills/02`、`skills/05`：消除矛盾、引用注入值、修掉「写 15 秒会渲染出错误帧数」等与事实相反的表述。
+5. `prompt-compiler.js`：H3 同步稿补标记 + 专用整段改写入口（三段标签源、**台词/画面文字逐字锁**、失败回落同步稿 + warning）；`model-prompt-rules.json` 的 `translate_note` 收紧歧义（`translate_to` 未动）。
+
+#### 仍未做 / 待产品拍板
+- **前端零展示（最大残留）**：`stage.warnings` 与 `stage.skeleton` 在 `web/src` 里**没有任何消费方** → 时长/骨架违规对用户仍然不可见。需要前端构建（远程 `web/node_modules` 缺失）。
+- `canvas-server/README.md:363-364`（「超模型档位上限 → 吸附到最大合法档」）与 `docs/content/docs/progress/platform-flow.md:332`（`24×秒+3`）仍是旧口径。
+- **档位吸附（把 3s 抬到 5s）本轮不做**：证据表明模型接受任意网格帧，且它解决不了 Σ 超标（16 镜×5s = 80s 依然 ≠ 30s 骨架）。若产品坚持「镜头只能 5/10/15」，应作为**项目级可选开关、默认关**。
+- Ref2VA 的 `detailed_description` 官方要求 350–500 英文词，改写被截断时由 `llm-client` 抛错兜住 → 安全回落中文同步稿 + warning；真实成功率待跑一镜视频时观察。

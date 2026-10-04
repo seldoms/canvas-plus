@@ -88,10 +88,41 @@ test("缺少 template → 抛 400 业务错误", async () => {
     await assert.rejects(compilePromptForRequest({ shot: SHOT }), (error) => error.status === 400 && /缺少 template/.test(error.message));
 });
 
-test("视频模板（H3）：同步结构照旧，无英文标记", async () => {
+test("视频模板（H3）：字段结构照旧；模型要求英文正文 → 未英文化标记只留 meta，不进 PROMPT", async () => {
     const { prompt, meta } = await compilePromptForRequest({ template: "video_h3_i2v", family: "video", shot: SHOT, durationSec: 5 });
     assert.equal(typeof prompt, "string");
     assert.ok(prompt.includes("integrated_multimodal_description:"), "H3 本地字段口径结构照旧");
+    assert.ok(!prompt.includes("[untranslated"), "排查标记不得进入实际 PROMPT");
     assert.equal(meta.modelKey, "minimax_h3");
-    assert.equal(meta.untranslated, false, "H3 编译器自带英文结构，不产生未升级标记");
+    assert.equal(meta.untranslated, true, "H3 官方改写规范要求正文英文：没有改写稿时须如实标未英文化");
+    assert.equal(meta.language, "zh");
+    assert.ok(meta.notes.some((n) => /未英文化/.test(n)));
+});
+
+test("视频模板（H3）rewrite:true + 可用 llmCall：专用整段英文化入口生效，台词/画面文字逐字保留", async () => {
+    const shot = { ...SHOT, dialogue: "这么晚才回来？" };
+    const overlays = [{ text: "末班车", kind: "screen" }];
+    const text = [
+        "【画面描述事实】",
+        "A cinematic wide shot of Lin Wan stepping out of the platform shadows onto a night bus.",
+        'ANCHOR: The speaker (S1) says: <d>[English] 这么晚才回来？</d>',
+        'ANCHOR: On-screen text kept verbatim: A screen reading "末班车".',
+        "【环境声与动作声】",
+        "N/A",
+        "【配乐】",
+        "N/A",
+    ].join("\n");
+    const { prompt, meta } = await compilePromptForRequest(
+        { template: "video_h3_i2v", family: "video", shot, overlays, style: { anchor: "cinematic" }, durationSec: 5, rewrite: true },
+        { callLlm: fakeLlm(text) },
+    );
+    assert.ok(!prompt.includes("[untranslated"), "英文化成功后不得带未升级标记");
+    assert.ok(prompt.includes("A cinematic wide shot of Lin Wan"), "PROMPT 应包含改写器产出的英文正文");
+    assert.match(prompt, /<d>\[English\] 这么晚才回来？<\/d>/, "台词逐字保留");
+    assert.match(prompt, /reading "末班车"/, "画面文字逐字保留");
+    assert.equal(meta.untranslated, false);
+    assert.equal(meta.language, "en");
+    assert.equal(meta.modelKey, "minimax_h3");
+    assert.deepEqual(meta.llm, { model: "deepseek-flash", finishReason: "stop", chars: text.length });
+    assert.equal(meta.notes, undefined, "成功路径不该有 notes");
 });

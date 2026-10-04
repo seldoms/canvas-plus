@@ -22,7 +22,7 @@
  */
 
 import { normalizeRatio, pixelCapForTemplate, sizeMetaForTemplate } from "./sizes.js";
-import { durationsForTemplate, frameCountForDuration } from "./durations.js";
+import { durationMetaForTemplate, durationsForTemplate, frameCountForDuration } from "./durations.js";
 
 const toPosInt = (value) => {
     const n = Number(value);
@@ -264,44 +264,37 @@ function fallbackSizeVerdict(name, params) {
 
 /**
  * 时长自适应：LENGTH（帧）不在 `17k+5` 网格上 → **向上吸附**（复用 durations.js 的既有口径，不另造）。
- * 超出该模型登记档位上限的帧数 → 吸附到**最大合法档**并留痕（给可读结果，不静默放过）。
+ * ⚠️ **不再按「最大推荐档」截断**：推荐档不是硬约束（模型接受任意 `17k+5` 帧，实测 90/141/22/56 帧均成功），
+ *   旧实现把 20s（480 帧）静默压成 362 帧（15.08s），截短后 H3 prompt 的「总时长 = 目标时长」必然失配。
+ * 落在训练区间（`trainedFrameRange`，H3 为 124–362 帧）外时**不改参数**，只在 `durationAdjust` 里留痕（质量风险可见）。
  * LENGTH 缺失/非法、或该模型无登记档位 → 原样放行。
  * @returns {{ok:true,params:object,durationAdjust:object|null}}
  */
 export function adaptDurationParams(name, params = {}) {
-    const tiers = durationsForTemplate(name);
+    const meta = durationMetaForTemplate(name);
+    const tiers = meta.durations;
     const length = toPosInt(params?.LENGTH ?? params?.length);
     if (!tiers || !tiers.length || !length) return { ok: true, params: { ...params }, durationAdjust: null };
 
-    const maxFrames = frameCountForDuration(Math.max(...tiers));
     const onGrid = length >= 5 && (length - 5) % 17 === 0;
+    // 不在 17k+5 网格 → 向上吸附（硬约束，节点自己也会吸附）；已在网格上则原样保留。
+    const target = onGrid ? length : frameCountForDuration(length / 24) ?? 17 * Math.max(0, Math.ceil((length - 5) / 17)) + 5;
+    const range = Array.isArray(meta.trainedFrameRange) && meta.trainedFrameRange.length === 2 ? meta.trainedFrameRange : null;
+    const outside = Boolean(range) && (target < range[0] || target > range[1]);
 
-    let target;
-    let reason;
-    if (onGrid && maxFrames && length > maxFrames) {
-        // 在网格上但超过模型档位上限 → 吸附到最大合法档（可读结果，不静默放过）。
-        target = maxFrames;
-        reason = `时长 ${length} 帧超出模型档位上限（最长 ${Math.max(...tiers)}s = ${maxFrames} 帧），已吸附到最大合法档 ${maxFrames} 帧`;
-    } else if (onGrid) {
-        return { ok: true, params: { ...params }, durationAdjust: null };
-    } else {
-        // 不在 17k+5 网格 → 向上吸附（frameCountForDuration 的既有口径）。
-        const snapped = frameCountForDuration(length / 24) ?? 17 * Math.max(0, Math.ceil((length - 5) / 17)) + 5;
-        if (maxFrames && snapped > maxFrames) {
-            target = maxFrames;
-            reason = `时长 ${length} 帧超出模型档位上限（最长 ${Math.max(...tiers)}s = ${maxFrames} 帧），已吸附到最大合法档 ${maxFrames} 帧`;
-        } else {
-            target = snapped;
-            reason = `时长 ${length} 帧不在 ${tiers.join("/")}s 的 17k+5 帧网格上，已向上吸附到 ${target} 帧`;
-        }
-    }
+    // 既在网格内、又在训练区间内 → 原样放行、不留痕。
+    if (target === length && !outside) return { ok: true, params: { ...params }, durationAdjust: null };
+
+    const parts = [];
+    if (target !== length) parts.push(`时长 ${length} 帧不在 17k+5 帧网格上，已向上吸附到 ${target} 帧`);
+    if (outside) parts.push(`时长 ${target} 帧超出训练区间 ${range[0]}–${range[1]} 帧，可能影响质量`);
 
     const adjusted = { ...params, LENGTH: target };
     if (params && Object.prototype.hasOwnProperty.call(params, "length")) adjusted.length = target;
     return {
         ok: true,
-        params: adjusted,
-        durationAdjust: { from: length, to: target, grid: "17k+5@24fps", reason },
+        params: target === length ? { ...params } : adjusted,
+        durationAdjust: { from: length, to: target, grid: "17k+5@24fps", reason: parts.join("；"), ...(outside ? { frames: target, range: [...range] } : {}) },
     };
 }
 

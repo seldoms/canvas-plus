@@ -635,14 +635,27 @@ export function createPipeline({ config, skillsDir, jobs, comfy, llm, llmCall, r
      * 把 novel、流水线配置与全部已产出的上游产物组装成模板上下文，上游 key 用该阶段 produces 的名字。
      * 风格维度只在这里注入事实源：项目级 styleAnchor（其次 run.options.styleAnchor）写进 options.styleAnchor，
      * 使技能里的 {{options.styleAnchor}} 一定能被替换；缺锚点时给中性兜底，绝不让占位符原样漏给模型。
+     * 时长维度同理：**推荐档与单集目标时长都在这里注入 options**，技能直接用
+     * {{options.videoDurationTiers}} / {{options.videoDurationMeta}} / {{options.episodeDurationSec}} / {{options.episodeCount}}，
+     * 不再让模型自己猜「单镜该多长」（这是分镜产出失控的根因）。不改 context 顶层键，避免影响其它阶段模板。
      */
     function buildContext(run, def) {
         const project = projectOf(run);
         const plan = project?.plan && typeof project.plan === "object" ? project.plan : {};
+        const constraints = planConstraints(run);
+        const videoTemplate = String(pipelineConfig.videoTemplate ?? "").trim();
         const context = {
             novel: run.novel,
             title: run.title,
-            options: { ...(run.options || {}), styleAnchor: resolveStyleAnchor(run) || NEUTRAL_STYLE_ANCHOR, plan },
+            options: {
+                ...(run.options || {}),
+                styleAnchor: resolveStyleAnchor(run) || NEUTRAL_STYLE_ANCHOR,
+                plan,
+                videoDurationTiers: durationsForTemplate(videoTemplate),
+                videoDurationMeta: durationMetaForTemplate(videoTemplate),
+                episodeDurationSec: constraints.episodeDurationSec,
+                episodeCount: constraints.episodeCount,
+            },
             pipeline: pipelineConfig,
         };
         for (const item of registry.stages) {
@@ -2278,11 +2291,17 @@ ${JSON.stringify(partials, null, 2)}
         return createHash("sha256").update(JSON.stringify(facts)).digest("hex");
     }
 
+    /**
+     * 提示词快照版本：编译器产物语义变化时（例如 H3 追加 [untranslated] 标记并开始消费结构化 rewrite）
+     * 必须 +1。否则旧 run 已落盘的快照会因 template 与事实指纹都没变而永远命中，新编译器刷新不出来。
+     */
+    const PROMPT_COMPILATION_VERSION = 2;
+
     /** 把最终稿与排查元数据落在 item 上；候选 params 另存一份，旧 job 因而保持不可变。 */
     function savePromptSnapshot(item, compileInput, raw) {
         const prompt = stripUntranslatedMarker(raw);
         item.promptCompilation = {
-            version: 1,
+            version: PROMPT_COMPILATION_VERSION,
             template: compileInput.template,
             fingerprint: promptCompileFingerprint(compileInput),
             prompt,
@@ -2296,7 +2315,7 @@ ${JSON.stringify(partials, null, 2)}
     function promptFor(run, item, template, compileInput) {
         const snapshot = item?.promptCompilation;
         const fingerprint = promptCompileFingerprint(compileInput);
-        if (snapshot?.template === template && snapshot?.fingerprint === fingerprint && typeof snapshot.prompt === "string") {
+        if (snapshot?.version === PROMPT_COMPILATION_VERSION && snapshot?.template === template && snapshot?.fingerprint === fingerprint && typeof snapshot.prompt === "string") {
             return { raw: typeof snapshot.rawPrompt === "string" ? snapshot.rawPrompt : snapshot.prompt, prompt: snapshot.prompt };
         }
         const raw = compilePromptForTemplate(compileInput);
@@ -2312,7 +2331,7 @@ ${JSON.stringify(partials, null, 2)}
         const input = plan.compileInput;
         const snapshot = item?.promptCompilation;
         const fingerprint = promptCompileFingerprint(input);
-        if (!force && snapshot?.template === plan.template && snapshot?.fingerprint === fingerprint && typeof snapshot.prompt === "string") return;
+        if (!force && snapshot?.version === PROMPT_COMPILATION_VERSION && snapshot?.template === plan.template && snapshot?.fingerprint === fingerprint && typeof snapshot.prompt === "string") return;
         const syncPrompt = compilePromptForTemplate(input);
         let raw = syncPrompt;
         const warning = untranslatedWarning(syncPrompt);

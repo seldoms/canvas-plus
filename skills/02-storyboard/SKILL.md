@@ -76,7 +76,7 @@ description: |
 - `textOverlays`：本镜画面上**要渲染的确切文字**清单，逐条列明中文原样字样；每条含 `text` / `kind` / `position` / `style` 四键，`kind` 取 `sign` | `ticket` | `screen` | `logo` | `none`（**没有 `subtitle`**）。**画面里任何文字都必须逐字列明，绝不允许留空让模型自行发挥**；确无文字时显式写 `[{"text":"","kind":"none","position":"","style":""}]`。详见「提示词模板 → 八」。
 - `dialogue`：**镜头里有人开口说话就必须填**（哪怕听不见声音也要逐字记下，声画对齐与口型都依赖它）；确无对白写空字符串并在 `audio` 里说明。
 - `dialogueLines`（数组，**新写入目标**）：把本镜台词**逐条拆开、每条带说话人**——每条含 `speaker` / `text` / `performance` 三键。`speaker` 必须是**剧本 `characters` 里已存在的角色**（写角色名或角色 id，如 `阿海` 或 `c1`）；`text` 是**纯台词正文**（不含括号注解）；`performance` 是括号表演注解（语气 / 音量 / 语速 / 情绪，无则空字符串）。**一个镜头有几个人开口，`dialogueLines` 就有几条**，顺序即开口顺序（说话人归属决定后端把哪句编译给谁的 `(S1)(S2)`、以及配音阶段用谁的音色；见 `06-audio`）。旧项目里 `dialogue` 是字符串的**一律仍能跑**（后端会当成「一条、无明确说话人」逐级回落），但**多角色镜头必须写 `dialogueLines`**，否则每句归不到人、会落 warning。
-- 单镜时长默认 3~6 秒；超过 8 秒的镜头要拆成两条。
+- 单镜时长由编排器注入的 `{{options.videoDurationTiers}}` 决定：有推荐档就取档位内的整数秒；未登记（`null`）时才回落 3~6 秒并标注「档位待查证」。推荐档是**软约束**，模型接受任意 `17k+5` 帧，超推荐档只影响质量、不阻断。
 - `camera`（字符串，**旧字段，继续可读**）：给人工阅读与旧下游兼容的机位长描述，保留不变。
 - `cameraSpec`（对象，**新写入目标**）：结构化机位，字段固定为 `position / height / angle / lens / aperture / focus{from,to,atSec} / movement{type,direction,speed,stabilization}`；字段语义与取值风格见「七、结构化摄影机」。
 - **硬规则**：`cameraSpec` 缺失或不完整时，**不得宣称机位已被工具可靠执行**，只能作为风险提示（QC warning）上报；结构化字段不得静默丢失。旧 `camera` 字符串与 `cameraSpec` 冲突时以 `cameraSpec` 为准。
@@ -86,6 +86,10 @@ description: |
 你是分镜师。把下面的剧本拆成逐个镜头的分镜表；产物会逐级喂给本地短剧流水线（服化道、关键帧、片段合成），每个字段都要能被直接消费。
 
 项目标题：{{title}}
+
+单集目标时长：{{options.episodeDurationSec}} 秒（共 {{options.episodeCount}} 集）
+单镜时长推荐档（编排器注入；软约束，可为 null）：{{options.videoDurationTiers}}
+单镜时长元数据（帧数映射与训练区间）：{{options.videoDurationMeta}}
 
 剧本 JSON：
 <script>
@@ -134,13 +138,13 @@ description: |
 
 ### 六、时长与连续性（对齐本地生成约束）
 
-1. `durationSec` 取 3~6；动作复杂或含台词的镜头可到 8，超过 8 必须拆镜。本流水线视频 `LENGTH` 走 `17n+5` 帧 @24fps 网格（5s≈124 帧），按上述整数秒写即可，不要写云端配额（如 15s 单段、单批 2 段）。
+1. `durationSec` **由编排器注入的 `{{options.videoDurationTiers}}` 决定**：有推荐档就取档位内的整数秒（推荐档元数据见 `{{options.videoDurationMeta}}`）；未登记（`null`）时才回落 3~6 秒并标注「档位待查证」。本流水线视频 `LENGTH` 走 `17k+5` 帧 @24fps 网格（5s≈124 帧），模型实际接受任意 `17k+5` 帧（实测 90/141/22/56 帧均成功），推荐档不是硬约束；不要写云端配额（如 15s 单段、单批 2 段）。
 2. 相邻镜头要连续：轴线、视线、动作、物件、景别跳跃不要错乱；同一场次内人物位置、道具状态、光线方向要能对上上一镜。
 3. 每个镜头在 `action` 收尾写一句「段末可见状态」（本镜结束时角色姿态 / 视线 / 道具 / 镜头方向），供下一镜承接；跨场次要能看出场景与时间的变化。
 
 4. **单镜时长跟模型走、单集目标时长是作品规格（2026-10-04 产品口径，两个概念不许混）**：
-   ① `durationSec` 是**单镜时长**，不是自由数字，必须属于**当前视频模型**声明的时长档位 —— 档位**因模型而异**，从后端动态取（`GET /api/providers` 的模板 `durations` 字段，或 `GET /api/durations?template=<视频模型>`），**本技能绝不写死任何模型专属档位**；档位为 `null`（未查证）时按 3~6 秒经验值写并标注「档位待查证」。模型声明的档位帧数（`24×秒+3`）见模板清单 `durationMeta.frameCounts`，**实际提交 ComfyUI 的 `LENGTH` 仍按本条第 1 款的帧网格吸附**，两者口径不同。
-   ② **单集目标时长**是作品规格，来自项目「单集时长」（即 `options.plan.episodeDurationSec`，秒；量级为分钟级，如 120s = 2 分钟），**与单镜档位无关**。先按它想清楚**这一集该拆几个镜头**，再往槽位里填内容：同一集所有镜头 `durationSec` 之和应≈该集目标时长；缺 / 超都要显式报出「还缺 / 超出多少秒」（由编排器 `validateSkeleton` 落到分镜阶段 `warnings` 与 `skeleton` 字段），**严禁先写内容、再让时长随意膨胀**。单集时长**不得**拿去比模型单镜档位（它会同时报假警）。
+   ① `durationSec` 是**单镜时长**；**编排器已注入** `{{options.videoDurationTiers}}`（推荐档）与 `{{options.videoDurationMeta}}`（含帧数映射与训练区间 124–362 帧），**直接读注入值，不要臆造、也不要写死任何模型专属档位**。推荐档是**软约束**（模型接受任意 `17k+5` 帧），注入值为 `null`（未登记）时才按 3~6 秒写并标注「档位待查证」。**实际提交 ComfyUI 的 `LENGTH` 仍按本条第 1 款的帧网格吸附**。
+   ② **单集目标时长**是作品规格，**编排器已注入**：`{{options.episodeDurationSec}}` 秒、共 `{{options.episodeCount}}` 集，**与单镜档位无关**。先按它想清楚**这一集该拆几个镜头**，再往槽位里填内容：同一集所有镜头 `durationSec` 之和**必须≈**该集目标时长；缺 / 超都要显式报出「还缺 / 超出多少秒」（由编排器 `validateSkeleton` 落到分镜阶段 `warnings` 与 `skeleton` 字段），**严禁先写内容、再让时长随意膨胀**。单集时长**不得**拿去比模型单镜档位（它会同时报假警）。
 
 ### 七、结构化摄影机（cameraSpec，新写入目标）
 
@@ -314,7 +318,7 @@ description: |
 - 每个 shot 必须含 `episodeId`，且其值必须命中上游 `script.episodes[].id`；缺失 / 自造（`第1集` / `1` / `episode1`）一律 QC warning，不得静默丢弃（服务端会按镜头顺位兜底归一到真实集 id，`ep1` → 项目侧 `ep_0001`）。
 - 顶层建议含 `episodes[]`（每集 `{ id, sceneIds }`），必须是上游 `script.episodes[]` 的忠实搬运（不新增 / 不删减场次）；缺 `episodes` 或与剧本不一致时产生 QC warning。
 - `index` 为正整数且严格递增，不允许跳号导致排序歧义。
-- `durationSec` 为 1~8 的数字；`shotSize`、`camera`、`action` 非空。
+- `durationSec` 为正数：编排器注入了 `{{options.videoDurationTiers}}` 时取档位内的整数秒；注入值为 `null`（未登记）时才回落 3~6 秒并标注「档位待查证」。`shotSize`、`camera`、`action` 非空。
 - `camera`（旧字符串）保留可读且非空；`cameraSpec`（新写入目标）应含 `position` / `height` / `angle` / `lens` / `aperture` / `focus` / `movement` 七项，`focus` 至少含 `from` / `to`，`movement` 至少含 `type`。
 - `cameraSpec` 缺失或不完整**不阻断本阶段产出，但必须产生 QC warning**：不得宣称机位已被工具可靠执行，不得静默丢失。
 - 每镜必须含 `textOverlays` 数组；每条含 `text` / `kind` / `position` / `style` 键，`kind` 取 `sign` / `ticket` / `screen` / `logo` / `none`（**没有 `subtitle`**）。画面里出现的文字（站牌、车票、线路号、招牌、路牌、屏幕等**物体文字**）必须逐条列出**确切文字**（中文原样）；**台词/字幕不得写入 `textOverlays`**，出现 `kind: "subtitle"` 一律 QC warning 并丢弃；缺键 / 为 `null` / 画面有文字却写成 `kind: "none"` 一律 QC warning，不得静默丢失；确无文字时必须显式 `kind: "none"` 并在 `audio` 说明原因。
