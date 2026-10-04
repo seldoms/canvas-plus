@@ -289,6 +289,10 @@ export default {
         resultTitle: "Generated video",
         source: "Video Studio",
         empty: "No video generated yet",
+        referenceRequired: "This model needs a reference image: {{model}}",
+        referenceUploadFailed: "Reference upload failed: {{name}}",
+        submitFailed: "Submit failed: {{message}}",
+        jobFailed: "Generation failed: {{message}}",
     },
     canvas: {
         defaultTitle: "Infinite Canvas {{count}}",

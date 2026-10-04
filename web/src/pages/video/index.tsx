@@ -1,80 +1,226 @@
-import { ArrowLeft, ArrowRight, BookOpen, CheckSquare, ClipboardPaste, Download, FolderPlus, History, LoaderCircle, Plus, SlidersHorizontal, Sparkles, Trash2, Upload, VideoIcon } from "lucide-react";
 import { useEffect, useRef, useState, useSyncExternalStore, type DragEvent } from "react";
-import { App, Button, Checkbox, Drawer, Empty, Input, Modal, Tag, Typography } from "antd";
-import localforage from "localforage";
+import { App, Button, Drawer, Empty, Input, Modal, Tag } from "antd";
+import { ArrowLeft, ArrowRight, BookOpen, ClipboardPaste, Download, FolderPlus, History, SlidersHorizontal, Sparkles, Trash2, Upload, VideoIcon } from "lucide-react";
 import { nanoid } from "nanoid";
-import { saveAs } from "file-saver";
 import { useTranslation } from "react-i18next";
 
+import { ArtifactActions } from "@/components/artifact-actions";
 import { AssetPickerModal, type InsertAssetPayload } from "@/components/canvas/asset-picker-modal";
 import { ModelPicker } from "@/components/model-picker";
-import { formatTaskTime } from "@/lib/task-time";
 import { PromptSelectDialog } from "@/components/prompts/prompt-select-dialog";
 import { VideoSettingsPanel, normalizeVideoResolutionValue, normalizeVideoSizeValue, videoModeLabel, videoSizeLabel } from "@/components/video-settings-panel";
+// 工作台共享件：任务队列 / 参数快照 / 取消·归档 卡片 —— 与生图工作台同一套。
+import { QueuePanel, SnapshotPanel, FailedMediaCard, PendingMediaCard, buildQueueEntries, countTaskJobs, deriveTaskStatus, isActiveJobStatus, jobDurationMs, taskPercent, taskStatusColor, taskStatusLabelKey, usePreviewVerticalArrows, type WorkbenchJob, type WorkbenchLogView, type WorkbenchQueueEntry, type WorkbenchSnapshotTag, type WorkbenchTask, type WorkbenchThumb } from "@/components/workbench";
 import { canvasThemes } from "@/lib/canvas-theme";
-import { clampVideoSeconds } from "@/lib/media-size";
 import { formatBytes, formatDuration } from "@/lib/image-utils";
-import { deleteStoredMedia, resolveMediaUrl } from "@/services/file-storage";
-import { resolveImageUrl, ensureImagePreview, getImagePreviewRevision, previewUrlFor, subscribeImagePreviews, uploadImage } from "@/services/image-storage";
-import { createVideoGenerationTask, pollVideoGenerationTask, storeGeneratedVideo, type VideoGenerationTask } from "@/services/api/video";
+import { clampVideoSeconds, inferVideoRatio, readVideoDimensions } from "@/lib/media-size";
+import { findTemplate, loadTemplateCatalog, type GatewayTemplateInfo } from "@/services/api/template-sizes";
+import { resolveGatewayUrl, uploadGatewayAsset } from "@/services/api/gateway";
+import { cancelVideoJob, enqueueVideoJob, getVideoJob, listVideoJobs } from "@/services/api/video-jobs";
+import { ensureImagePreview, getImageBlob, getImagePreviewRevision, previewUrlFor, resolveImageUrl, subscribeImagePreviews, uploadImage } from "@/services/image-storage";
 import { useAssetStore } from "@/stores/use-asset-store";
 import { useWorkbenchAgentStore } from "@/stores/use-workbench-agent-store";
-import { boolConfig, modelOptionLabel, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
+import { boolConfig, modelOptionLabel, modelOptionName, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 import type { ReferenceImage } from "@/types/image";
 import i18n from "@/i18n";
 
-type GeneratedVideo = {
-    id: string;
-    url: string;
-    storageKey: string;
-    durationMs: number;
-    width: number;
-    height: number;
-    bytes: number;
-    mimeType: string;
-};
+type VideoResult = { url: string };
 
-type GenerationResult = {
-    id: string;
-    status: "pending" | "success" | "failed";
-    video?: GeneratedVideo;
-    error?: string;
-};
+type VideoLogConfig = Pick<AiConfig, "model" | "videoModel" | "size" | "vquality" | "videoSeconds" | "videoGenerateAudio" | "videoWatermark" | "videoMode">;
 
-type GenerationLog = {
-    id: string;
-    createdAt: number;
-    title: string;
-    prompt: string;
-    time: string;
-    model: string;
-    config: GenerationLogConfig;
+/** 提交那一刻的参数快照（历史事实，绝不随后续表单编辑而变）。 */
+type VideoSnapshot = {
+    config: VideoLogConfig;
     references: ReferenceImage[];
-    durationMs: number;
-    size: string;
-    resolution: string;
-    seconds: string;
-    status: "pending" | "success" | "failed";
-    task?: VideoGenerationTask;
-    video?: GeneratedVideo;
-    error?: string;
+    /** 提交时表单里显示的模型名（人读）；config 里存裸模板名。 */
+    modelLabel?: string;
 };
 
-type GenerationLogConfig = Pick<AiConfig, "model" | "videoModel" | "size" | "vquality" | "videoSeconds" | "videoGenerateAudio" | "videoWatermark" | "videoMode">;
+/** 视频任务组：一次提交 = 一个服务端 job；状态/进度全部读后端。 */
+type VideoTask = WorkbenchTask & {
+    snapshot: VideoSnapshot;
+    agentTaskId?: string;
+};
+
+/** 历史记录：服务端 job 重建，带该次快照与结果地址。 */
+type VideoLog = WorkbenchLogView & {
+    prompt: string;
+    snapshot: VideoSnapshot;
+    url?: string;
+};
 
 type UpdateAiConfig = <K extends keyof AiConfig>(key: K, value: AiConfig[K]) => void;
 
-const LOG_STORE_KEY = "infinite-canvas:video_generation_logs";
-const logStore = localforage.createInstance({ name: "infinite-canvas", storeName: "video_generation_logs" });
+/**
+ * 少数视频模板声明了采样步数 STEPS 且模板本身无默认值（如 H3 文生视频）。
+ * 编排器从「规则表参数档」取；工作台没有那张表，这里按官方 speed 档给最小可用值 ——
+ * 不给就整条模板跑不起来（runJob 会报「缺少参数：STEPS」）。
+ */
+const TEMPLATE_STEPS: Record<string, number> = { video_minimax_h3_t2v: 8 };
+
+/** H3 的 LENGTH 是帧数（fps=24）且必须落在 17n+5 网格（不能把秒数直接当帧数）。 */
+function frameCountForSeconds(value: string): number {
+    const seconds = Number(normalizeVideoSeconds(value)) || 5;
+    const frames = Math.max(1, Math.round(seconds * 24));
+    return 17 * Math.max(0, Math.round((frames - 5) / 17)) + 5;
+}
+
+function normalizeVideoSeconds(value: string) {
+    if (String(value).trim() === "-1") return "-1";
+    return clampVideoSeconds(value);
+}
+
+function normalizeVideoSize(value: string) {
+    return normalizeVideoSizeValue(value);
+}
+
+function normalizeResolution(value: string) {
+    return normalizeVideoResolutionValue(value);
+}
+
+function buildVideoLogConfig(config: AiConfig, templateName: string): VideoLogConfig {
+    return {
+        model: config.model,
+        videoModel: templateName,
+        size: normalizeVideoSize(config.size),
+        vquality: normalizeResolution(config.vquality),
+        videoSeconds: normalizeVideoSeconds(config.videoSeconds),
+        videoGenerateAudio: String(boolConfig(config.videoGenerateAudio, true)),
+        videoWatermark: String(boolConfig(config.videoWatermark, false)),
+        videoMode: config.videoMode === "reference" ? "reference" : "frames",
+    };
+}
+
+/** 视频标签：模型 / 规格 / 分辨率 / 时长（值直接展示，不做解释性小字）。 */
+function videoSnapshotTags(snapshot: VideoSnapshot): WorkbenchSnapshotTag[] {
+    const { config } = snapshot;
+    const modelName = snapshot.modelLabel || config.videoModel || config.model;
+    return [
+        ...(modelName ? [{ label: modelName, color: "blue" }] : []),
+        ...(config.size ? [{ label: config.size }] : []),
+        ...(config.vquality ? [{ label: `${config.vquality}p` }] : []),
+        ...(config.videoSeconds ? [{ label: `${config.videoSeconds}s` }] : []),
+    ];
+}
+
+/** 提交参数（按模板声明的 token 填充）；缺必需素材时抛错，绝不半成品入队。 */
+function buildVideoParams({ template, prompt, config, comfyRefs }: { template: GatewayTemplateInfo | null; prompt: string; config: AiConfig; comfyRefs: string[] }): Record<string, unknown> {
+    const known = Boolean(template);
+    const tokens = template?.tokens ?? [];
+    const has = (token: string) => (known ? tokens.includes(token) : ["PROMPT", "WIDTH", "HEIGHT", "LENGTH", "SEED", "INPUT_IMAGE"].includes(token));
+    const params: Record<string, unknown> = {};
+    const dims = readVideoDimensions(config.size, normalizeResolution(config.vquality), inferVideoRatio(config.size));
+    if (has("PROMPT")) params.PROMPT = prompt;
+    if (has("WIDTH") && dims.width) params.WIDTH = dims.width;
+    if (has("HEIGHT") && dims.height) params.HEIGHT = dims.height;
+    if (has("LENGTH")) params.LENGTH = frameCountForSeconds(config.videoSeconds);
+    if (has("STEPS") && template && TEMPLATE_STEPS[template.name] !== undefined) params.STEPS = TEMPLATE_STEPS[template.name];
+    if (has("SEED")) params.SEED = Math.floor(Math.random() * 2147483647);
+
+    const imageTokens = known ? tokens.filter((token) => token === "INPUT_IMAGE" || token === "PERSON_IMAGE" || token === "CLOTHING_IMAGE" || /^REF_IMAGE_\d+$/.test(token)) : ["INPUT_IMAGE"];
+    if (imageTokens.length && !comfyRefs.length) throw new Error(i18n.t("videoWorkbench.referenceRequired", { model: template?.name || "" }));
+    imageTokens.forEach((token, index) => {
+        if (comfyRefs[index]) params[token] = comfyRefs[index];
+    });
+    if (has("REF_VIDEO") && !has("INPUT_IMAGE") && !comfyRefs.length) throw new Error(i18n.t("videoWorkbench.referenceRequired", { model: template?.name || "" }));
+    return params;
+}
+
+/** 写进 job.meta 的提交事实 —— 服务端持久化的快照，刷新/换设备后据此重建队列与记录。 */
+function buildVideoMeta({ prompt, snapshot, template }: { prompt: string; snapshot: VideoSnapshot; template: string }): Record<string, unknown> {
+    return {
+        source: "video-workbench",
+        prompt,
+        model: template,
+        ...(snapshot.modelLabel ? { modelLabel: snapshot.modelLabel } : {}),
+        size: snapshot.config.size,
+        resolution: snapshot.config.vquality,
+        seconds: snapshot.config.videoSeconds,
+        mode: snapshot.config.videoMode,
+        generateAudio: snapshot.config.videoGenerateAudio,
+        watermark: snapshot.config.videoWatermark,
+        references: snapshot.references.map((item) => ({ id: item.id, name: item.name, storageKey: item.storageKey || "" })),
+    };
+}
+
+/** 只有「工作台视频」（无流水线 meta）才算创作台的记录，排除流水线阶段产出的视频任务。 */
+function isWorkbenchVideoJob(job: WorkbenchJob): boolean {
+    const meta = job.meta || {};
+    return !meta.runId && !meta.stageId;
+}
+
+function snapshotFromJob(job: WorkbenchJob): VideoSnapshot {
+    const meta = (job.meta || {}) as Record<string, unknown>;
+    const params = (job.params || {}) as Record<string, unknown>;
+    const width = params.WIDTH;
+    const height = params.HEIGHT;
+    const config: VideoLogConfig = {
+        model: String(meta.model ?? job.template ?? ""),
+        videoModel: String(meta.model ?? job.template ?? ""),
+        size: String(meta.size ?? (width && height ? `${width}x${height}` : "")),
+        vquality: String(meta.resolution ?? ""),
+        videoSeconds: String(meta.seconds ?? ""),
+        videoGenerateAudio: String(meta.generateAudio ?? "true"),
+        videoWatermark: String(meta.watermark ?? "false"),
+        videoMode: meta.mode === "reference" ? "reference" : "frames",
+    };
+    const rawRefs = Array.isArray(meta.references) ? (meta.references as Array<Record<string, unknown>>) : [];
+    return {
+        config,
+        references: rawRefs.map((item) => ({ id: String(item.id ?? item.storageKey ?? ""), name: String(item.name ?? ""), type: "", dataUrl: "", storageKey: String(item.storageKey ?? "") })),
+        ...(typeof meta.modelLabel === "string" ? { modelLabel: meta.modelLabel } : {}),
+    };
+}
+
+function taskFromJob(job: WorkbenchJob): VideoTask {
+    const meta = (job.meta || {}) as Record<string, unknown>;
+    const params = (job.params || {}) as Record<string, unknown>;
+    const createdAt = job.createdAt || new Date().toISOString();
+    return {
+        id: job.id,
+        prompt: String(meta.prompt ?? params.PROMPT ?? ""),
+        count: 1,
+        template: job.template || "",
+        jobIds: [job.id],
+        startedAt: Date.parse(createdAt) || Date.now(),
+        createdAt,
+        snapshot: snapshotFromJob(job),
+    };
+}
+
+function logFromTask(task: VideoTask, job: WorkbenchJob): VideoLog {
+    const url = (job.outputs || []).find((output) => output.url)?.url;
+    return {
+        id: task.id,
+        createdAt: task.startedAt,
+        title: task.prompt.slice(0, 12) || i18n.t("workbench.untitled"),
+        status: job.status === "done" ? "success" : job.status === "canceled" ? "canceled" : "failed",
+        durationMs: jobDurationMs(job),
+        successCount: job.status === "done" ? 1 : 0,
+        failCount: job.status === "error" ? 1 : 0,
+        itemCount: 1,
+        thumbnails: [],
+        prompt: task.prompt,
+        snapshot: task.snapshot,
+        ...(url ? { url: resolveGatewayUrl(url) } : {}),
+    };
+}
+
+function logFromJob(job: WorkbenchJob): VideoLog {
+    return logFromTask(taskFromJob(job), job);
+}
+
+/** 提交进队列时左栏只需要「结果缩略图」，视频没有可用的静态缩略图 → 空数组（走图标占位）。 */
+const videoTaskThumbnails = (): WorkbenchThumb[] => [];
 
 export default function VideoPage() {
+    usePreviewVerticalArrows();
     const { message } = App.useApp();
     const { t } = useTranslation();
     useSyncExternalStore(subscribeImagePreviews, getImagePreviewRevision);
     const fileInputRef = useRef<HTMLInputElement>(null);
     const dragDepthRef = useRef(0);
-    const activeLogIdsRef = useRef<Set<string>>(new Set());
     const config = useConfigStore((state) => state.config);
     const effectiveConfig = useEffectiveConfig();
     const updateConfig = useConfigStore((state) => state.updateConfig);
@@ -83,37 +229,62 @@ export default function VideoPage() {
     const addAsset = useAssetStore((state) => state.addAsset);
     const [prompt, setPrompt] = useState("");
     const [references, setReferences] = useState<ReferenceImage[]>([]);
-    const [results, setResults] = useState<GenerationResult[]>([]);
-    const [logs, setLogs] = useState<GenerationLog[]>([]);
-    const [running, setRunning] = useState(false);
+    const [tasks, setTasks] = useState<VideoTask[]>([]);
+    const [jobs, setJobs] = useState<Record<string, WorkbenchJob>>({});
+    const [logs, setLogs] = useState<VideoLog[]>([]);
+    const [submitting, setSubmitting] = useState(false);
     const [logsOpen, setLogsOpen] = useState(false);
     const [settingsOpen, setSettingsOpen] = useState(false);
     const [promptDialogOpen, setPromptDialogOpen] = useState(false);
     const [assetPickerOpen, setAssetPickerOpen] = useState(false);
-    const [startedAt, setStartedAt] = useState(0);
-    const [elapsedMs, setElapsedMs] = useState(0);
-    const [selectedLogIds, setSelectedLogIds] = useState<string[]>([]);
-    const [previewLog, setPreviewLog] = useState<GenerationLog | null>(null);
-    const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
-    const [referenceDragTarget, setReferenceDragTarget] = useState(false);
+    const [nowTick, setNowTick] = useState(0);
+    const [selectedId, setSelectedId] = useState<string | null>(null);
+    const [isReferenceDragActive, setIsReferenceDragActive] = useState(false);
     const [autoRunToken, setAutoRunToken] = useState(0);
+    const [videoTemplates, setVideoTemplates] = useState<GatewayTemplateInfo[]>([]);
     const videoCommand = useWorkbenchAgentStore((state) => state.videoCommand);
     const clearVideoCommand = useWorkbenchAgentStore((state) => state.clearVideoCommand);
     const updateAgentTask = useWorkbenchAgentStore((state) => state.updateTask);
     const processedCommandRef = useRef(0);
     const agentTaskIdRef = useRef<string | undefined>(undefined);
+    const tasksRef = useRef<VideoTask[]>([]);
+    const jobsRef = useRef<Record<string, WorkbenchJob>>({});
+    const restoredRef = useRef(false);
+    const finalizedRef = useRef<Set<string>>(new Set());
+    const bubbledErrorsRef = useRef<Set<string>>(new Set());
 
     const model = effectiveConfig.videoModel || effectiveConfig.model;
     const canGenerate = Boolean(prompt.trim());
+    const hasRunningTask = tasks.some((task) => task.jobIds.some((id) => isActiveJobStatus(jobs[id]?.status)));
+    const tasksSignature = tasks.map((task) => task.jobIds.join(",")).join("|");
 
     useEffect(() => {
-        if (!running || !startedAt) return;
-        const timer = window.setInterval(() => setElapsedMs(performance.now() - startedAt), 1000);
+        tasksRef.current = tasks;
+    }, [tasks]);
+    useEffect(() => {
+        jobsRef.current = jobs;
+    }, [jobs]);
+
+    useEffect(() => {
+        if (!hasRunningTask) return;
+        setNowTick(performance.now());
+        const timer = window.setInterval(() => setNowTick(performance.now()), 1000);
         return () => window.clearInterval(timer);
-    }, [running, startedAt]);
+    }, [hasRunningTask]);
 
+    // 视频模板清单（含 token / 档位）：提交时按模板声明的槽位填参数；网关不可达时退回通用槽位。
     useEffect(() => {
-        void refreshLogs();
+        let alive = true;
+        void loadTemplateCatalog("video")
+            .then((templates) => {
+                if (alive) setVideoTemplates(templates);
+            })
+            .catch(() => {
+                if (alive) setVideoTemplates([]);
+            });
+        return () => {
+            alive = false;
+        };
     }, []);
 
     const addReferences = async (files?: FileList | null) => {
@@ -133,19 +304,19 @@ export default function VideoPage() {
     const handleReferenceDragEnter = (event: DragEvent<HTMLDivElement>) => {
         event.preventDefault();
         dragDepthRef.current += 1;
-        if (event.dataTransfer.types.includes("Files")) setReferenceDragTarget(true);
+        if (event.dataTransfer.types.includes("Files")) setIsReferenceDragActive(true);
     };
 
     const handleReferenceDragLeave = (event: DragEvent<HTMLDivElement>) => {
         event.preventDefault();
         dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
-        if (!dragDepthRef.current) setReferenceDragTarget(false);
+        if (!dragDepthRef.current) setIsReferenceDragActive(false);
     };
 
     const handleReferenceDrop = (event: DragEvent<HTMLDivElement>) => {
         event.preventDefault();
         dragDepthRef.current = 0;
-        setReferenceDragTarget(false);
+        setIsReferenceDragActive(false);
         void addReferences(event.dataTransfer.files);
     };
 
@@ -169,33 +340,79 @@ export default function VideoPage() {
             message.error(t("videoWorkbench.clipboardEmpty"));
         }
     };
+
+    /** 参考图上传到网关，拿回可被后端 resolve 的素材名。 */
+    const resolveReferenceUrls = async (list: ReferenceImage[]): Promise<string[]> => {
+        const urls: string[] = [];
+        for (const item of list) {
+            const blob = item.storageKey ? await getImageBlob(item.storageKey) : item.dataUrl ? await (await fetch(item.dataUrl)).blob() : null;
+            if (!blob) throw new Error(t("videoWorkbench.referenceUploadFailed", { name: item.name }));
+            const { comfyName } = await uploadGatewayAsset(blob);
+            urls.push(comfyName);
+        }
+        return urls;
+    };
+
+    /** 提交 → 当帧落一条队列记录 → 服务端入队 → 原地补齐 jobId；状态/进度此后从 GET /api/jobs 读。 */
     const generate = async () => {
         const agentTaskId = agentTaskIdRef.current;
         agentTaskIdRef.current = undefined;
-        const snapshot = buildRequestSnapshot();
-        if (!snapshot) {
+        const text = prompt.trim();
+        if (!text) {
+            message.error(t("videoWorkbench.promptRequired"));
+            if (agentTaskId) updateAgentTask(agentTaskId, { status: "failed", error: t("videoWorkbench.promptRequired") });
+            return;
+        }
+        if (!isAiConfigReady(effectiveConfig, model)) {
+            message.warning(t("workbench.configFirst"));
+            openConfigDialog(true);
             if (agentTaskId) updateAgentTask(agentTaskId, { status: "failed", error: t("videoWorkbench.invalidParams") });
             return;
         }
-        setElapsedMs(0);
-        setRunning(true);
-        if (agentTaskId) updateAgentTask(agentTaskId, { status: "running", error: undefined });
-        setPreviewLog(null);
-        setResults([{ id: nanoid(), status: "pending" }]);
-        const batchStartedAt = performance.now();
-        setStartedAt(batchStartedAt);
+
+        const templateName = modelOptionName(model);
+        const snapshot: VideoSnapshot = {
+            config: buildVideoLogConfig(effectiveConfig, templateName),
+            references: [...references],
+            modelLabel: modelOptionLabel(effectiveConfig, model),
+        };
+        const localId = nanoid();
+        // 提交即落记录：当帧就在左栏出现（状态=排队中），不等上传/入队返回。
+        setTasks((value) => [
+            {
+                id: localId,
+                prompt: text,
+                count: 1,
+                template: templateName,
+                jobIds: [],
+                startedAt: performance.now(),
+                createdAt: new Date().toISOString(),
+                snapshot,
+                pending: true,
+                ...(agentTaskId ? { agentTaskId } : {}),
+            },
+            ...value,
+        ]);
+        setSelectedId(localId);
+        setSubmitting(true);
         try {
-            const task = await createVideoGenerationTask(snapshot.config, snapshot.text, snapshot.references);
-            const log = buildLog({ prompt: snapshot.text, model, config: snapshot.config, references: snapshot.references, durationMs: 0, status: "pending", task });
-            await saveLog(log, false);
-            void pollGenerationLog(log, snapshot.config, agentTaskId);
+            const comfyRefs = await resolveReferenceUrls(references);
+            const template = findTemplate(videoTemplates, templateName);
+            const params = buildVideoParams({ template, prompt: text, config: effectiveConfig, comfyRefs });
+            const job = await enqueueVideoJob({ template: templateName, name: `canvas_video_${Date.now()}`, params, meta: buildVideoMeta({ prompt: text, snapshot, template: templateName }) });
+            setJobs((value) => ({ ...value, [job.id]: job }));
+            // 原地补齐 jobId / 真实模板（记录 id 不变，选中态不跳）。
+            setTasks((value) => value.map((item) => (item.id === localId ? { ...item, jobIds: [job.id], pending: false, template: job.template || templateName } : item)));
+            if (agentTaskId) updateAgentTask(agentTaskId, { status: "running", error: undefined });
         } catch (error) {
-            const errorMessage = error instanceof Error ? error.message : t("workbench.generationFailed");
-            setResults([{ id: nanoid(), status: "failed", error: errorMessage }]);
-            if (agentTaskId) updateAgentTask(agentTaskId, { status: "failed", successCount: 0, failCount: 1, error: errorMessage });
-            await saveLog(buildLog({ prompt: snapshot.text, model, config: snapshot.config, references: snapshot.references, durationMs: performance.now() - batchStartedAt, status: "failed", error: errorMessage }));
-            message.error(errorMessage);
-            setRunning(false);
+            const reason = error instanceof Error ? error.message : String(error);
+            // 提交失败 → 撤掉占位记录，不留误导性条目。
+            setTasks((value) => value.filter((item) => item.id !== localId));
+            setSelectedId((current) => (current === localId ? null : current));
+            message.error(t("videoWorkbench.submitFailed", { message: reason }));
+            if (agentTaskId) updateAgentTask(agentTaskId, { status: "failed", error: reason });
+        } finally {
+            setSubmitting(false);
         }
     };
 
@@ -205,7 +422,7 @@ export default function VideoPage() {
         processedCommandRef.current = videoCommand.nonce;
         clearVideoCommand();
         if (typeof videoCommand.prompt === "string") setPrompt(videoCommand.prompt);
-        if (videoCommand.run && running) {
+        if (videoCommand.run && hasRunningTask) {
             if (videoCommand.taskId) updateAgentTask(videoCommand.taskId, { status: "failed", error: t("videoWorkbench.busy") });
             return;
         }
@@ -213,7 +430,7 @@ export default function VideoPage() {
             agentTaskIdRef.current = videoCommand.taskId;
             setAutoRunToken((value) => value + 1);
         }
-    }, [videoCommand, clearVideoCommand, running, updateAgentTask]);
+    }, [videoCommand, clearVideoCommand, hasRunningTask, updateAgentTask]);
 
     useEffect(() => {
         if (!autoRunToken) return;
@@ -221,36 +438,18 @@ export default function VideoPage() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [autoRunToken]);
 
-    const buildRequestSnapshot = () => {
-        const text = prompt.trim();
-        if (!text) {
-            message.error(t("videoWorkbench.promptRequired"));
-            return null;
-        }
-        if (!isAiConfigReady(effectiveConfig, model)) {
-            message.warning(t("workbench.configFirst"));
-            openConfigDialog(true);
-            return null;
-        }
-        return { text, config: buildVideoConfig(effectiveConfig, model), references: [...references] };
+    const downloadVideo = (url: string) => {
+        window.open(url, "_blank");
     };
 
-    const retryResult = () => {
-        void generate();
-    };
-
-    const downloadVideo = (video: GeneratedVideo) => {
-        saveAs(video.url, "video.mp4");
-    };
-
-    const saveResultToAssets = (video: GeneratedVideo) => {
+    const saveResultToAssets = async (url: string) => {
         addAsset({
             kind: "video",
             title: t("videoWorkbench.resultTitle"),
             coverUrl: "",
             tags: [],
             source: t("videoWorkbench.source"),
-            data: { url: video.url, storageKey: video.storageKey, width: video.width, height: video.height, bytes: video.bytes, mimeType: video.mimeType },
+            data: { url, storageKey: "", width: 0, height: 0, bytes: 0, mimeType: "video/mp4" },
             metadata: { source: "video-page", prompt },
         });
         message.success(t("common.addedToAssets"));
@@ -261,7 +460,7 @@ export default function VideoPage() {
             setPrompt(payload.content);
         } else if (payload.kind === "image") {
             const stored = await uploadImage(payload.dataUrl);
-            setReferences((value) => [...value, { id: nanoid(), name: payload.title, type: stored.mimeType, dataUrl: stored.url, storageKey: stored.storageKey }].slice(0, 7));
+            setReferences((value) => [...value, { id: nanoid(), type: stored.mimeType, name: payload.title, dataUrl: stored.url, storageKey: stored.storageKey }].slice(0, 7));
         }
         setAssetPickerOpen(false);
     };
@@ -269,112 +468,155 @@ export default function VideoPage() {
     const createSession = () => {
         setPrompt("");
         setReferences([]);
-        setResults([]);
-        setElapsedMs(0);
-        setStartedAt(0);
-        setSelectedLogIds([]);
-        setPreviewLog(null);
+        setTasks([]);
+        setNowTick(0);
+        setSelectedId(null);
     };
 
-    const deleteSelectedLogs = () => {
-        const mediaKeys = logs
-            .filter((log) => selectedLogIds.includes(log.id))
-            .map((log) => log.video?.storageKey)
-            .filter((key): key is string => Boolean(key));
-        void Promise.all([deleteStoredMedia(mediaKeys), ...selectedLogIds.map((id) => logStore.removeItem(id))]).then(() => refreshLogs());
-        if (previewLog && selectedLogIds.includes(previewLog.id)) {
-            setPreviewLog(null);
-            setResults([]);
-        }
-        setSelectedLogIds([]);
-        setDeleteConfirmOpen(false);
-    };
-
-    const saveLog = async (log: GenerationLog, resumePending = true) => {
-        await logStore.setItem(log.id, serializeLog(log));
-        await refreshLogs(resumePending);
-    };
-
-    const refreshLogs = async (resumePending = true) => {
-        const nextLogs = await readStoredLogs();
-        setLogs(nextLogs);
-        if (resumePending) resumePendingLogs(nextLogs);
-        return nextLogs;
-    };
-
-    const resumePendingLogs = (items: GenerationLog[]) => {
-        for (const log of items) {
-            if (log.status === "pending" && log.task) void pollGenerationLog(log);
-        }
-    };
-
-    const pollGenerationLog = async (log: GenerationLog, configOverride?: AiConfig, agentTaskId?: string) => {
-        if (!log.task || activeLogIdsRef.current.has(log.id)) return;
-        activeLogIdsRef.current.add(log.id);
-        setRunning(true);
-        setStartedAt((value) => value || performance.now());
-        setResults((value) => (value.length ? value : [{ id: log.id, status: "pending" }]));
-        const taskConfig = buildVideoConfig({ ...effectiveConfig, ...log.config }, log.task.model || log.model);
+    /** 取消单个 job：调后端 POST /api/jobs/:id/cancel，回来后以服务端状态为准。 */
+    const cancelJob = async (jobId: string) => {
         try {
-            for (let attempt = 0; attempt < 120; attempt += 1) {
-                const state = await pollVideoGenerationTask(configOverride || taskConfig, log.task);
-                if (state.status === "completed") {
-                    const stored = await storeGeneratedVideo(state.result);
-                    const nextVideo: GeneratedVideo = {
-                        id: nanoid(),
-                        url: stored.url,
-                        storageKey: stored.storageKey,
-                        durationMs: Date.now() - log.createdAt,
-                        width: stored.width || 1280,
-                        height: stored.height || 720,
-                        bytes: stored.bytes,
-                        mimeType: stored.mimeType,
-                    };
-                    setResults([{ id: nextVideo.id, status: "success", video: nextVideo }]);
-                    if (agentTaskId) updateAgentTask(agentTaskId, { status: "succeeded", successCount: 1, failCount: 0, error: undefined });
-                    await saveLog({ ...log, status: "success", durationMs: nextVideo.durationMs, video: nextVideo, error: undefined });
-                    message.success(t("videoWorkbench.generated"));
-                    return;
-                }
-                if (state.status === "failed") throw new Error(state.error);
-                if (attempt === 119) throw new Error(t("videoWorkbench.timeout"));
-                await delay(2500);
-            }
+            const job = await cancelVideoJob(jobId);
+            setJobs((value) => ({ ...value, [job.id]: job }));
         } catch (error) {
-            const errorMessage = error instanceof Error ? error.message : t("workbench.generationFailed");
-            setResults([{ id: log.id, status: "failed", error: errorMessage }]);
-            if (agentTaskId) updateAgentTask(agentTaskId, { status: "failed", successCount: 0, failCount: 1, error: errorMessage });
-            await saveLog({ ...log, status: "failed", durationMs: Date.now() - log.createdAt, error: errorMessage });
-            message.error(errorMessage);
-        } finally {
-            activeLogIdsRef.current.delete(log.id);
-            if (!activeLogIdsRef.current.size) {
-                setRunning(false);
-                setStartedAt(0);
-            }
+            message.error(error instanceof Error ? error.message : String(error));
         }
     };
 
-    const previewGenerationLog = (log: GenerationLog) => {
-        setPreviewLog(log);
-        setLogsOpen(false);
-        setPrompt(log.prompt);
-        setReferences(log.references || []);
-        if (log.config.videoModel || log.model) updateConfig("videoModel", log.config.videoModel || log.model);
-        if (log.config.size) updateConfig("size", log.config.size);
-        if (log.config.vquality) updateConfig("vquality", log.config.vquality);
-        if (log.config.videoSeconds) updateConfig("videoSeconds", log.config.videoSeconds);
-        if (log.config.videoGenerateAudio) updateConfig("videoGenerateAudio", log.config.videoGenerateAudio);
-        if (log.config.videoWatermark) updateConfig("videoWatermark", log.config.videoWatermark);
-        if (log.config.videoMode) updateConfig("videoMode", log.config.videoMode);
-        setResults(log.status === "pending" ? [{ id: log.id, status: "pending" }] : log.video ? [{ id: log.video.id, status: "success", video: log.video }] : [{ id: log.id, status: "failed", error: log.error || t("workbench.generationFailed") }]);
+    /** 重试：按同一快照再入队一个 job，替换掉失败那条（记录 id 不变）。 */
+    const retryTask = async (task: VideoTask) => {
+        try {
+            const comfyRefs = await resolveReferenceUrls(task.snapshot.references);
+            const template = findTemplate(videoTemplates, task.snapshot.config.videoModel || task.template);
+            const params = buildVideoParams({ template, prompt: task.prompt, config: { ...effectiveConfig, ...task.snapshot.config }, comfyRefs });
+            const job = await enqueueVideoJob({ template: task.snapshot.config.videoModel || task.template, name: `canvas_video_${Date.now()}`, params, meta: buildVideoMeta({ prompt: task.prompt, snapshot: task.snapshot, template: task.snapshot.config.videoModel || task.template }) });
+            finalizedRef.current.delete(task.id);
+            setLogs((value) => value.filter((log) => log.id !== task.id));
+            setJobs((value) => ({ ...value, [job.id]: job }));
+            setTasks((value) => [{ ...task, jobIds: [job.id], pending: false, startedAt: performance.now(), createdAt: new Date().toISOString() }, ...value.filter((item) => item.id !== task.id)]);
+        } catch (error) {
+            const reason = error instanceof Error ? error.message : String(error);
+            message.error(t("videoWorkbench.submitFailed", { message: reason }));
+        }
     };
+
+    const retryJob = async (jobId: string) => {
+        const task = tasks.find((item) => item.jobIds.includes(jobId));
+        if (task) await retryTask(task);
+    };
+
+    // 进页先按服务端 job 恢复：刷新/切页/换设备后队列与记录仍在（记录持久化在 jobs.json，不是浏览器）。
+    useEffect(() => {
+        let alive = true;
+        void (async () => {
+            try {
+                const list = await listVideoJobs({ limit: 200 });
+                if (!alive) return;
+                const workbench = list.filter(isWorkbenchVideoJob);
+                const jobMap: Record<string, WorkbenchJob> = {};
+                for (const job of workbench) jobMap[job.id] = job;
+                const restoredTasks: VideoTask[] = [];
+                const restoredLogs: VideoLog[] = [];
+                for (const job of workbench) {
+                    if (isActiveJobStatus(job.status)) restoredTasks.push(taskFromJob(job));
+                    else restoredLogs.push(logFromJob(job));
+                }
+                restoredLogs.sort((a, b) => b.createdAt - a.createdAt);
+                setJobs((value) => ({ ...jobMap, ...value }));
+                setTasks((value) => {
+                    const existing = new Set(value.map((task) => task.id));
+                    return [...restoredTasks.filter((task) => !existing.has(task.id)), ...value];
+                });
+                setLogs((value) => {
+                    const existing = new Set(value.map((log) => log.id));
+                    return [...restoredLogs.filter((log) => !existing.has(log.id)).slice(0, 60), ...value];
+                });
+            } catch {
+                // 拉取失败：不恢复、也不阻塞工作台。
+            } finally {
+                if (alive) restoredRef.current = true;
+            }
+        })();
+        return () => {
+            alive = false;
+        };
+    }, []);
+
+    // 活动任务每 3s 轮询单条 job；全部结束即停。
+    useEffect(() => {
+        const ids = tasksRef.current.flatMap((task) => task.jobIds);
+        if (!ids.length) return;
+        let cancelled = false;
+        let timer: number | undefined;
+        const stop = () => {
+            if (timer) {
+                window.clearInterval(timer);
+                timer = undefined;
+            }
+        };
+        const tick = async () => {
+            const active = tasksRef.current.flatMap((task) => task.jobIds).filter((id) => isActiveJobStatus(jobsRef.current[id]?.status));
+            if (!active.length) {
+                stop();
+                return;
+            }
+            const fetched = await Promise.all(active.map((id) => getVideoJob(id).catch(() => null)));
+            if (cancelled) return;
+            const updates: Record<string, WorkbenchJob> = {};
+            for (const job of fetched) if (job) updates[job.id] = job;
+            if (Object.keys(updates).length) setJobs((value) => ({ ...value, ...updates }));
+            for (const job of fetched) {
+                if (job && job.status === "error" && !bubbledErrorsRef.current.has(job.id)) {
+                    bubbledErrorsRef.current.add(job.id);
+                    message.error(t("videoWorkbench.jobFailed", { message: job.error || t("workbench.generationFailed") }));
+                }
+            }
+        };
+        void tick();
+        timer = window.setInterval(() => void tick(), 3000);
+        return () => {
+            cancelled = true;
+            stop();
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [tasksSignature]);
+
+    // 任务到终态 → 落一条历史记录（正常完成 / 失败 / 取消都覆盖）；记录 id 与 job 一致，队列按 id 去重。
+    useEffect(() => {
+        for (const task of tasks) {
+            const jobId = task.jobIds[0];
+            if (!jobId) continue;
+            const job = jobs[jobId];
+            if (!job || isActiveJobStatus(job.status)) continue;
+            if (finalizedRef.current.has(task.id)) continue;
+            finalizedRef.current.add(task.id);
+            const log = logFromTask(task, job);
+            setLogs((value) => [log, ...value.filter((item) => item.id !== log.id)]);
+            setTasks((value) => value.filter((item) => item.id !== task.id));
+            if (task.agentTaskId) {
+                updateAgentTask(task.agentTaskId, { status: job.status === "done" ? "succeeded" : "failed", successCount: job.status === "done" ? 1 : 0, failCount: job.status === "done" ? 0 : 1, error: job.status === "done" ? undefined : job.error || t("workbench.generationFailed") });
+            }
+        }
+    }, [tasks, jobs, updateAgentTask, t]);
+
+    // 恢复的参数快照里参考图只有 storageKey（dataUrl 已瘦身）→ 触发缩略图重建。
+    useEffect(() => {
+        if (!restoredRef.current) return;
+        for (const log of logs) for (const reference of log.snapshot.references) if (reference.storageKey) void ensureImagePreview(reference.storageKey);
+    }, [logs]);
+
+    const selectedTask = tasks.find((task) => task.id === selectedId) ?? null;
+    const selectedLog = selectedTask ? null : (logs.find((log) => log.id === selectedId) ?? null);
+    const detailTask = selectedTask ?? (selectedLog ? null : (tasks[0] ?? null));
+    const detailLog = selectedLog ?? (detailTask ? null : (logs[0] ?? null));
+    // 队列时间线：本次任务 ∪ 历史记录（按 id 去重 + 时间倒序），交给共享队列面板渲染。
+    const queueEntries: WorkbenchQueueEntry[] = buildQueueEntries({ tasks, logs, jobs, taskThumbnails: videoTaskThumbnails });
 
     return (
         <div className="flex h-full flex-col overflow-hidden bg-stone-50 text-stone-900 dark:bg-stone-950 dark:text-stone-100">
             <main className="grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-y-auto p-3 lg:grid-cols-[300px_minmax(0,1fr)] lg:overflow-hidden xl:grid-cols-[320px_minmax(0,1fr)]">
                 <aside className="thin-scrollbar hidden min-h-0 overflow-y-auto rounded-lg border border-stone-200 bg-card p-4 shadow-sm dark:border-stone-800 lg:block">
-                    <LogPanel logs={logs} selectedLogIds={selectedLogIds} activeLogId={previewLog?.id} onSelectedLogIdsChange={setSelectedLogIds} onCreateSession={createSession} onDeleteSelected={() => setDeleteConfirmOpen(true)} onPreviewLog={previewGenerationLog} />
+                    <QueuePanel entries={queueEntries} jobs={jobs} now={nowTick} selectedId={detailTask?.id ?? detailLog?.id ?? null} onSelect={setSelectedId} selectedLogIds={[]} onCreateSession={createSession} />
                 </aside>
 
                 <section className="grid gap-3 lg:min-h-0 lg:overflow-hidden xl:grid-cols-[420px_minmax(0,1fr)]">
@@ -420,7 +662,7 @@ export default function VideoPage() {
                                     </div>
                                 </div>
                                 <div
-                                    className={`hover-scrollbar hover-scrollbar-hint flex min-h-24 w-full min-w-0 max-w-full gap-2 overflow-x-scroll overflow-y-hidden rounded-lg border border-dashed p-2 pb-3 overscroll-x-contain transition-colors ${referenceDragTarget ? "border-stone-900 bg-stone-100/80 dark:border-stone-100 dark:bg-stone-900/80" : "border-stone-300 dark:border-stone-700"}`}
+                                    className={`hover-scrollbar hover-scrollbar-hint flex min-h-24 w-full min-w-0 max-w-full gap-2 overflow-x-scroll overflow-y-hidden rounded-lg border border-dashed p-2 pb-3 overscroll-x-contain transition-colors ${isReferenceDragActive ? "border-stone-900 bg-stone-100/80 dark:border-stone-100 dark:bg-stone-900/80" : "border-stone-300 dark:border-stone-700"}`}
                                     onDragEnter={handleReferenceDragEnter}
                                     onDragOver={(event) => {
                                         event.preventDefault();
@@ -439,7 +681,7 @@ export default function VideoPage() {
                                             </button>
                                         </div>
                                     ))}
-                                    {!references.length ? <div className="flex min-w-full items-center justify-center text-sm text-stone-500">{referenceDragTarget ? t("videoWorkbench.dropReferences") : t("videoWorkbench.noImages")}</div> : null}
+                                    {!references.length ? <div className="flex min-w-full items-center justify-center text-sm text-stone-500">{isReferenceDragActive ? t("videoWorkbench.dropReferences") : t("videoWorkbench.noImages")}</div> : null}
                                 </div>
                             </div>
 
@@ -458,20 +700,32 @@ export default function VideoPage() {
                         </div>
 
                         <div className="mt-auto pt-6">
-                            <Button type="primary" size="large" block icon={<Sparkles className="size-4" />} loading={running} disabled={!canGenerate || running} onClick={() => void generate()}>
+                            <Button type="primary" size="large" block icon={<Sparkles className="size-4" />} loading={submitting} disabled={!canGenerate || submitting} onClick={() => void generate()}>
                                 {t("workbench.generate")}
                             </Button>
                         </div>
                     </div>
 
                     <div className="thin-scrollbar rounded-lg border border-stone-200 bg-card p-4 shadow-sm dark:border-stone-800 lg:min-h-0 lg:overflow-y-auto lg:p-5">
-                        <div className="mb-4 flex items-center justify-between gap-3">
-                            <h2 className="text-xl font-semibold">{t("workbench.results")}</h2>
-                            {running ? <Tag className="m-0 px-2 py-1">{t("workbench.waiting", { time: formatDuration(elapsedMs) })}</Tag> : null}
+                        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                            <div className="flex min-w-0 items-center gap-2">
+                                <h2 className="text-xl font-semibold">{t("workbench.results")}</h2>
+                                {tasks.length ? <Tag className="m-0">{t("workbench.tasksSubmitted", { count: tasks.length })}</Tag> : null}
+                            </div>
                         </div>
-                        {results.length ? (
-                            <div className="grid gap-4">
-                                {results.map((result) => (result.status === "success" && result.video ? <ResultVideoCard key={result.id} video={result.video} onDownload={downloadVideo} onSaveAsset={saveResultToAssets} /> : result.status === "failed" ? <FailedVideoCard key={result.id} error={result.error || t("workbench.generationFailed")} onRetry={retryResult} /> : <PendingVideoCard key={result.id} />))}
+                        {detailTask ? (
+                            <div className="space-y-4">
+                                <SnapshotPanel prompt={detailTask.prompt} tags={videoSnapshotTags(detailTask.snapshot)} references={detailTask.snapshot.references} />
+                                <VideoTaskGroup task={detailTask} jobs={detailTask.jobIds.map((id) => jobs[id]).filter((job): job is WorkbenchJob => Boolean(job))} now={nowTick} onCancelJob={(jobId) => void cancelJob(jobId)} onRetryJob={(jobId) => void retryJob(jobId)} onDownload={downloadVideo} onSaveAsset={saveResultToAssets} />
+                            </div>
+                        ) : detailLog ? (
+                            <div className="space-y-4">
+                                <SnapshotPanel prompt={detailLog.prompt} tags={videoSnapshotTags(detailLog.snapshot)} references={detailLog.snapshot.references} />
+                                {detailLog.url ? (
+                                    <VideoResultCard url={detailLog.url} onDownload={downloadVideo} onSaveAsset={saveResultToAssets} />
+                                ) : (
+                                    <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={detailLog.status === "canceled" ? t("workbench.canceled") : t("videoWorkbench.empty")} className="!my-16" />
+                                )}
                             </div>
                         ) : (
                             <div className="flex min-h-[320px] flex-col items-center justify-center rounded-lg border border-dashed border-stone-300 text-center dark:border-stone-700 lg:min-h-[560px]">
@@ -494,7 +748,7 @@ export default function VideoPage() {
                 }}
             />
             <Drawer title={t("workbench.logs")} placement="bottom" size="large" open={logsOpen} onClose={() => setLogsOpen(false)}>
-                <LogPanel logs={logs} selectedLogIds={selectedLogIds} activeLogId={previewLog?.id} onSelectedLogIdsChange={setSelectedLogIds} onCreateSession={createSession} onDeleteSelected={() => setDeleteConfirmOpen(true)} onPreviewLog={previewGenerationLog} />
+                <QueuePanel entries={queueEntries} jobs={jobs} now={nowTick} selectedId={detailTask?.id ?? detailLog?.id ?? null} onSelect={setSelectedId} selectedLogIds={[]} onCreateSession={createSession} />
             </Drawer>
             <Drawer title={t("workbench.settings")} placement="bottom" height="82vh" open={settingsOpen} onClose={() => setSettingsOpen(false)}>
                 <div className="grid grid-cols-2 gap-3 pb-4">
@@ -503,9 +757,6 @@ export default function VideoPage() {
             </Drawer>
             <PromptSelectDialog open={promptDialogOpen} onOpenChange={setPromptDialogOpen} onSelect={setPrompt} />
             <AssetPickerModal open={assetPickerOpen} defaultTab="my-assets" onInsert={(payload) => void insertPickedAsset(payload)} onClose={() => setAssetPickerOpen(false)} />
-            <Modal title={t("workbench.deleteLogs")} open={deleteConfirmOpen} onCancel={() => setDeleteConfirmOpen(false)} onOk={deleteSelectedLogs} okText={t("common.delete")} okButtonProps={{ danger: true }} cancelText={t("common.cancel")}>
-                {t("workbench.deleteLogsConfirm", { count: selectedLogIds.length })}
-            </Modal>
         </div>
     );
 }
@@ -527,186 +778,87 @@ function GenerationSettings({ config, model, updateConfig, openConfigDialog }: {
     );
 }
 
-function ResultVideoCard({ video, onDownload, onSaveAsset }: { video: GeneratedVideo; onDownload: (video: GeneratedVideo) => void; onSaveAsset: (video: GeneratedVideo) => void }) {
+/** 生视频结果卡片（视频播放 + 加入资产 / 下载 / 归档）。 */
+function VideoResultCard({ url, onDownload, onSaveAsset }: { url: string; onDownload: (url: string) => void; onSaveAsset: (url: string) => void }) {
     const { t } = useTranslation();
     return (
         <div className="overflow-hidden rounded-lg border border-stone-200 bg-background dark:border-stone-800">
-            <video src={video.url} controls className="aspect-video w-full bg-black object-contain" />
+            <video src={url} controls className="aspect-video w-full bg-black object-contain" />
             <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 border-t border-stone-200 px-3 py-2.5 dark:border-stone-800">
-                <div className="flex min-w-0 flex-wrap gap-x-2 gap-y-1 text-xs text-stone-500 dark:text-stone-400">
-                    <span>
-                        {video.width}x{video.height}
-                    </span>
-                    <span>{formatBytes(video.bytes)}</span>
-                    <span>{formatDuration(video.durationMs)}</span>
-                </div>
                 <div className="flex shrink-0 gap-1">
-                    <Button size="small" icon={<FolderPlus className="size-3.5" />} onClick={() => onSaveAsset(video)}>
+                    <Button size="small" icon={<FolderPlus className="size-3.5" />} onClick={() => onSaveAsset(url)}>
                         {t("common.addToAssets")}
                     </Button>
-                    <Button size="small" icon={<Download className="size-3.5" />} onClick={() => onDownload(video)}>
+                    <Button size="small" icon={<Download className="size-3.5" />} onClick={() => onDownload(url)}>
                         {t("common.download")}
                     </Button>
                 </div>
+                {/* 生产动线只给「归档」（可逆）；彻底删除只在「我的资产」页。 */}
+                <ArtifactActions targets={[{ url }]} />
             </div>
         </div>
     );
 }
 
-function PendingVideoCard() {
+/** 进行中任务的详情：状态 / 进度 / 取消 + 结果卡片（视频）。 */
+function VideoTaskGroup({ task, jobs, now, onCancelJob, onRetryJob, onDownload, onSaveAsset }: { task: VideoTask; jobs: WorkbenchJob[]; now: number; onCancelJob: (jobId: string) => void; onRetryJob: (jobId: string) => void; onDownload: (url: string) => void; onSaveAsset: (url: string) => void }) {
     const { t } = useTranslation();
-    return (
-        <div className="relative aspect-video overflow-hidden rounded-lg border border-dashed border-stone-300 bg-stone-50 dark:border-stone-700 dark:bg-stone-900">
-            <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-sm text-stone-500 dark:text-stone-400">
-                <LoaderCircle className="size-6 animate-spin" />
-                <span>{t("workbench.generating")}</span>
-            </div>
-        </div>
-    );
-}
-
-function FailedVideoCard({ error, onRetry }: { error: string; onRetry: () => void }) {
-    const { t } = useTranslation();
-    return (
-        <div className="overflow-hidden rounded-lg border border-red-200 bg-red-50 dark:border-red-950 dark:bg-red-950/20">
-            <div className="flex aspect-video flex-col items-center justify-center gap-3 p-5 text-center">
-                <div className="text-sm font-medium text-red-600 dark:text-red-300">{t("workbench.failed")}</div>
-                <Typography.Paragraph ellipsis={{ rows: 4 }} className="!mb-0 !text-xs !text-red-500 dark:!text-red-300">
-                    {error}
-                </Typography.Paragraph>
-            </div>
-            <div className="flex justify-end border-t border-red-200 p-3 dark:border-red-950">
-                <Button size="small" danger onClick={onRetry}>
-                    {t("workbench.retry")}
-                </Button>
-            </div>
-        </div>
-    );
-}
-
-function LogPanel({
-    logs,
-    selectedLogIds,
-    activeLogId,
-    onSelectedLogIdsChange,
-    onCreateSession,
-    onDeleteSelected,
-    onPreviewLog,
-}: {
-    logs: GenerationLog[];
-    selectedLogIds: string[];
-    activeLogId?: string;
-    onSelectedLogIdsChange: (ids: string[]) => void;
-    onCreateSession: () => void;
-    onDeleteSelected: () => void;
-    onPreviewLog: (log: GenerationLog) => void;
-}) {
-    const { t } = useTranslation();
-    const allSelected = Boolean(logs.length) && selectedLogIds.length === logs.length;
-    const toggleAll = () => onSelectedLogIdsChange(allSelected ? [] : logs.map((log) => log.id));
+    const jobById = new Map(jobs.map((job) => [job.id, job] as const));
+    const total = task.jobIds.length;
+    const pendingSubmit = total === 0;
+    const list = task.jobIds.map((id) => jobById.get(id));
+    const stats = countTaskJobs(list);
+    const { finished, anyRunning, hasActive } = stats;
+    const percent = taskPercent(list, finished, total);
+    const status = deriveTaskStatus({ pendingSubmit, ...stats });
+    const elapsedMs = Math.max(0, (now || task.startedAt) - task.startedAt);
+    const statusLabel = pendingSubmit ? t("workbench.taskQueued") : t(taskStatusLabelKey(status, anyRunning));
 
     return (
-        <>
-            <div className="mb-3 flex items-center justify-between gap-3">
-                <h2 className="text-base font-semibold">{t("workbench.logs")}</h2>
-                <Tag className="m-0">{logs.length}</Tag>
-            </div>
-            <div className="mb-4 flex flex-wrap gap-2">
-                <Button size="small" icon={<Plus className="size-3.5" />} onClick={onCreateSession}>
-                    {t("workbench.new")}
-                </Button>
-                <Button size="small" icon={<CheckSquare className="size-3.5" />} disabled={!logs.length} onClick={toggleAll}>
-                    {allSelected ? t("common.cancel") : t("workbench.selectAll")}
-                </Button>
-                <Button size="small" danger icon={<Trash2 className="size-3.5" />} disabled={!selectedLogIds.length} onClick={onDeleteSelected}>
-                    {t("common.delete")}
-                </Button>
-            </div>
-            <div className="space-y-3">
-                {logs.map((log) => (
-                    <LogCard key={log.id} log={log} selected={selectedLogIds.includes(log.id)} active={activeLogId === log.id} onSelectedChange={(checked) => onSelectedLogIdsChange(checked ? [...selectedLogIds, log.id] : selectedLogIds.filter((id) => id !== log.id))} onClick={() => onPreviewLog(log)} />
-                ))}
-                {!logs.length ? <div className="flex min-h-48 items-center justify-center rounded-lg border border-dashed border-stone-300 text-center text-sm text-stone-500 dark:border-stone-700">{t("workbench.noLogs")}</div> : null}
-            </div>
-        </>
-    );
-}
-
-function LogCard({ log, selected, active, onSelectedChange, onClick }: { log: GenerationLog; selected: boolean; active: boolean; onSelectedChange: (checked: boolean) => void; onClick: () => void }) {
-    const { t } = useTranslation();
-    return (
-        <button type="button" className={`block w-full rounded-lg border p-2 text-left transition ${active ? "border-stone-900 bg-blue-50 dark:border-stone-100 dark:bg-blue-950/20" : "border-stone-200 bg-background hover:bg-stone-50 dark:border-stone-800 dark:hover:bg-stone-900"}`} onClick={onClick}>
-            <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-2">
-                <Checkbox className="mt-0.5" checked={selected} onClick={(event) => event.stopPropagation()} onChange={(event) => onSelectedChange(event.target.checked)} />
-                <div className="min-w-0">
-                    <div className="truncate text-sm font-semibold leading-5">{log.title}</div>
-                    <div className="mt-2 flex flex-wrap gap-1">
-                        <Tag className="m-0 flex h-6 items-center rounded-md px-1.5 text-xs leading-none">{log.size}</Tag>
-                        <Tag className="m-0 flex h-6 items-center rounded-md px-1.5 text-xs leading-none">{log.resolution}p</Tag>
-                        <Tag className="m-0 flex h-6 items-center rounded-md px-1.5 text-xs leading-none">{log.seconds}s</Tag>
+        <div className="rounded-lg border border-stone-200 bg-background p-3 dark:border-stone-800">
+            <div className="mb-3 flex items-start justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm font-semibold">{task.prompt}</div>
+                    <div className="mt-1.5 flex items-center gap-2">
+                        {pendingSubmit ? (
+                            <span className="text-xs text-stone-500 dark:text-stone-400">{t("workbench.taskQueued")}</span>
+                        ) : (
+                            <>
+                                <span className="shrink-0 text-xs text-stone-500 dark:text-stone-400">{`${Math.round(percent)}%`}</span>
+                            </>
+                        )}
                     </div>
                 </div>
-                <div className="grid justify-items-end gap-2">
-                    <Tag className="m-0 flex h-6 items-center rounded-md px-1.5 text-xs leading-none" color={log.status === "success" ? "blue" : log.status === "pending" ? "processing" : "red"}>
-                        {t(`workbench.${log.status === "success" ? "success" : log.status === "pending" ? "generating" : "failed"}`)}
+                <div className="flex shrink-0 items-center gap-2">
+                    <Tag className="m-0" color={taskStatusColor(status)}>
+                        {statusLabel}
                     </Tag>
-                    <Tag className="m-0 flex h-6 items-center rounded-md px-1.5 text-xs leading-none" color="green">
-                        {formatDuration(log.durationMs)}
-                    </Tag>
+                    {status === "running" ? <span className="text-xs text-stone-500 dark:text-stone-400">{formatDuration(elapsedMs)}</span> : null}
+                    {hasActive ? (
+                        <Button size="small" danger onClick={() => task.jobIds.forEach((id) => onCancelJob(id))}>
+                            {t("workbench.cancel")}
+                        </Button>
+                    ) : null}
                 </div>
             </div>
-        </button>
+            <div className="grid gap-4">
+                {pendingSubmit ? (
+                    <PendingMediaCard aspectClassName="aspect-video" />
+                ) : (
+                    task.jobIds.map((id) => {
+                        const job = jobById.get(id);
+                        if (job?.status === "done" && job.outputs?.length) {
+                            const output = job.outputs.find((item) => item.url);
+                            return output ? <VideoResultCard key={id} url={resolveGatewayUrl(output.url)} onDownload={onDownload} onSaveAsset={onSaveAsset} /> : null;
+                        }
+                        if (job?.status === "canceled") return <FailedMediaCard key={id} canceled error={t("workbench.canceled")} aspectClassName="aspect-video" />;
+                        if (job?.status === "error") return <FailedMediaCard key={id} error={job.error || t("workbench.generationFailed")} onRetry={() => onRetryJob(id)} aspectClassName="aspect-video" />;
+                        return <PendingMediaCard key={id} progress={job?.progress} onCancel={() => onCancelJob(id)} aspectClassName="aspect-video" />;
+                    })
+                )}
+            </div>
+        </div>
     );
-}
-
-async function readStoredLogs() {
-    if (typeof window === "undefined") return [];
-    try {
-        const logs: GenerationLog[] = [];
-        await logStore.iterate<GenerationLog, void>((value) => {
-            logs.push(value);
-        });
-        return (await Promise.all(logs.map(normalizeLog))).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-    } catch {
-        return [];
-    }
-}
-
-async function normalizeLog(log: Partial<GenerationLog>): Promise<GenerationLog> {
-    const video = log.video?.storageKey ? { ...log.video, url: await resolveMediaUrl(log.video.storageKey, log.video.url) } : log.video;
-    const references = await Promise.all(
-        (log.references || []).map(async (item) => {
-            void ensureImagePreview(item.storageKey);
-            return { ...item, dataUrl: await resolveImageUrl(item.storageKey, item.dataUrl) };
-        }),
-    );
-    const config = normalizeLogConfig(log);
-    return {
-        id: log.id || nanoid(),
-        createdAt: log.createdAt || Date.now(),
-        title: log.title || log.model || i18n.t("workbench.untitled"),
-        prompt: log.prompt || "",
-        time: log.time || formatTaskTime(new Date()),
-        model: log.model || config.videoModel || "",
-        config,
-        references,
-        durationMs: log.durationMs || 0,
-        size: log.size || config.size || "",
-        resolution: normalizeResolution(log.resolution || config.vquality || ""),
-        seconds: log.seconds || config.videoSeconds || "",
-        status: log.status || "success",
-        task: log.task,
-        video,
-        error: log.error,
-    };
-}
-
-function serializeLog(log: GenerationLog): GenerationLog {
-    return {
-        ...log,
-        references: log.references.map((item) => ({ ...item, dataUrl: item.storageKey ? "" : item.dataUrl })),
-        video: log.video?.storageKey ? { ...log.video, url: "" } : log.video,
-    };
 }
 
 function moveListItem<T>(items: T[], index: number, offset: number) {
@@ -725,79 +877,4 @@ function ReferenceOrderButtons({ index, total, onMove }: { index: number; total:
             <Button size="small" className="!h-6 !w-6 !min-w-6 !rounded-full !bg-white/85 !p-0 !shadow-sm" icon={<ArrowRight className="size-3" />} disabled={index >= total - 1} onClick={() => onMove(1)} />
         </div>
     );
-}
-
-function normalizeLogConfig(log: Partial<GenerationLog>): GenerationLogConfig {
-    return {
-        model: log.config?.model || log.model || "",
-        videoModel: log.config?.videoModel || log.model || "",
-        size: log.config?.size || log.size || "",
-        vquality: normalizeResolution(log.config?.vquality || log.resolution || ""),
-        videoSeconds: log.config?.videoSeconds || log.seconds || "",
-        videoGenerateAudio: log.config?.videoGenerateAudio || "true",
-        videoWatermark: log.config?.videoWatermark || "false",
-        videoMode: log.config?.videoMode === "reference" ? "reference" : "frames",
-    };
-}
-
-function buildLog({ prompt, model, config, references, durationMs, status, task, video, error }: { prompt: string; model: string; config: AiConfig; references: ReferenceImage[]; durationMs: number; status: GenerationLog["status"]; task?: VideoGenerationTask; video?: GeneratedVideo; error?: string }): GenerationLog {
-    const logConfig = {
-        model: config.model,
-        videoModel: config.videoModel,
-        size: config.size,
-        vquality: normalizeResolution(config.vquality),
-        videoSeconds: config.videoSeconds,
-        videoGenerateAudio: config.videoGenerateAudio,
-        videoWatermark: config.videoWatermark,
-        videoMode: config.videoMode === "reference" ? "reference" : "frames",
-    };
-    return {
-        id: nanoid(),
-        createdAt: Date.now(),
-        title: prompt.slice(0, 12) || i18n.t("workbench.untitled"),
-        prompt,
-        time: formatTaskTime(new Date()),
-        model,
-        config: logConfig,
-        references,
-        durationMs,
-        size: logConfig.size,
-        resolution: logConfig.vquality,
-        seconds: logConfig.videoSeconds,
-        status,
-        task,
-        video,
-        error,
-    };
-}
-
-function buildVideoConfig(config: AiConfig, model: string): AiConfig {
-    return {
-        ...config,
-        model,
-        videoModel: model,
-        size: normalizeVideoSize(config.size),
-        videoSeconds: normalizeVideoSeconds(config.videoSeconds),
-        vquality: normalizeResolution(config.vquality),
-        videoGenerateAudio: String(boolConfig(config.videoGenerateAudio, true)),
-        videoWatermark: String(boolConfig(config.videoWatermark, false)),
-        videoMode: config.videoMode === "reference" ? "reference" : "frames",
-    };
-}
-
-function normalizeVideoSeconds(value: string) {
-    if (String(value).trim() === "-1") return "-1";
-    return clampVideoSeconds(value);
-}
-
-function normalizeVideoSize(value: string) {
-    return normalizeVideoSizeValue(value);
-}
-
-function normalizeResolution(value: string) {
-    return normalizeVideoResolutionValue(value);
-}
-
-function delay(ms: number) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
 }

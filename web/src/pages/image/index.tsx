@@ -1,6 +1,6 @@
-import { ArrowLeft, ArrowRight, BookOpen, CheckSquare, ClipboardPaste, Download, FolderPlus, History, ImageOff, ImagePlus, LoaderCircle, PenLine, Plus, SlidersHorizontal, Sparkles, Trash2, Upload, XCircle } from "lucide-react";
+import { ArrowLeft, ArrowRight, BookOpen, ClipboardPaste, Download, FolderPlus, History, ImagePlus, PenLine, SlidersHorizontal, Sparkles, Trash2, Upload, XCircle } from "lucide-react";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { App, Button, Checkbox, Drawer, Empty, Image, Input, Modal, Progress, Tag, Tooltip, Typography } from "antd";
+import { App, Button, Drawer, Empty, Image, Input, Modal, Progress, Tag, Tooltip, Typography } from "antd";
 import localforage from "localforage";
 import { saveAs } from "file-saver";
 import { useTranslation } from "react-i18next";
@@ -25,6 +25,8 @@ import { useAssetStore } from "@/stores/use-asset-store";
 import { useWorkbenchAgentStore } from "@/stores/use-workbench-agent-store";
 import type { ReferenceImage } from "@/types/image";
 import i18n from "@/i18n";
+// 工作台共享件：任务队列 / 参数快照 / 取消·归档 卡片 —— 与视频创作台同一套（抽出来复用，不各写一份）。
+import { QueuePanel, SnapshotPanel, FailedMediaCard, PendingMediaCard, ImageThumb, UnavailableImage, buildQueueEntries, countTaskJobs, deriveTaskStatus, jobDurationMs, taskPercent, taskStatusColor, taskStatusLabelKey, usePreviewVerticalArrows, type WorkbenchJob, type WorkbenchLogView, type WorkbenchQueueEntry, type WorkbenchTask, type WorkbenchThumb } from "@/components/workbench";
 
 type GeneratedImage = {
     id: string;
@@ -38,8 +40,6 @@ type GeneratedImage = {
     bytes: number;
     mimeType?: string;
 };
-
-type TaskStatus = "running" | "done" | "partial" | "failed" | "canceled";
 
 /** 提交那一刻的参数快照（历史事实，绝不随后续表单编辑而变）。 */
 type TaskSnapshot = {
@@ -98,42 +98,8 @@ type UpdateAiConfig = <K extends keyof AiConfig>(key: K, value: AiConfig[K]) => 
 const LOG_STORE_KEY = "infinite-canvas:image_generation_logs";
 /** 工作台「未结束任务」的本地索引：只存 jobIds 与提交事实，状态/进度一律回后端读。 */
 const WORKBENCH_TASKS_KEY = "infinite-canvas:image_workbench_tasks";
-/**
- * 预览里 ↑/↓ 也切换同一个任务的其他素材。
- *
- * antd `Image.PreviewGroup` 原生只认 ←/→（要成组才有），所以把 ↑/↓ 映射成一次等价的
- * ArrowLeft/ArrowRight 键盘事件派发给预览根节点（React 在根上做事件委托，冒泡即可命中它的处理函数）。
- * 预览没开时**不拦**，避免影响页面正常滚动。
- */
-function usePreviewVerticalArrows() {
-    useEffect(() => {
-        const onKeyDown = (event: KeyboardEvent) => {
-            if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
-            const preview = document.querySelector(".ant-image-preview-wrap");
-            if (!preview) return;
-            event.preventDefault();
-            preview.dispatchEvent(
-                new KeyboardEvent("keydown", {
-                    key: event.key === "ArrowUp" ? "ArrowLeft" : "ArrowRight",
-                    bubbles: true,
-                    cancelable: true,
-                }),
-            );
-        };
-        document.addEventListener("keydown", onKeyDown, true);
-        return () => document.removeEventListener("keydown", onKeyDown, true);
-    }, []);
-}
-
 const RESULT_ACTION_BUTTON_CLASS = "min-w-0 px-1.5 [&_.ant-btn-icon]:shrink-0 [&>span:last-child]:min-w-0 [&>span:last-child]:truncate";
 const logStore = localforage.createInstance({ name: "infinite-canvas", storeName: "image_generation_logs" });
-
-/** 单个 job 的耗时（后端 startedAt→finishedAt）；拿不到时间返回 0。 */
-function jobDurationMs(job: ImageJob): number {
-    const start = job.startedAt ? Date.parse(job.startedAt) : NaN;
-    const end = job.finishedAt ? Date.parse(job.finishedAt) : NaN;
-    return Number.isFinite(start) && Number.isFinite(end) && end >= start ? end - start : 0;
-}
 
 /** 把一个后端产物直接映射成结果卡片用的图片（网关绝对地址；加入参考图/资产时再按需落本地）。 */
 function jobOutputToImage(job: ImageJob, output: ImageJobOutput): GeneratedImage {
@@ -146,6 +112,34 @@ function jobOutputToImage(job: ImageJob, output: ImageJobOutput): GeneratedImage
         height: output.height || 0,
         bytes: output.bytes || 0,
         ...(output.type === "image" ? { mimeType: "image/png" } : {}),
+    };
+}
+
+/** 队列里一条任务的缩略图（从后端 job 产物取，最多 4 张）；生图专有，交给共享队列面板渲染。 */
+function imageTaskThumbnails(task: WorkbenchTask, jobs: Record<string, WorkbenchJob>): WorkbenchThumb[] {
+    return task.jobIds
+        .map((id) => jobs[id])
+        .filter((job): job is ImageJob => Boolean(job?.status === "done" && job.outputs?.length))
+        .flatMap((job) => (job.outputs || []).filter((output) => !output.type || output.type === "image").map((output) => jobOutputToImage(job, output)))
+        .slice(0, 4)
+        .map((image) => ({ id: image.id, src: previewUrlFor(image.storageKey) || image.dataUrl }));
+}
+
+/** 历史记录 → 共享队列面板认的记录视图（时间渲染时按 createdAt 现算，不用老记录里存的 time 串）。 */
+function imageLogView(log: GenerationLog): WorkbenchLogView {
+    return {
+        id: log.id,
+        createdAt: log.createdAt,
+        title: log.title,
+        status: log.status,
+        durationMs: log.durationMs,
+        successCount: log.successCount,
+        failCount: log.failCount,
+        itemCount: log.imageCount,
+        thumbnails: log.images
+            .filter((image) => image.dataUrl || image.storageKey)
+            .slice(0, 4)
+            .map((image) => ({ id: image.id, src: previewUrlFor(image.storageKey) || image.dataUrl })),
     };
 }
 
@@ -718,14 +712,15 @@ export default function ImagePage() {
     const selectedLog = selectedTask ? null : (logs.find((log) => log.id === selectedId) ?? null);
     const detailTask = selectedTask ?? (selectedLog ? null : (tasks[0] ?? null));
     const detailLog = selectedLog ?? (detailTask ? null : (logs[0] ?? null));
+    // 队列时间线：本次任务 ∪ 历史记录（按 id 去重 + 时间倒序），交给共享队列面板渲染。
+    const queueEntries: WorkbenchQueueEntry[] = buildQueueEntries({ tasks, logs: logs.map(imageLogView), jobs, taskThumbnails: imageTaskThumbnails });
 
     return (
         <div className="flex h-full flex-col overflow-hidden bg-stone-50 text-stone-900 dark:bg-stone-950 dark:text-stone-100">
             <main className="grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-y-auto p-3 lg:grid-cols-[300px_minmax(0,1fr)] lg:overflow-hidden xl:grid-cols-[320px_minmax(0,1fr)]">
                 <aside className="thin-scrollbar hidden min-h-0 overflow-y-auto rounded-lg border border-stone-200 bg-card p-4 shadow-sm dark:border-stone-800 lg:block">
                     <QueuePanel
-                        tasks={tasks}
-                        logs={logs}
+                        entries={queueEntries}
                         jobs={jobs}
                         now={nowTick}
                         selectedId={detailTask?.id ?? detailLog?.id ?? null}
@@ -865,7 +860,16 @@ export default function ImagePage() {
                         </div>
                         {detailTask ? (
                             <div className="space-y-4">
-                                <SnapshotPanel prompt={detailTask.prompt} config={detailTask.snapshot.config} references={detailTask.snapshot.references} seed={detailTask.snapshot.seed} />
+                                <SnapshotPanel
+                                    prompt={detailTask.prompt}
+                                    tags={[
+                                        ...(detailTask.snapshot.modelLabel || detailTask.snapshot.config.imageModel || detailTask.snapshot.config.model ? [{ label: detailTask.snapshot.modelLabel || detailTask.snapshot.config.imageModel || detailTask.snapshot.config.model, color: "blue" }] : []),
+                                        ...(detailTask.snapshot.config.size ? [{ label: detailTask.snapshot.config.size }] : []),
+                                        { label: t("workbench.itemCount", { count: Number(detailTask.snapshot.config.count) || 1 }) },
+                                        ...(detailTask.snapshot.seed !== undefined ? [{ label: `seed ${detailTask.snapshot.seed}` }] : []),
+                                    ]}
+                                    references={detailTask.snapshot.references}
+                                />
                                 <TaskGroup
                                     task={detailTask}
                                     jobs={detailTask.jobIds.map((id) => jobs[id]).filter((job): job is ImageJob => Boolean(job))}
@@ -880,7 +884,15 @@ export default function ImagePage() {
                             </div>
                         ) : detailLog ? (
                             <div className="space-y-4">
-                                <SnapshotPanel prompt={detailLog.prompt} config={detailLog.config} references={detailLog.references} />
+                                <SnapshotPanel
+                                    prompt={detailLog.prompt}
+                                    tags={[
+                                        ...(detailLog.config.imageModel || detailLog.config.model ? [{ label: detailLog.config.imageModel || detailLog.config.model, color: "blue" }] : []),
+                                        ...(detailLog.config.size ? [{ label: detailLog.config.size }] : []),
+                                        { label: t("workbench.itemCount", { count: Number(detailLog.config.count) || 1 }) },
+                                    ]}
+                                    references={detailLog.references}
+                                />
                                 {detailLog.images.length ? (
                                     // PreviewGroup：同一次任务的素材成一组 → 预览里 ←/→ 直接切换它们（antd 原生键盘导航）
                                     <Image.PreviewGroup>
@@ -916,8 +928,7 @@ export default function ImagePage() {
             />
             <Drawer title={t("workbench.logs")} placement="bottom" size="large" open={logsOpen} onClose={() => setLogsOpen(false)}>
                 <QueuePanel
-                    tasks={tasks}
-                    logs={logs}
+                    entries={queueEntries}
                     jobs={jobs}
                     now={nowTick}
                     selectedId={detailTask?.id ?? detailLog?.id ?? null}
@@ -970,30 +981,6 @@ function GenerationSettings({ config, model, updateConfig, openConfigDialog, ima
             </div>
         </>
     );
-}
-
-/** 「取不到图」的显式降级：不渲染 1×1 空白骗人，直接给出可读原因。 */
-function UnavailableImage({ reason, className }: { reason: string; className: string }) {
-    const { t } = useTranslation();
-    return (
-        <div className={`flex flex-col items-center justify-center gap-1.5 bg-stone-100 px-3 text-center text-stone-500 dark:bg-stone-900 dark:text-stone-400 ${className}`}>
-            <ImageOff className="size-6" />
-            <span className="text-sm font-medium">{t("imageWorkbench.imageUnavailable")}</span>
-            <span className="text-sm">{reason}</span>
-        </div>
-    );
-}
-
-/** 列表里的小缩略图：没有可用原图/缩略图时给图标占位，不再渲染 `src=""` 的破图。 */
-function ImageThumb({ src, alt, className }: { src?: string; alt: string; className: string }) {
-    if (!src) {
-        return (
-            <span className={`flex items-center justify-center bg-stone-100 text-stone-400 dark:bg-stone-900 dark:text-stone-500 ${className}`}>
-                <ImageOff className="size-3.5" />
-            </span>
-        );
-    }
-    return <img src={src} alt={alt} className={className} />;
 }
 
 function ResultImageCard({
@@ -1066,64 +1053,6 @@ function ResultImageCard({
     );
 }
 
-function PendingImageCard({ progress, onCancel }: { progress?: ImageJobProgress; onCancel?: () => void }) {
-    const { t } = useTranslation();
-    const max = Number(progress?.max) || 0;
-    const value = Number(progress?.value) || 0;
-    // 进度/节点名全部来自后端 progress{value,max,node}；没有 max 时至少显示后端节点状态（排队中/生成中/已提交）。
-    const detail = max > 0 ? `${value}/${max}` : progress?.node || t("workbench.generating");
-    return (
-        <div className="relative aspect-square overflow-hidden rounded-lg border border-dashed border-stone-300 bg-stone-50 dark:border-stone-700 dark:bg-stone-900">
-            <div
-                className="absolute inset-0 opacity-60"
-                style={{
-                    backgroundImage: "radial-gradient(circle, rgba(120,113,108,0.35) 1.4px, transparent 1.6px)",
-                    backgroundSize: "16px 16px",
-                }}
-            />
-            <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-sm text-stone-500 dark:text-stone-400">
-                <LoaderCircle className="size-6 animate-spin" />
-                <span>{detail}</span>
-                {max > 0 ? <Progress percent={Math.round((value / max) * 100)} size="small" showInfo={false} className="!mb-0 !w-24" /> : null}
-                {onCancel ? (
-                    <Button size="small" icon={<XCircle className="size-3.5" />} onClick={onCancel}>
-                        {t("workbench.cancel")}
-                    </Button>
-                ) : null}
-            </div>
-        </div>
-    );
-}
-
-function FailedImageCard({ error, canceled = false, onRetry }: { error: string; canceled?: boolean; onRetry: () => void }) {
-    const { t } = useTranslation();
-    if (canceled) {
-        return (
-            <div className="overflow-hidden rounded-lg border border-stone-200 bg-stone-50 dark:border-stone-800 dark:bg-stone-900">
-                <div className="flex aspect-square flex-col items-center justify-center gap-3 p-5 text-center">
-                    <XCircle className="size-6 text-stone-400" />
-                    <div className="text-sm font-medium text-stone-500 dark:text-stone-400">{t("workbench.canceled")}</div>
-                </div>
-            </div>
-        );
-    }
-    return (
-        <div className="overflow-hidden rounded-lg border border-red-200 bg-red-50 dark:border-red-950 dark:bg-red-950/20">
-            <div className="flex aspect-square flex-col items-center justify-center gap-3 p-5 text-center">
-                <div className="text-sm font-medium text-red-600 dark:text-red-300">{t("workbench.failed")}</div>
-                <Typography.Paragraph ellipsis={{ rows: 4 }} className="!mb-0 !text-xs !text-red-500 dark:!text-red-300">
-                    {error}
-                </Typography.Paragraph>
-            </div>
-            <div className="flex justify-end border-t border-red-200 p-3 dark:border-red-950">
-                <Button size="small" danger onClick={onRetry}>
-                    {t("workbench.retry")}
-                </Button>
-            </div>
-        </div>
-    );
-}
-
 function TaskGroup({
     task,
     jobs,
@@ -1149,45 +1078,18 @@ function TaskGroup({
     const jobById = new Map(jobs.map((job) => [job.id, job] as const));
     const total = task.jobIds.length;
     const pendingSubmit = total === 0;
-    // 组进度 = 已完成条数 / 总条数；完成与否只认后端 status。
-    const finished = task.jobIds.filter((id) => {
-        const job = jobById.get(id);
-        return Boolean(job) && !isActiveJobStatus(job!.status);
-    }).length;
-    const percent = total ? Math.round((finished / total) * 100) : 0;
-    const hasActive = task.jobIds.some((id) => isActiveJobStatus(jobById.get(id)?.status));
-    const anyRunning = task.jobIds.some((id) => jobById.get(id)?.status === "running");
-    const doneCount = task.jobIds.filter((id) => jobById.get(id)?.status === "done").length;
-    const errorCount = task.jobIds.filter((id) => jobById.get(id)?.status === "error").length;
-    const canceledCount = task.jobIds.filter((id) => jobById.get(id)?.status === "canceled").length;
-    // 状态优先级：提交中 > 进行中 > 全取消 > 全失败 > 部分成功 > 完成。
-    const status: TaskStatus = pendingSubmit
-        ? "running"
-        : hasActive
-          ? "running"
-          : doneCount === 0 && errorCount === 0 && canceledCount > 0
-            ? "canceled"
-            : doneCount === 0 && errorCount > 0
-              ? "failed"
-              : doneCount > 0 && (errorCount > 0 || canceledCount > 0)
-                ? "partial"
-                : "done";
+    // 组进度 / 状态推导全部走共享件（与视频创作台同一口径），只认后端 job.status / job.progress。
+    const list = task.jobIds.map((id) => jobById.get(id));
+    const stats = countTaskJobs(list);
+    const { finished, anyRunning, hasActive } = stats;
+    const percent = taskPercent(list, finished, total);
+    const status = deriveTaskStatus({ pendingSubmit, ...stats });
     const elapsedMs = Math.max(0, (now || task.startedAt) - task.startedAt);
-    const statusLabel = pendingSubmit
-        ? t("workbench.taskQueued")
-        : status === "running"
-          ? t(anyRunning ? "workbench.taskRunning" : "workbench.taskQueued")
-          : status === "done"
-            ? t("workbench.taskDone")
-            : status === "partial"
-              ? t("workbench.taskPartial")
-              : status === "canceled"
-                ? t("workbench.taskCanceled")
-                : t("workbench.taskFailed");
-    const statusColor = status === "running" ? "blue" : status === "done" ? "green" : status === "partial" ? "orange" : status === "canceled" ? "default" : "red";
+    const statusLabel = pendingSubmit ? t("workbench.taskQueued") : t(taskStatusLabelKey(status, anyRunning));
+    const statusColor = taskStatusColor(status);
 
     const cards = pendingSubmit
-        ? [<PendingImageCard key="pending" />]
+        ? [<PendingMediaCard key="pending" />]
         : task.jobIds.flatMap((id, jobIndex) => {
         const job = jobById.get(id);
         if (job?.status === "done" && job.outputs?.length) {
@@ -1198,12 +1100,12 @@ function TaskGroup({
                 ));
         }
         if (job?.status === "canceled") {
-            return [<FailedImageCard key={id} canceled error={t("workbench.canceled")} onRetry={() => onRetryJob(id)} />];
+            return [<FailedMediaCard key={id} canceled error={t("workbench.canceled")} onRetry={() => onRetryJob(id)} />];
         }
         if (job?.status === "error") {
-            return [<FailedImageCard key={id} error={job.error || t("workbench.generationFailed")} onRetry={() => onRetryJob(id)} />];
+            return [<FailedMediaCard key={id} error={job.error || t("workbench.generationFailed")} onRetry={() => onRetryJob(id)} />];
         }
-        return [<PendingImageCard key={id} progress={job?.progress} onCancel={() => onCancelJob(id)} />];
+        return [<PendingMediaCard key={id} progress={job?.progress} onCancel={() => onCancelJob(id)} />];
     });
 
     return (
@@ -1241,258 +1143,6 @@ function TaskGroup({
                 <div className="grid gap-4 sm:grid-cols-2 2xl:grid-cols-3">{cards}</div>
             </Image.PreviewGroup>
         </div>
-    );
-}
-
-/** 本次提交的参数快照（历史事实）：模型 / 规格 / 数量 / seed + 提示词 + 参考图。与当前表单完全隔离。 */
-function SnapshotPanel({ prompt, config, references, seed, modelLabel }: { prompt: string; config: GenerationLogConfig; references: ReferenceImage[]; seed?: number; modelLabel?: string }) {
-    const { t } = useTranslation();
-    useSyncExternalStore(subscribeImagePreviews, getImagePreviewRevision);
-    const modelName = modelLabel || config.imageModel || config.model;
-    return (
-        <div className="space-y-3 rounded-lg border border-stone-200 bg-stone-50 p-3 dark:border-stone-800 dark:bg-stone-900">
-            <div className="flex flex-wrap items-center gap-1.5">
-                {modelName ? (
-                    <Tag className="m-0" color="blue">
-                        {modelName}
-                    </Tag>
-                ) : null}
-                {config.size ? <Tag className="m-0">{config.size}</Tag> : null}
-                <Tag className="m-0">{t("workbench.itemCount", { count: Number(config.count) || 1 })}</Tag>
-                {seed !== undefined ? <Tag className="m-0">seed {seed}</Tag> : null}
-            </div>
-            <div className="whitespace-pre-wrap break-words text-sm text-stone-700 dark:text-stone-300">{prompt}</div>
-            {references.length ? (
-                <div className="hover-scrollbar flex gap-2 overflow-x-auto">
-                    {references.map((item) => (
-                        <ImageThumb key={item.id} src={previewUrlFor(item.storageKey) || item.dataUrl} alt={item.name} className="size-14 shrink-0 rounded-md border border-stone-200 object-cover dark:border-stone-800" />
-                    ))}
-                </div>
-            ) : null}
-        </div>
-    );
-}
-
-/** 队列里一条「进行中的任务」卡片：状态与进度全部读后端 job，提交即出现。 */
-function TaskCard({ task, jobs, now, active, onSelect }: { task: Task; jobs: Record<string, ImageJob>; now: number; active: boolean; onSelect: () => void }) {
-    const { t } = useTranslation();
-    useSyncExternalStore(subscribeImagePreviews, getImagePreviewRevision);
-    const list = task.jobIds.map((id) => jobs[id]);
-    const total = task.jobIds.length;
-    const pendingSubmit = total === 0;
-    const finished = list.filter((job) => job && !isActiveJobStatus(job.status)).length;
-    const anyRunning = list.some((job) => job?.status === "running");
-    const hasActive = list.some((job) => isActiveJobStatus(job?.status));
-    const doneCount = list.filter((job) => job?.status === "done").length;
-    const errorCount = list.filter((job) => job?.status === "error").length;
-    const canceledCount = list.filter((job) => job?.status === "canceled").length;
-    const status: TaskStatus = pendingSubmit
-        ? "running"
-        : hasActive
-          ? "running"
-          : doneCount === 0 && errorCount === 0 && canceledCount > 0
-            ? "canceled"
-            : doneCount === 0 && errorCount > 0
-              ? "failed"
-              : doneCount > 0 && (errorCount > 0 || canceledCount > 0)
-                ? "partial"
-                : "done";
-    // 单张任务优先用后端 progress 的真实比例；多张任务退回「已完成/总数」。
-    const single = total === 1 ? list[0] : undefined;
-    const singlePercent = single && Number(single.progress?.max) > 0 ? Math.round((Number(single.progress?.value) / Number(single.progress?.max)) * 100) : undefined;
-    const percent = singlePercent ?? (total ? Math.round((finished / total) * 100) : 0);
-    const statusLabel =
-        status === "running"
-            ? t(anyRunning ? "workbench.taskRunning" : "workbench.taskQueued")
-            : status === "done"
-              ? t("workbench.taskDone")
-              : status === "partial"
-                ? t("workbench.taskPartial")
-                : status === "canceled"
-                  ? t("workbench.taskCanceled")
-                  : t("workbench.taskFailed");
-    const statusColor = status === "running" ? "blue" : status === "done" ? "green" : status === "partial" ? "orange" : status === "canceled" ? "default" : "red";
-    const thumbnails = task.jobIds
-        .map((id) => jobs[id])
-        .filter((job): job is ImageJob => Boolean(job?.status === "done" && job.outputs?.length))
-        .flatMap((job) => (job.outputs || []).filter((output) => !output.type || output.type === "image").map((output) => jobOutputToImage(job, output)))
-        .slice(0, 4);
-    const elapsedMs = status === "running" ? Math.max(0, (now || task.startedAt) - task.startedAt) : 0;
-
-    return (
-        <button
-            type="button"
-            className={`block w-full rounded-lg border p-2 text-left transition ${active ? "border-stone-900 bg-blue-50 dark:border-stone-100 dark:bg-blue-950/20" : "border-stone-200 bg-background hover:bg-stone-50 dark:border-stone-800 dark:hover:bg-stone-900"}`}
-            onClick={onSelect}
-        >
-            <div className="min-w-0">
-                <div className="truncate text-sm font-semibold leading-5">{task.prompt}</div>
-                <div className="mt-1.5 flex items-center gap-1.5">
-                    <Tag className="m-0 flex h-6 items-center rounded-md px-1.5 text-xs leading-none" color={statusColor}>
-                        {statusLabel}
-                    </Tag>
-                    {pendingSubmit ? (
-                        <LoaderCircle className="size-3.5 animate-spin text-stone-400" />
-                    ) : status === "running" ? (
-                        <span className="text-xs tabular-nums text-stone-500 dark:text-stone-400">{percent}%</span>
-                    ) : null}
-                    {elapsedMs ? <span className="text-xs text-stone-400">{formatDuration(elapsedMs)}</span> : null}
-                    {status === "failed" && errorCount ? <span className="truncate text-xs text-red-500">{t("workbench.failCount", { count: errorCount })}</span> : null}
-                </div>
-                {status === "running" && !pendingSubmit ? <Progress percent={percent} size="small" showInfo={false} className="!mb-0 !mt-1.5" /> : null}
-                {thumbnails.length ? (
-                    <div className="mt-2 flex gap-1 overflow-hidden">
-                        {thumbnails.map((image) => (
-                            <ImageThumb key={image.id} src={previewUrlFor(image.storageKey) || image.dataUrl} alt="" className="size-8 shrink-0 rounded-md object-cover" />
-                        ))}
-                    </div>
-                ) : null}
-            </div>
-        </button>
-    );
-}
-
-/**
- * 左栏：任务队列（时间线）。本次会话的任务与历史记录合并、按 id 去重、按时间倒序 ——
- * 点「开始生成」即出现一条，点开任何一条在中/右区看该次的参数快照与结果。
- */
-function QueuePanel({
-    tasks,
-    logs,
-    jobs,
-    now,
-    selectedId,
-    onSelect,
-    selectedLogIds,
-    onSelectedLogIdsChange,
-    onCreateSession,
-    onDeleteSelected,
-}: {
-    tasks: Task[];
-    logs: GenerationLog[];
-    jobs: Record<string, ImageJob>;
-    now: number;
-    selectedId: string | null;
-    onSelect: (id: string) => void;
-    selectedLogIds: string[];
-    onSelectedLogIdsChange: (ids: string[]) => void;
-    onCreateSession: () => void;
-    onDeleteSelected: () => void;
-}) {
-    const { t } = useTranslation();
-    const seen = new Set<string>();
-    const entries: Array<{ id: string; createdAt: number; task?: Task; log?: GenerationLog }> = [];
-    for (const task of tasks) {
-        if (seen.has(task.id)) continue;
-        seen.add(task.id);
-        entries.push({ id: task.id, createdAt: Date.parse(task.createdAt) || task.startedAt, task });
-    }
-    for (const log of logs) {
-        if (seen.has(log.id)) continue;
-        seen.add(log.id);
-        entries.push({ id: log.id, createdAt: log.createdAt, log });
-    }
-    entries.sort((a, b) => b.createdAt - a.createdAt);
-    const historyIds = entries.filter((entry) => entry.log).map((entry) => entry.id);
-    const allSelected = Boolean(historyIds.length) && historyIds.every((id) => selectedLogIds.includes(id));
-    const toggleAll = () => onSelectedLogIdsChange(allSelected ? [] : historyIds);
-
-    return (
-        <>
-            <div className="mb-3 flex items-center justify-between gap-3">
-                <div>
-                    <h2 className="text-base font-semibold">{t("workbench.logs")}</h2>
-                </div>
-                <Tag className="m-0">{entries.length}</Tag>
-            </div>
-            <div className="mb-4 flex flex-wrap gap-2">
-                <Button size="small" icon={<Plus className="size-3.5" />} onClick={onCreateSession}>
-                    {t("workbench.new")}
-                </Button>
-                <Button size="small" icon={<CheckSquare className="size-3.5" />} disabled={!historyIds.length} onClick={toggleAll}>
-                    {allSelected ? t("common.cancel") : t("workbench.selectAll")}
-                </Button>
-                <Button size="small" danger icon={<Trash2 className="size-3.5" />} disabled={!selectedLogIds.length} onClick={onDeleteSelected}>
-                    {t("workbench.deleteLogs")}
-                </Button>
-            </div>
-            <div className="space-y-2">
-                {entries.map((entry) =>
-                    entry.task ? (
-                        <TaskCard key={entry.id} task={entry.task} jobs={jobs} now={now} active={selectedId === entry.id} onSelect={() => onSelect(entry.id)} />
-                    ) : (
-                        <LogCard
-                            key={entry.id}
-                            log={entry.log!}
-                            selected={selectedLogIds.includes(entry.id)}
-                            active={selectedId === entry.id}
-                            onSelectedChange={(checked) => onSelectedLogIdsChange(checked ? [...selectedLogIds, entry.id] : selectedLogIds.filter((id) => id !== entry.id))}
-                            onClick={() => onSelect(entry.id)}
-                        />
-                    ),
-                )}
-                {!entries.length ? <div className="flex min-h-48 items-center justify-center rounded-lg border border-dashed border-stone-300 text-center text-sm text-stone-500 dark:border-stone-700">{t("workbench.noLogs")}</div> : null}
-            </div>
-        </>
-    );
-}
-
-function LogCard({ log, selected, active, onSelectedChange, onClick }: { log: GenerationLog; selected: boolean; active: boolean; onSelectedChange: (checked: boolean) => void; onClick: () => void }) {
-    const { t } = useTranslation();
-    useSyncExternalStore(subscribeImagePreviews, getImagePreviewRevision);
-    const thumbnails = log.images.filter((image) => image.dataUrl || image.storageKey).slice(0, 4);
-
-    return (
-        <button
-            type="button"
-            className={`block w-full rounded-lg border p-2 text-left transition ${active ? "border-stone-900 bg-blue-50 dark:border-stone-100 dark:bg-blue-950/20" : "border-stone-200 bg-background hover:bg-stone-50 dark:border-stone-800 dark:hover:bg-stone-900"}`}
-            onClick={onClick}
-        >
-            <div className="grid grid-cols-[minmax(128px,1fr)_auto] gap-2">
-                <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-start gap-2">
-                    <Checkbox className="mt-0.5" checked={selected} onClick={(event) => event.stopPropagation()} onChange={(event) => onSelectedChange(event.target.checked)} />
-                    <div className="min-w-0">
-                        <div className="truncate text-sm font-semibold leading-5">{log.title}</div>
-                        {thumbnails.length ? (
-                            <div className="mt-2 flex gap-1 overflow-hidden">
-                                {thumbnails.map((image) => (
-                                    <ImageThumb key={image.id} src={previewUrlFor(image.storageKey) || image.dataUrl} alt="" className="size-8 shrink-0 rounded-md object-cover" />
-                                ))}
-                            </div>
-                        ) : null}
-                    </div>
-                </div>
-                <div className="grid justify-items-end gap-2">
-                    <div className="flex gap-1">
-                        {log.status === "canceled" ? (
-                            <Tag className="m-0 flex h-6 items-center rounded-md px-1.5 text-xs leading-none">{t("workbench.taskCanceled")}</Tag>
-                        ) : (
-                            <>
-                                <Tag className="m-0 flex h-6 items-center rounded-md px-1.5 text-xs leading-none" color="blue">
-                                    {t("workbench.successCount", { count: log.successCount ?? log.imageCount })}
-                                </Tag>
-                                {log.failCount ? (
-                                    <Tag className="m-0 flex h-6 items-center rounded-md px-1.5 text-xs leading-none" color="red">
-                                        {t("workbench.failCount", { count: log.failCount })}
-                                    </Tag>
-                                ) : null}
-                            </>
-                        )}
-                    </div>
-                    <div className="flex flex-wrap justify-end gap-1">
-                        <Tag className="m-0 flex h-6 items-center rounded-md px-1.5 text-xs leading-none">{t("workbench.itemCount", { count: log.imageCount })}</Tag>
-                        <Tag className="m-0 flex h-6 items-center rounded-md px-1.5 text-xs leading-none" color="green">
-                            {formatDuration(log.durationMs)}
-                        </Tag>
-                    </div>
-                    <div className="flex justify-end">
-                        {/* 时间**渲染时**按 createdAt 现算 —— 老记录里存的 `time` 是旧格式（带年秒），
-                            直接显示会与新的简化格式不一致；createdAt 是时间戳，新旧记录都有。 */}
-                        <Tag className="m-0 flex h-6 items-center rounded-md px-1.5 text-xs leading-none">{formatTaskTime(log.createdAt)}</Tag>
-                    </div>
-                </div>
-            </div>
-        </button>
     );
 }
 

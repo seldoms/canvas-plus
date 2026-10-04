@@ -278,6 +278,10 @@ export default {
         resultTitle: "生成视频",
         source: "视频创作台",
         empty: "还没有生成视频",
+        referenceRequired: "该模型需要参考图：{{model}}",
+        referenceUploadFailed: "参考图上传失败：{{name}}",
+        submitFailed: "提交失败：{{message}}",
+        jobFailed: "生成失败：{{message}}",
     },
     canvas: {
         defaultTitle: "无限画布 {{count}}",
