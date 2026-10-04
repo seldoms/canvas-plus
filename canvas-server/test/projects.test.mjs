@@ -46,7 +46,7 @@ test("create：磁盘上出现 project.json 且契约字段齐全、默认值补
     assert.equal(onDisk.plan.genre, "悬疑");
     assert.equal(onDisk.plan.episodeCount, 12);
     assert.equal(onDisk.plan.ratio, "9:16");
-    assert.equal(onDisk.plan.episodeDurationSec, 60);
+    assert.equal(onDisk.plan.episodeDurationSec, 120);
     assert.equal(onDisk.script, null);
     assert.deepEqual(onDisk.episodes, []);
     assert.deepEqual(onDisk.assetRefs, []);

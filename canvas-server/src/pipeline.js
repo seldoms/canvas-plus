@@ -8,7 +8,7 @@ import { projectAudioCues, projectVoiceProfiles } from "./audio-track.js";
 import { ASSET_ROLE, AUDIO_MODE } from "./contracts.js";
 import { assembleEpisode, buildCueSrt, DEFAULT_SUBTITLE_STYLE } from "./delivery.js";
 // D1：模型时长档位（与「模型清单」同源）。骨架对齐、plan 时长校验都从这里取口径。
-import { durationsForTemplate, durationMetaForTemplate, frameCountForDuration, isDurationAllowed, skeletonAlignment } from "./durations.js";
+import { durationsForTemplate, durationMetaForTemplate, frameCountForDuration, skeletonAlignment } from "./durations.js";
 import { artifactUrl, ensureDir, safeJoin } from "./files.js";
 import { listTemplates } from "./providers/comfy.js";
 import { buildShotBinding, missingRefsReport, resolveSelectedArtifacts, stableSeed } from "./reference-lock.js";
@@ -1407,11 +1407,12 @@ ${JSON.stringify(partials, null, 2)}
     }
 
     /**
-     * D1 骨架对齐（「先定骨架再填内容，Σ段时长必须等于骨架，缺一段都要报出来」）：
-     * 每集骨架 = 模型时长档位值（项目集 durationSec 优先，其次 plan.episodeDurationSec）；
-     * 逐集校验 Σ(shots[].durationSec) 是否等于骨架，并把每条不一致（缺多少 / 超多少 / 不在档位内）
-     * 显式追加进 stage.warnings，同时把逐集对齐结果落到 stage.skeleton —— 绝不静默放过。
-     * 档位未查证的模型（durations:null）不做档位强制，但仍校验 Σ段时长 == 骨架。
+     * 每集时长对齐（「先定单集目标时长，再往槽位里填内容」）：
+     * 每集骨架 = **单集目标时长**（项目集 durationSec 优先，其次 plan.episodeDurationSec）——
+     * 这是作品规格（分钟级）、内容层约束，与「单镜时长」不是一回事（单镜时长跟所选视频模型档位走，不进项目参数）。
+     * 逐集校验 Σ(shots[].durationSec) 是否等于该集目标时长，并把每条不一致（缺多少 / 超多少 /
+     * 单镜时长不在模型档位内）显式追加进 stage.warnings，同时把逐集对齐结果落到 stage.skeleton —— 绝不静默放过。
+     * 档位未查证的模型（durations:null）不做单镜档位强制，但仍校验 Σ段时长 == 单集目标时长。
      */
     function validateSkeleton(run, stage) {
         const plan = planConstraints(run);
@@ -1444,14 +1445,13 @@ ${JSON.stringify(partials, null, 2)}
                 episodes: [],
                 ok: true,
                 skipped: true,
-                reason: shots.length ? "未设置每集时长骨架（时长应从模型档位里选）" : "分镜无镜头",
+                reason: shots.length ? "未设置单集目标时长" : "分镜无镜头",
             };
             return stage.skeleton;
         }
+        // ⚠️ 「单集目标时长」是作品规格，**不要求落在模型单镜档位内**（那是两个概念）：
+        // 单镜档位只约束每个镜头的 durationSec（见 skeletonAlignment 的 tiers 逐段校验），不约束整集时长。
         const warnings = [];
-        if (tiers && planSkeleton > 0 && !tiers.includes(planSkeleton)) {
-            warnings.push(`项目每集时长 ${planSkeleton}s 不在视频模型「${videoTemplate}」的时长档位 [${tiers.join("/")}]s 内；时长必须从档位里选（D1）`);
-        }
         const slimEpisodes = Array.isArray(output.episodes) ? output.episodes : [];
         const episodes = [];
         for (const [episodeId, epShots] of groups) {
@@ -1470,25 +1470,21 @@ ${JSON.stringify(partials, null, 2)}
     }
 
     /**
-     * D1「时长从档位里选」的后端校验：选定视频模板 → 可选时长集合；所选时长必须属于该集合。
-     * 供 HTTP 层（GET /api/durations 一类）与流水线自检复用。durations 为 null 表示该模型档位待查证。
+     * 单镜档位策略（D1「单镜时长跟着模型走」）：报告所选视频模型的**单镜**可选档位 + 帧数映射。
+     * ⚠️ 单镜时长由分镜阶段 + 模型档位决定，**不进项目参数**；故这里绝不拿「单集时长」去比单镜档位
+     * （单集时长是作品规格、分钟级，与单镜档位无关 —— 2026-10-04 产品口径）。durations 为 null = 档位待查证。
+     * 供流水线自检复用；HTTP 出口是 GET /api/durations。
      */
-    function durationPolicy(runId) {
-        const run = typeof runId === "string" ? get(runId) : runId;
-        const project = projectOf(run);
-        const plan = project?.plan && typeof project.plan === "object" ? project.plan : {};
+    function durationPolicy() {
         const videoTemplate = String(pipelineConfig.videoTemplate ?? "").trim();
-        const durations = durationsForTemplate(videoTemplate);
-        const selected = Number(plan.episodeDurationSec) > 0 ? Number(plan.episodeDurationSec) : null;
-        const allowed = !durations ? true : isDurationAllowed(videoTemplate, selected);
+        const meta = durationMetaForTemplate(videoTemplate);
         return {
             videoTemplate,
-            durations,
-            frameRate: durationMetaForTemplate(videoTemplate).frameRate,
-            frameCounts: durationMetaForTemplate(videoTemplate).frameCounts,
-            selectedEpisodeDurationSec: selected,
-            allowed,
-            reason: allowed ? "" : `每集时长 ${selected}s 不在视频模型「${videoTemplate}」的档位 [${(durations || []).join("/")}]s 内（时长必须从档位里选）`,
+            durations: meta.durations,
+            verified: meta.verified,
+            frameRate: meta.frameRate,
+            frameCounts: meta.frameCounts,
+            note: meta.note,
         };
     }
 
@@ -2415,8 +2411,10 @@ ${JSON.stringify(partials, null, 2)}
                 ...(warningReason ? { warning: { reason: warningReason } } : {}),
             };
         }
-        // 单集时长作片段默认时长：条目自带 durationSec 时优先用它，否则用 plan.episodeDurationSec，再回落 config.videoSeconds。
-        const videoDefaultSeconds = style.episodeDurationSec ?? (Number(pipelineConfig.videoSeconds) || 5);
+        // 单镜（片段）时长跟**所选视频模型的档位**走，**不从项目参数取**（单集时长 ≠ 单镜时长，2026-10-04 产品口径）。
+        // 条目自带 durationSec 时优先用它；否则用模型档位默认（durations.js 唯一事实源），再回落 config.videoSeconds。
+        const modelTierSeconds = durationsForTemplate(pipelineConfig.videoTemplate)?.[0] ?? null;
+        const videoDefaultSeconds = modelTierSeconds ?? (Number(pipelineConfig.videoSeconds) || 5);
         item.durationSec = Number(item.durationSec) > 0 ? Number(item.durationSec) : videoDefaultSeconds;
         if (!item.keyframeId) item.keyframeId = start?.id ?? null;
         const shot = shots.find((entry) => entry.id === item.shotId);

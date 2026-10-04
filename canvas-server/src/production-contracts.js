@@ -128,7 +128,7 @@ export function normalizeProjectBrief(input) {
         languages: normalizeStringArray(body.languages, "languages", c),
         platformProfiles: normalizeStringArray(body.platformProfiles, "platformProfiles", c),
         episodeCount: normalizePositiveInt(body.episodeCount, 1, "episodeCount", c),
-        episodeDurationSec: normalizePositiveNumber(body.episodeDurationSec, 60, "episodeDurationSec", c),
+        episodeDurationSec: normalizePositiveNumber(body.episodeDurationSec, 120, "episodeDurationSec", c),
         visualMode: normalizeVisualMode(body.visualMode, c),
         audioMode: normalizeAudioMode(body.audioMode, c),
         delivery: normalizeDelivery(body.delivery, c),

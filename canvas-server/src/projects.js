@@ -24,7 +24,7 @@ const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 const ULID_PATTERN = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 
 /** Plan 必填字段默认值（D8：项目级默认）。audioMode 默认「独立配音」（见产品决策：视频归 H3、台词归独立 TTS）。 */
-const PLAN_DEFAULTS = Object.freeze({ genre: "", tone: "", visualStyle: "", ratio: "9:16", episodeDurationSec: 60, dramaMode: "短剧向", audience: "", episodeCount: 1, audioMode: AUDIO_MODE.SEPARATE_DIALOGUE_TRACK });
+const PLAN_DEFAULTS = Object.freeze({ genre: "", tone: "", visualStyle: "", ratio: "9:16", episodeDurationSec: 120, dramaMode: "短剧向", audience: "", episodeCount: 1, audioMode: AUDIO_MODE.SEPARATE_DIALOGUE_TRACK });
 
 const PLAN_AUDIO_MODES = new Set(Object.values(AUDIO_MODE));
 

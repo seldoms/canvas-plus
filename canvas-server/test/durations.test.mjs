@@ -226,7 +226,8 @@ function build(env, options = {}) {
     return { pipeline };
 }
 
-const PROJECT = { id: "prj_dur", plan: { episodeDurationSec: 15 }, assetRefs: [] };
+// 单集目标时长 = 作品规格（30s 只为测试取值；它 MUST NOT 要求落在模型单镜档位 [5,10,15] 内）。
+const PROJECT = { id: "prj_dur", plan: { episodeDurationSec: 30 }, assetRefs: [] };
 const projectGetter = (id) => (id === PROJECT.id ? PROJECT : null);
 
 function stageReply(content) {
@@ -246,26 +247,27 @@ test("D1 集成：Σ段时长≠骨架 → 分镜阶段显式报出缺多少秒�
 
     const skeleton = pipeline.skeletonOf(run.id);
     assert.ok(skeleton, "分镜阶段应产出 skeleton 报告");
-    assert.equal(skeleton.ok, false, "Σ=12 ≠ 骨架 15 → 不对齐");
+    assert.equal(skeleton.ok, false, "Σ=12 ≠ 单集目标 30 → 不对齐");
     assert.deepEqual(skeleton.durations, [5, 10, 15]);
-    assert.equal(skeleton.planSkeletonSeconds, 15);
+    assert.equal(skeleton.planSkeletonSeconds, 30);
     const episode = skeleton.episodes[0];
-    assert.equal(episode.skeletonSeconds, 15);
+    assert.equal(episode.skeletonSeconds, 30);
     assert.equal(episode.totalSeconds, 12);
-    assert.equal(episode.missingSeconds, 3, "缺 3 秒要显式报出");
+    assert.equal(episode.missingSeconds, 18, "缺 18 秒要显式报出");
     assert.deepEqual(episode.invalidDurations, [2]);
 
     const stage = pipeline.get(run.id).stages.storyboard;
     assert.ok(Array.isArray(stage.warnings) && stage.warnings.some((warning) => /未对齐骨架/.test(warning)), "缺段必须写进 stage.warnings，不静默");
-    assert.ok(stage.warnings.some((warning) => /还缺 3s/.test(warning)));
+    assert.ok(stage.warnings.some((warning) => /还缺 18s/.test(warning)));
 });
 
-test("D1 集成：骨架对齐（Σ=15）时 skeleton.ok=true 且无骨架告警", async (t) => {
+test("D1 集成：Σ 等于单集目标时长时 skeleton.ok=true 且无骨架告警", async (t) => {
     const env = makeSkillsEnv({ videoTemplate: "video_h3_i2v" });
     t.after(() => rmSync(env.root, { recursive: true, force: true }));
     const even = { shots: [
         { id: "sh1", sceneId: "sc1", index: 1, durationSec: 5, prompt: "p1", action: "a1" },
         { id: "sh2", sceneId: "sc1", index: 2, durationSec: 10, prompt: "p2", action: "a2" },
+        { id: "sh3", sceneId: "sc1", index: 3, durationSec: 15, prompt: "p3", action: "a3" },
     ] };
     const llm = fakeLlm((content) => (content.includes("分镜师") ? even : SCRIPT));
     const { pipeline } = build(env, { llm, jobs: fakeJobQueue(), getProject: projectGetter, runJob: async () => ({ outputs: [] }) });
@@ -274,22 +276,47 @@ test("D1 集成：骨架对齐（Σ=15）时 skeleton.ok=true 且无骨架告警
     await pipeline.runStage(run.id, "storyboard");
     const skeleton = pipeline.skeletonOf(run.id);
     assert.equal(skeleton.ok, true);
-    assert.equal(skeleton.episodes[0].totalSeconds, 15);
+    assert.equal(skeleton.episodes[0].totalSeconds, 30);
     assert.equal(skeleton.episodes[0].missingSeconds, 0);
     assert.ok(!(pipeline.get(run.id).stages.storyboard.warnings || []).some((warning) => /未对齐骨架/.test(warning)));
 });
 
-test("D1 后端校验：durationPolicy 给出「可选档位集合」并判所选时长是否合法", async (t) => {
+test("单集目标时长是作品规格：不落在模型单镜档位内也不得报「不在档位」；只有单镜时长越档才报", async (t) => {
+    const env = makeSkillsEnv({ videoTemplate: "video_h3_i2v" });
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    // 单集目标 90s（不是任何 H3 档位）+ 三条镜头都在档位内（5/10/15）→ 只报「Σ 与目标不符」，不报「集时长不在档位」。
+    const shots = { shots: [
+        { id: "sh1", sceneId: "sc1", index: 1, durationSec: 5, prompt: "p1", action: "a1" },
+        { id: "sh2", sceneId: "sc1", index: 2, durationSec: 10, prompt: "p2", action: "a2" },
+        { id: "sh3", sceneId: "sc1", index: 3, durationSec: 15, prompt: "p3", action: "a3" },
+    ] };
+    const llm = fakeLlm((content) => (content.includes("分镜师") ? shots : SCRIPT));
+    const project = { id: "prj_dur90", plan: { episodeDurationSec: 90 }, assetRefs: [] };
+    const { pipeline } = build(env, { llm, jobs: fakeJobQueue(), getProject: (id) => (id === project.id ? project : null), runJob: async () => ({ outputs: [] }) });
+    const run = pipeline.create({ novel: "x", title: "y", options: { projectId: project.id } });
+    await pipeline.runStage(run.id, "script");
+    await pipeline.runStage(run.id, "storyboard");
+
+    const skeleton = pipeline.skeletonOf(run.id);
+    assert.equal(skeleton.planSkeletonSeconds, 90, "单集目标时长照原样落进 skeleton（不折算档位）");
+    assert.deepEqual(skeleton.episodes[0].invalidDurations, [], "三条单镜时长都在档位内");
+    const warnings = pipeline.get(run.id).stages.storyboard.warnings || [];
+    assert.ok(!warnings.some((warning) => /不在视频模型/.test(warning)), "单集时长不是单镜档位，绝不得报「不在档位」");
+    assert.ok(warnings.some((warning) => /还缺 60s/.test(warning)), "Σ(30s) 与单集目标(90s) 差额仍要显式报出");
+});
+
+test("单镜档位策略：durationPolicy 只报模型的单镜档位，不拿「单集时长」比档位", async (t) => {
     const env = makeSkillsEnv({ videoTemplate: "video_h3_i2v" });
     t.after(() => rmSync(env.root, { recursive: true, force: true }));
     const { pipeline } = build(env, { jobs: fakeJobQueue(), runJob: async () => ({ outputs: [] }), getProject: projectGetter });
-    const run = pipeline.create({ novel: "x", title: "y", options: { projectId: PROJECT.id } });
-    const policy = pipeline.durationPolicy(run.id);
+    const policy = pipeline.durationPolicy();
     assert.equal(policy.videoTemplate, "video_h3_i2v");
     assert.deepEqual(policy.durations, [5, 10, 15]);
-    assert.equal(policy.selectedEpisodeDurationSec, 15);
-    assert.equal(policy.allowed, true);
+    assert.equal(policy.verified, true);
     assert.equal(policy.frameCounts["15"], 362);
+    // 「单集时长」（plan 里的作品规格）绝不进这里 —— 它不是单镜档位，不该被拿去比档位。
+    assert.equal("selectedEpisodeDurationSec" in policy, false);
+    assert.equal("allowed" in policy, false);
 });
 
 test("D3：关键帧单镜一次入队 ≥4 个候选（假队列干跑，不触发真实生成）", async (t) => {

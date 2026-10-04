@@ -1050,9 +1050,14 @@ test("plan 驱动：ratio 推导 32 倍数尺寸、styleAnchor 与设定进生�
     assert.equal(run.options.projectId, "prj_test");
 });
 
-test("plan 驱动：生视频同样带 styleAnchor，episodeDurationSec 作片段默认时长", async (t) => {
+test("单镜时长跟视频模型档位走：片段默认时长不取 plan.episodeDurationSec（单集时长 ≠ 单镜时长）", async (t) => {
     const env = makeEnv();
     t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    // 真实 H3 模板 + 故意把 config 默认设成 99：片段未自带 durationSec 时必须取 H3 档位首档 5s，
+    // 既不是 plan.episodeDurationSec=7，也不是 config.videoSeconds=99。
+    env.config.workflowsDir = workflowsDir;
+    env.config.pipeline.videoTemplate = "video_h3_i2v";
+    env.config.pipeline.videoSeconds = 99;
     const noDurationClips = { clips: [{ id: "sh1-clip", shotId: "sh1", keyframeId: "sh1-start" }], assembly: { order: [], transition: "cut" } };
     const reply = (content) => (content.includes("片段合成师") ? noDurationClips : stageReply(content));
     const { pipeline, jobs, run, startJob } = await toProjectKeyframe(env, TEST_PROJECT, { reply });
@@ -1062,14 +1067,14 @@ test("plan 驱动：生视频同样带 styleAnchor，episodeDurationSec 作片�
     const assembled = await pipeline.runStage(run.id, "assembly");
     const clip = assembled.stages.assembly.output.clips[0];
 
-    // 片段未自带 durationSec → 用 plan.episodeDurationSec=7（不是 config.videoSeconds=5）
-    assert.equal(clip.durationSec, 7);
+    // 单镜（片段）时长 = 所选视频模型档位（H3 首档 5s）；plan 的「单集时长」（7s）不得泄漏成单镜时长。
+    assert.equal(clip.durationSec, 5, "取 H3 档位首档 5s，不取 plan.episodeDurationSec=7、也不取 config.videoSeconds=99");
+    assert.notEqual(clip.durationSec, TEST_PROJECT.plan.episodeDurationSec);
     const clipJob = jobs.get(clip.jobId);
-    assert.equal(clipJob.params.WIDTH, 1376);
-    assert.equal(clipJob.params.HEIGHT, 768);
-    assert.equal(clipJob.params.PROMPT.split("。")[0], TEST_PROJECT.styleAnchor);
-    // LENGTH 走 17n+5 帧网格：7s*24=168 帧 → 不小于 168 的网格点 175
-    assert.equal(clipJob.params.LENGTH, 175);
+    // H3 提示词由编译器按模型口径产出，风格锚点内嵌其中（不再是「首句 = 锚点」的生图口径）。
+    assert.ok(clipJob.params.PROMPT.includes(TEST_PROJECT.styleAnchor), "生视频提示词要带 styleAnchor");
+    // LENGTH 走 17n+5 帧网格：5s*24=120 帧 → 不小于 120 的网格点 124
+    assert.equal(clipJob.params.LENGTH, 124);
 });
 
 test("不传 getProject：生成参数与失败行为逐字不变（不自动重试）", async (t) => {

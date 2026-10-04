@@ -61,7 +61,7 @@ test("ProjectBrief：缺字段全部规范化为安全默认并逐条告警", ()
         languages: [],
         platformProfiles: [],
         episodeCount: 1,
-        episodeDurationSec: 60,
+        episodeDurationSec: 120,
         visualMode: "local_short",
         audioMode: "separate_dialogue_track",
         delivery: { video: "h264-aac-mp4", subtitles: [], cover: false },

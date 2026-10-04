@@ -57,7 +57,7 @@ test("ProjectBrief：缺字段全部回落安全默认并逐条告警", () => {
     assert.equal(value.market, "global");
     assert.equal(value.visualMode, "local_short");
     assert.equal(value.audioMode, "separate_dialogue_track");
-    assert.equal(value.episodeDurationSec, 60);
+    assert.equal(value.episodeDurationSec, 120);
     assert.equal(value.version, 1);
     for (const field of ["genre", "tone", "audience", "market", "visualMode", "budget", "version"]) {
         assert.ok(warn(warnings, field, "defaulted"), `期望 ${field} 有 defaulted 告警`);
