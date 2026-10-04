@@ -14,6 +14,11 @@ import { listTemplates } from "./providers/comfy.js";
 import { buildShotBinding, missingRefsReport, resolveSelectedArtifacts, stableSeed } from "./reference-lock.js";
 // 分辨率/画幅：片段 / 关键帧 / 成片尺寸一律经 sizeForRatio 从「模型官方规格登记表」取（不再实时按比例推导）。
 import { sizeForRatio } from "./sizes.js";
+// 平台音色库（唯一事实源）：命名音色 + 语种枚举 + 音色适配（原 pipeline 内的 qwen3Language/qwen3Speaker 已搬到这里）。
+import { QWEN3_TTS_SPEAKERS, isLanguageAllowed, isSpeakerAllowed, qwen3Language, qwen3Speaker } from "./voices.js";
+// 角色定妆身份卡契约层（锁脸锁声音）：纯逻辑归一 + design 脸产物读取 + 就绪度判定。
+import { buildCastingOutput, castingReadiness, normalizeCasting } from "./casting.js";
+
 // 提示词编译器：按所选模型把「模型无关的内容事实」编译成该模型要的提示词（图片/视频一视同仁）。
 import { compilePromptForTemplate, compilePromptForTemplateAsync, presetForTemplate, stripUntranslatedMarker } from "./prompt-compiler.js";
 // 台词归属口径跟着模型走：模型能力元数据（H3=(S1)+<d>；TTS=SPEAKER+INSTRUCT；纯视频/生图=无）。
@@ -31,44 +36,18 @@ const STAGE_TEMPLATE_FAMILY = Object.freeze({ keyframe: "image", assembly: "vide
 /** 需要绑定音色的声音类型（对白 / 旁白）——与 audio.js 的 DIALOGUE_TYPES 同语义。 */
 const DIALOGUE_TYPES = new Set(["dialogue", "narration"]);
 
-/** Qwen3-TTS 命名音色枚举（与 147 `TDQwen3TTSCustomVoice.speaker` 的 ENUM 一致，见 workflows/audio_qwen3_tts.json）。 */
-const QWEN3_TTS_SPEAKERS = Object.freeze(["Aiden", "Dylan", "Eric", "Ono_anna", "Ryan", "Serena", "Sohee", "Uncle_fu", "Vivian"]);
-
 /** 生成型阶段 → 自动登记的 AssetRef.role（取值见 contracts.js 的 ASSET_ROLE，不自造枚举）：关键帧出图给 keyframe，片段/成片给 clip。 */
 const GENERATIVE_STAGE_ASSET_ROLE = Object.freeze({ keyframe: ASSET_ROLE.KEYFRAME, assembly: ASSET_ROLE.CLIP });
 
-/** BCP-47 → Qwen3-TTS `language` 枚举（147 `TDQwen3TTSCustomVoice.language`）；未知回落 Auto（模型自判）。 */
-function qwen3Language(language) {
-    const base = String(language ?? "").trim().toLowerCase().split(/[-_]/)[0];
-    const table = { zh: "Chinese", cmn: "Chinese", en: "English", ja: "Japanese", ko: "Korean", de: "German", fr: "French", ru: "Russian", pt: "Portuguese", es: "Spanish", it: "Italian" };
-    return table[base] || "Auto";
-}
-
 /**
- * 把「角色音色事实」适配成 Qwen3-TTS 的命名音色（`{{SPEAKER}}`）。
- *
- * 架构铁律：内容层只产出**模型无关的音色描述**（如「音色低沉沙哑，语速慢」），把描述映射成某个 TTS 模型的
- * 音色枚举属于**后端适配**，发生在发起生成请求这一刻（与 prompt-compiler 同族）。因此本函数不写进任何内容产物。
- * 优先级：内容层已给合法枚举 → 直接用；否则按音色描述的音高线索（低沉/清亮）→ 否则按性别 → 否则按角色 id 稳定散列。
+ * 因「角色定妆未完成 / 存在未确认角色」而阻断的下游阶段（E：未确认就拦住）。
+ * 判据由 casting.js 的 castingReadiness 给出；拦住机制复用 #70 的 blocked 可见机制
+ * （status=blocked + blockedReason/blockedMissing + 「运行本步」解禁），不另造一套。
  */
-function qwen3Speaker(profile, character) {
-    const raw = String(profile?.speaker ?? "").trim();
-    if (QWEN3_TTS_SPEAKERS.includes(raw)) return raw;
-    const voiceText = [profile?.timbre, profile?.design].filter(Boolean).join(" ");
-    const low = /低沉|沙哑|低音|浑厚|醇厚|粗|磁/.test(voiceText);
-    const high = /清亮|明亮|高音|尖|细|清脆|甜/.test(voiceText);
-    if (low && !high) return "Uncle_fu";
-    if (high && !low) return "Serena";
-    const text = [character?.appearance, character?.profile, character?.name, profile?.name].filter(Boolean).join(" ");
-    const female = /女性|女|少女|姑娘|女孩|妈|母|姐|妹|她/.test(text);
-    const male = /男性|男|老船长|船长|爸|父|爷|叔|他/.test(text);
-    if (female && !male) return "Serena";
-    if (male && !female) return "Aiden";
-    const seedText = String(profile?.characterId ?? profile?.name ?? profile?.id ?? "voice");
-    let hash = 0;
-    for (const ch of seedText) hash = (hash * 31 + ch.codePointAt(0)) >>> 0;
-    return hash % 2 === 0 ? "Aiden" : "Dylan";
-}
+const CASTING_GATED_STAGES = new Set(["keyframe", "audio"]);
+
+/** 阶段被 casting 门禁拦住时打的标记，用于「确认后精确解除」而不误清其它来源的 blocked。 */
+const CASTING_BLOCK_FLAG = "casting";
 
 /**
  * 为一条对白 Cue 解析说话角色的 VoiceProfile。
@@ -495,6 +474,16 @@ export function createPipeline({ config, skillsDir, jobs, comfy, llm, llmCall, r
             const block = upstreamBlock(depId, run?.stages?.[depId]);
             if (block) blockedBy.push(block);
         }
+        // E：角色定妆门禁 —— casting 阶段已产出（done）但存在未确认角色时，keyframe / audio 也要拦住，
+        // 并逐角色写清缺脸还是缺声（复用 #70 的 blocked 可见机制，不静默降级）。
+        // 仅在「注册表里有 casting 阶段 且 本 run 里有 casting 阶段」时生效（旧注册表 / 存量 run 行为不变）。
+        if (stageDefs.has("casting") && CASTING_GATED_STAGES.has(def.id)) {
+            const castingStage = run?.stages?.casting;
+            if (castingStage && castingStage.status === "done") {
+                const readiness = castingReadiness(castingStage.output);
+                if (!readiness.ready) blockedBy.push({ type: "casting", stageId: "casting", message: readiness.reason });
+            }
+        }
         const ready = blockedBy.length === 0;
         return { stageId: def.id, title: def.title, ready, reason: ready ? "可运行（上游已就绪）" : blockedBy.map((item) => item.message).join("；"), blockedBy };
     }
@@ -603,6 +592,8 @@ export function createPipeline({ config, skillsDir, jobs, comfy, llm, llmCall, r
             stage.status = "done";
             stage.error = undefined;
             stage.finishedAt = stage.finishedAt || nowIso();
+            // 人工修订 casting 产物（含确认）后立即重算 casting 门禁：确认齐 → 解除 keyframe/audio 的阻断。
+            if (def.id === "casting") enforceCastingGate(run);
             saveOutput(run.id, def.id, body.output);
         } else {
             stage.inputs = { ...stage.inputs, ...body };
@@ -2795,6 +2786,171 @@ ${JSON.stringify(partials, null, 2)}
         }
     }
 
+    /**
+     * 角色定妆阶段（casting）：**确定性组装**身份卡，不调 LLM。
+     *
+     * 只做两件事 —— 定脸 + 定声音：
+     *   - 脸：**复用** design 阶段产出的参考图（closeupPrompt / turnaroundPrompt → design.output.references →
+     *     artifactUrl），经 casting.js 的 faceArtifactsFor 读取并写进 face.closeupArtifactId / turnaroundArtifactIds
+     *     （不重写生成与绑定，绑定仍由 bindDesignReferenceArtifacts 负责）；
+     *   - 声音：从剧本角色音色事实经 projectVoiceProfiles 归一成 VoiceProfile，再把 speaker 适配成**平台音色库**
+     *     （voices.js）里的合法命名音色；language 归一为枚举；design/speed 取内容层事实。
+     *
+     * prev 用于**继承已确认状态**：重跑只刷新脸/声字段，不把人确认过的 face.confirmed / voice.confirmed 抹掉。
+     * 产出后立即执行 casting 门禁：未确认 → keyframe / audio 置 blocked（复用 #70 机制，绝不静默降级）。
+     */
+    function attachCasting(run, def, stage, prev) {
+        const project = projectOf(run);
+        const scriptOutput = run.stages?.script?.output || {};
+        const design = run.stages?.design?.output || null;
+        const projectChars = Array.isArray(project?.script?.characters) ? project.script.characters : [];
+        const scriptChars = Array.isArray(scriptOutput.characters) ? scriptOutput.characters : [];
+        const designChars = Array.isArray(design?.characters) ? design.characters : [];
+        const characters = projectChars.length ? projectChars : scriptChars.length ? scriptChars : designChars;
+        const { profiles } = projectVoiceProfiles({ project, design, characters });
+        const output = buildCastingOutput({ characters, design, voiceProfiles: profiles, prev });
+        stage.output = output;
+        stage.status = "done";
+        stage.error = undefined;
+        stage.finishedAt = nowIso();
+        enforceCastingGate(run);
+    }
+
+    /**
+     * 取某 run 的角色定妆就绪度。run 里没有 casting 阶段（历史 run / 旧注册表）时返回 null —— 
+     * 此时不做 casting 门禁（保持旧行为，绝不给存量 run 平白加阻断）。
+     */
+    function castingReadinessOf(run) {
+        const stage = run?.stages?.casting;
+        if (!stage) return null;
+        return castingReadiness(stage.output);
+    }
+
+    /**
+     * 角色定妆门禁投影（E：未确认就拦住下游）。
+     *
+     * - casting 未完成 / 存在未确认角色 → 把 keyframe 与 audio 置 `status=blocked`，并写
+     *   `blockedReason` / `blockedMissing`（逐角色列出缺脸还是缺声）/ `blocked`（复用 #70 的可见形状）；
+     * - 全部确认 → 精确解除：仅清掉**本门禁**打的 blocked（`blockedBy === "casting"`），不误清其它来源的阻断；
+     * - run 里没有 casting 阶段 → 空操作（旧行为逐字不变）；
+     * - 正在 running 的下游阶段不打断（等它自己结束）。
+     * @returns {boolean} 是否改动了 run（调用方据此决定是否 saveRun）
+     */
+    function enforceCastingGate(run) {
+        const castingStage = run?.stages?.casting;
+        if (!castingStage) return false;
+        const readiness = castingReadiness(castingStage.output);
+        let changed = false;
+        for (const id of CASTING_GATED_STAGES) {
+            const stage = run.stages?.[id];
+            if (!stage) continue;
+            if (readiness.ready) {
+                if (stage.blockedBy !== CASTING_BLOCK_FLAG) continue;
+                delete stage.blocked;
+                delete stage.blockedReason;
+                delete stage.blockedMissing;
+                delete stage.blockedBy;
+                delete stage.error;
+                if (stage.status === "blocked") stage.status = "pending";
+                changed = true;
+                continue;
+            }
+            if (stage.status === "running") continue;
+            stage.status = "blocked";
+            stage.blockedBy = CASTING_BLOCK_FLAG;
+            stage.blockedReason = readiness.reason;
+            stage.error = readiness.reason;
+            stage.blockedMissing = readiness.blocked.map((card) => ({ characterId: card.characterId, name: card.name, missing: card.missing }));
+            stage.blocked = readiness.blocked.map((card) => ({ itemId: card.characterId, reason: `角色「${card.name}」缺 ${card.missing.join("、")}` }));
+            changed = true;
+        }
+        return changed;
+    }
+
+    /**
+     * 确认角色定妆（人工动作）：设置 face.confirmed / voice.confirmed / 角色 confirmed。
+     *
+     * - face 确认为真前必须有产物（正脸特写或三视图），否则可读报错（不假装已锁脸）；
+     * - voice 的 speaker / language **只能**取平台音色库枚举，非法值 400；
+     * - 角色 confirmed = 脸与声都真；确认时写 `lockedAt`（ISO）；**确认后修改**则 `version + 1`。
+     */
+    function confirmCasting(runId, patch = {}) {
+        const run = requireRun(runId);
+        const def = requireStageDef("casting");
+        const stage = requireStage(run, def);
+        const output = normalizeCasting(stage.output);
+        if (!output.characters.length) throw gateError("角色定妆还没有角色身份卡，请先运行「角色定妆」", 409);
+        const body = patch && typeof patch === "object" ? patch : {};
+        const wanted = String(body.characterId ?? body.id ?? "").trim();
+        const card = wanted
+            ? output.characters.find((item) => item.characterId === wanted)
+            : output.characters.length === 1
+              ? output.characters[0]
+              : null;
+        if (!card) throw gateError(wanted ? `角色定妆里没有角色：${wanted}` : "有多个角色，请指定要确认的 characterId", 400);
+
+        const before = JSON.stringify(card);
+        const wasConfirmed = card.confirmed === true;
+
+        if (body.closeupArtifactId !== undefined) card.face.closeupArtifactId = String(body.closeupArtifactId ?? "").trim();
+        if (Array.isArray(body.turnaroundArtifactIds)) card.face.turnaroundArtifactIds = body.turnaroundArtifactIds.map((item) => String(item)).filter(Boolean);
+        if (body.face !== undefined) {
+            if (body.face === true) {
+                if (!(card.face.closeupArtifactId || card.face.turnaroundArtifactIds.length)) {
+                    throw gateError(`角色「${card.name || card.characterId}」还没有正脸或三视图产物，不能确认脸`, 409);
+                }
+                card.face.confirmed = true;
+            } else if (body.face === false) {
+                card.face.confirmed = false;
+            }
+        }
+
+        if (body.speaker !== undefined) {
+            const speaker = String(body.speaker ?? "").trim();
+            if (!isSpeakerAllowed(speaker)) throw gateError(`不支持的音色「${speaker}」；可选：${QWEN3_TTS_SPEAKERS.join(" / ")}`, 400);
+            card.voice.speaker = speaker;
+        }
+        if (body.design !== undefined) card.voice.design = String(body.design ?? "");
+        if (body.language !== undefined) {
+            const language = String(body.language ?? "").trim();
+            if (language && !isLanguageAllowed(language)) throw gateError(`不支持的语种「${language}」`, 400);
+            card.voice.language = language || card.voice.language;
+        }
+        if (body.speed !== undefined) {
+            const speed = Number(body.speed);
+            if (!Number.isFinite(speed) || speed <= 0) throw gateError("speed 必须是正数", 400);
+            card.voice.speed = speed;
+        }
+        if (body.previewArtifactId !== undefined) card.voice.previewArtifactId = String(body.previewArtifactId ?? "").trim();
+        if (body.voice !== undefined) {
+            if (body.voice === true) {
+                if (!isSpeakerAllowed(card.voice.speaker)) throw gateError(`角色「${card.name || card.characterId}」还没有选定合法音色，不能确认声音`, 409);
+                card.voice.confirmed = true;
+            } else if (body.voice === false) {
+                card.voice.confirmed = false;
+            }
+        }
+
+        card.confirmed = card.face.confirmed === true && card.voice.confirmed === true;
+        const after = JSON.stringify(card);
+        if (card.confirmed) {
+            // 确认后再次修改 → version + 1；首次确认不涨版本。两种情况都刷新 lockedAt。
+            if (wasConfirmed && before !== after) card.version = (Number(card.version) || 1) + 1;
+            card.lockedAt = nowIso();
+        } else {
+            card.lockedAt = null;
+        }
+
+        stage.output = output;
+        stage.status = "done";
+        stage.error = undefined;
+        stage.finishedAt = stage.finishedAt || nowIso();
+        enforceCastingGate(run);
+        saveOutput(run.id, def.id, stage.output);
+        const saved = saveRun(run);
+        return { run: saved, character: card, readiness: castingReadiness(output) };
+    }
+
     /** Job 终态投影：按 meta 反查 run/stage/item，幂等回写候选与派生字段，并让前置刚就绪的下游条目入队。 */
     function projectJob(job) {
         if (!job || !TERMINAL_JOB.has(job.status)) return null;
@@ -2902,9 +3058,11 @@ ${JSON.stringify(partials, null, 2)}
         try {
             // 生成型阶段重排前的产物，用于继承旧候选（重跑只追加候选，不清空旧 jobId/artifactUrl）。
             // design 也保留 prev：它现在会真正产出参考图（与基类生成型阶段相同的候选继承语义）。
-            const prevOutput = GENERATIVE_STAGES.has(def.id) || def.id === "design" || def.id === "audio" ? stage.output : null;
-            // 配音阶段不调 LLM：Cue 由分镜台词与角色音色确定性派生（见 attachAudio）。
-            if (def.id !== "audio") {
+            // casting 保留 prev：重跑时继承已确认的 face/voice 确认状态（不抹掉人确认过的结果）。
+            const prevOutput = GENERATIVE_STAGES.has(def.id) || def.id === "design" || def.id === "audio" || def.id === "casting" ? stage.output : null;
+            // 配音 / 角色定妆阶段不调 LLM：Cue 由分镜台词与角色音色确定性派生（见 attachAudio），
+            // 身份卡由剧本角色 + design 脸产物 + VoiceProfile 确定性组装（见 attachCasting）。
+            if (def.id !== "audio" && def.id !== "casting") {
                 await composeWithLlm(run, def, stage, provider, { signal: runOptions.signal, resume: Boolean(runOptions.resume), estSecondsPerChunk });
             }
             if (def.id === "audio") {
@@ -2916,6 +3074,9 @@ ${JSON.stringify(partials, null, 2)}
                 } else {
                     attachAudio(run, def, stage, prevOutput);
                 }
+            } else if (def.id === "casting") {
+                // 角色定妆：定脸 + 定声音 → 身份卡；未确认则立即把 keyframe / audio 置 blocked。
+                attachCasting(run, def, stage, prevOutput);
             } else if (GENERATIVE_STAGES.has(def.id)) {
                 // 语言适配预编译：入队前用注入的 llmCall 把「仅英文有官方依据」的模型提示词英文化（异步、失败只降级不阻塞）。
                 const genItems = def.id === "keyframe" ? stage.output?.frames : stage.output?.clips;
@@ -3201,5 +3362,5 @@ ${JSON.stringify(partials, null, 2)}
         return fixed;
     }
 
-    return { stages, list, get, create, estimate: estimateFor, runStage, beginStage, executeStage, stageProgress, reconcileRunning, setStageInput, projectJob, bindJobs, cancelStage, beginAssemble, executeAssemble, assembleStage, beginRegenerate, executeRegenerate, stageGate, stageGates, patchStageShot, durationPolicy, skeletonOf };
+    return { stages, list, get, create, estimate: estimateFor, runStage, beginStage, executeStage, stageProgress, reconcileRunning, setStageInput, projectJob, bindJobs, cancelStage, beginAssemble, executeAssemble, assembleStage, beginRegenerate, executeRegenerate, stageGate, stageGates, patchStageShot, durationPolicy, skeletonOf, castingReadinessOf, enforceCastingGate, confirmCasting };
 }

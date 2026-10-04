@@ -4,14 +4,22 @@
         { "id": "script", "title": "小说→剧本", "skill": "01-novel-to-script", "requires": [], "produces": "script" },
         { "id": "storyboard", "title": "分镜拆解", "skill": "02-storyboard", "requires": ["script"], "produces": "storyboard" },
         { "id": "design", "title": "服化道", "skill": "03-costume-props", "requires": ["script"], "produces": "design" },
-        { "id": "keyframe", "title": "关键帧", "skill": "04-keyframes", "requires": ["storyboard", "design"], "produces": "keyframes" },
+        {
+            "id": "casting",
+            "title": "角色定妆",
+            "skill": "03b-casting",
+            "requires": ["script", "design"],
+            "produces": "casting",
+            "_note": "角色定妆（锁脸锁声音）：从服化道里拆出的**独立环节**，只做两件事——定脸（复用 design 的正脸特写/三视图参考图）+ 定声音（从平台音色库选命名音色）。产出身份卡 characters[]；未确认不得进下游：keyframe.requires / audio.requires 含 casting，且 casting 里存在未确认角色时由编排器把二者置 blocked。"
+        },
+        { "id": "keyframe", "title": "关键帧", "skill": "04-keyframes", "requires": ["storyboard", "design", "casting"], "produces": "keyframes" },
         {
             "id": "audio",
             "title": "配音",
             "skill": "06-audio",
-            "requires": ["storyboard", "design"],
+            "requires": ["storyboard", "design", "casting"],
             "produces": "audio",
-            "_note": "配音（TTS）：逐条对白 Cue 出音，产物登记成带 shotId+startSec 的 audio item，供成片按时间轴混音。与 keyframe 并行、不阻塞 assembly（assembly.requires 仍只有 keyframe）。"
+            "_note": "配音（TTS）：逐条对白 Cue 出音，产物登记成带 shotId+startSec 的 audio item，供成片按时间轴混音。与 keyframe 并行、不阻塞 assembly（assembly.requires 仍只有 keyframe）。requires 含 casting：角色未定妆（未确认脸/声）不得进配音。"
         },
         { "id": "assembly", "title": "片段合成拼接", "skill": "05-clip-assembly", "requires": ["keyframe"], "produces": "clips" }
     ]

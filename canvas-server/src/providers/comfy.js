@@ -7,6 +7,8 @@ import { artifactUrl, ensureDir, saveBuffer } from "../files.js";
 import { durationMetaForTemplate } from "../durations.js";
 // 分辨率/画幅档位（模型能力元数据）的唯一事实源：与「模型清单」同源挂到每个模板上，随 /api/providers 输出。
 import { sizeMetaForTemplate } from "../sizes.js";
+// 平台音色库（声音从平台音色库中选）：与 durations/sizes 同源，模板清单里下发 TTS 模板的命名音色档位，前端只读。
+import { voiceMetaForTemplate } from "../voices.js";
 // 台词归属口径（模型能力元数据）的唯一事实源：H3=(S1)+<d>；TTS=SPEAKER+INSTRUCT；纯视频/生图=无。同源下发。
 import { dialogueMetaForTemplate } from "../dialogue-roles.js";
 
@@ -165,6 +167,8 @@ export function listTemplates(workflowsDir) {
             const sizeMeta = sizeMetaForTemplate(name);
             // 台词归属口径随清单同源下发：H3=(S1)+<d>、TTS=SPEAKER+INSTRUCT、纯视频/生图=无，前端只读。
             const dialogueMeta = dialogueMetaForTemplate(name);
+            // 音色档位随清单同源下发：「声音从平台音色库中选」，仅 TTS 模板有 voices，前端只读不硬编码。
+            const voiceMeta = voiceMetaForTemplate(name);
             return {
                 name,
                 family: familyOf(name),
@@ -175,6 +179,8 @@ export function listTemplates(workflowsDir) {
                 sizes: sizeMeta.sizes,
                 sizeMeta,
                 dialogueMeta,
+                voices: voiceMeta.speakers,
+                voiceMeta,
             };
         });
 }

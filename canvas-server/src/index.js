@@ -18,6 +18,8 @@ import { loadRegistry } from "./skills.js";
 import { createComfyClient, probeComfy, listComfyCapabilities, listTemplates } from "./providers/comfy.js";
 // 时长档位（D1）与模板清单同源；/api/durations 供前端按「当前视频模型」取可选档位。
 import { durationMetaForTemplate } from "./durations.js";
+// 平台音色库（声音从平台音色库中选）的唯一事实源：/api/tts/voices 与 /api/providers 同源下发。
+import { QWEN3_TTS_TEMPLATE, isLanguageAllowed, isSpeakerAllowed, listVoices, qwen3Language, qwen3Speaker } from "./voices.js";
 import { forwardToLlm, chat as llmChat, externalProviders } from "./providers/llm.js";
 // 提示词策略层的语言适配出口（DeepSeek）：流水线入队前用它把「仅英文有官方依据」的模型提示词英文化。
 import { llmCall as promptLlmCall } from "./llm-client.js";
@@ -451,6 +453,68 @@ router.get("/api/durations", (req, res, { url }) => {
     sendJson(res, 200, { template, ...durationMetaForTemplate(template) });
 });
 
+/**
+ * 平台音色库（声音从平台音色库中选）：命名音色 + 语种枚举的唯一读出口。
+ * 数据源是 147 `TDQwen3TTSCustomVoice`（只读探测），前端据此渲染音色下拉，**绝不硬编码**。
+ * 形状：`{ template, voices: string[], speakers: string[], languages: string[], defaultSpeaker, defaultLanguage, source }`。
+ */
+router.get("/api/tts/voices", (req, res, { url }) => {
+    const template = String(url?.searchParams?.get("template") || config.pipeline?.audioTemplate || QWEN3_TTS_TEMPLATE).trim();
+    const voices = listVoices();
+    sendJson(res, 200, { ...voices, template: template || voices.template });
+});
+
+/** 试听默认样句（一句中文短句），调用方未给 text 时用它。 */
+const TTS_PREVIEW_TEXT = "你好，这是角色音色试听。";
+
+/**
+ * 试听：按所选平台音色合成一句样句，产物落成 artifact（音频）并返回 `{ url, artifactId, speaker, ms }`。
+ *
+ * **复用**现有 147 ComfyUI 提交 / 轮询 / 产物登记链路（local.submit → jobs 队列 → runJob → collectOutputs），
+ * 不新开 HTTP 客户端。音色 / 语种只接受平台音色库枚举（非法值 400）；147 忙或失败一律回**可读错误**，不 500 沉默。
+ */
+router.post("/api/tts/preview", async (req, res) => {
+    let job = null;
+    const badRequest = (message) => Object.assign(new Error(message), { status: 400 });
+    try {
+        const body = await readJson(req).catch(() => ({}));
+        const speaker = String(body?.speaker ?? "").trim();
+        if (!isSpeakerAllowed(speaker)) throw badRequest(`不支持的音色「${speaker || "(空)"}」；可选：${listVoices().voices.join(" / ")}`);
+        const languageRaw = String(body?.language ?? "").trim();
+        if (languageRaw && !isLanguageAllowed(languageRaw)) throw badRequest(`不支持的语种「${languageRaw}」`);
+        const language = languageRaw || qwen3Language(body?.language) || "Auto";
+        const design = String(body?.design ?? "").trim();
+        const speedRaw = body?.speed;
+        if (speedRaw !== undefined && speedRaw !== null && speedRaw !== "") {
+            const speed = Number(speedRaw);
+            if (!Number.isFinite(speed) || speed <= 0) throw badRequest("speed 必须是正数");
+        }
+        const text = String(body?.text ?? "").trim() || TTS_PREVIEW_TEXT;
+        const template = String(config.pipeline?.audioTemplate || QWEN3_TTS_TEMPLATE).trim();
+        const verdict = registry.canRun(template);
+        if (!verdict.ok) throw new Error(`无法提交试听任务：${verdict.reason}`);
+        // 与 audio 阶段同口径的参数：音色描述进 INSTRUCT，命名音色进 SPEAKER，语种进 LANGUAGE。
+        const params = {
+            TEXT: text,
+            SPEAKER: speaker,
+            INSTRUCT: design,
+            LANGUAGE: language,
+            DEVICE: String(config.pipeline?.audioDevice || "cuda"),
+            SEED: Math.floor(Math.random() * 2 ** 31),
+            OUTPUT_PREFIX: `canvas/tts-preview-${speaker}`,
+        };
+        job = local.submit({ kind: "audio", template, name: `tts-preview-${speaker}`, params });
+        const done = await waitForJob(jobs, job.id, { timeoutMs: Number(config.pipeline?.ttsPreviewTimeoutMs) > 0 ? Number(config.pipeline.ttsPreviewTimeoutMs) : 300000, intervalMs: 1500 });
+        const output = Array.isArray(done.outputs) ? done.outputs.find((item) => item?.url) : null;
+        if (!output?.url) throw new Error("合成完成但没有音频产物");
+        sendJson(res, 200, { url: output.url, artifactId: output.url, jobId: done.id, speaker, language, text, ms: Number(done.runMs) || 0 });
+    } catch (error) {
+        // 147 忙 / 失败 / 超时：回可读错误（502），并尽力取消排队中的试听任务，不静默。
+        if (job?.id) jobs.cancel(job.id);
+        sendError(res, error.status || 502, `试听失败：${error.message}`);
+    }
+});
+
 router.get("/api/skills", (req, res) => {
     let stages = [];
     try {
@@ -786,6 +850,21 @@ router.post("/api/pipeline/runs/:id/steps/:stage/input", async (req, res, { para
         sendJson(res, 200, { run: pipeline.setStageInput(params.id, params.stage, await readJson(req)) });
     } catch (error) {
         sendError(res, 400, error.message);
+    }
+});
+
+/**
+ * 角色定妆确认（锁脸锁声音的人工动作）：body `{ characterId, face?, voice?, speaker?, design?, language?, speed?, previewArtifactId? }`。
+ * face/voice 各一个确认位；角色 confirmed = 脸与声都真；确认时写 lockedAt，确认后修改 version+1。
+ * speaker/language 只接受平台音色库枚举，非法值 400；face 未出产物就确认脸 → 409（拒绝假装已锁）。
+ * 确认齐后自动解除 keyframe / audio 的 casting 阻断（复用 #70 blocked 机制）。
+ */
+router.post("/api/pipeline/runs/:id/steps/casting/confirm", async (req, res, { params }) => {
+    try {
+        const patch = await readJson(req).catch(() => ({}));
+        sendJson(res, 200, pipeline.confirmCasting(params.id, patch));
+    } catch (error) {
+        sendError(res, error.status || 400, error.message);
     }
 });
 
