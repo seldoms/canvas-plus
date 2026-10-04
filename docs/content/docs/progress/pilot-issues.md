@@ -773,3 +773,25 @@ drive_audio = 驱动口型的那条音轨（optional AUDIO）
 - `89b20ee` 成片不再丢片段原声（`includeClipAudio` 自动判定）
 - `edd24e0` 硬规则「一镜一个人声事实源」（独立对白轨与片段原声不得同时混入，防双重人声）
 - `9c37828` / `0b20cbb` 规格档位元数据 + 「选模型→再选规格」（数据取调研报告）
+
+### 2026-10-04 口型方案落地回执 + 两个新发现
+
+**✅ 本地 lip-sync 已装成（147）**：**LatentSync 1.5**（字节，**Apache-2.0 可商用**）。
+- 选型理由：官方 min **8GB** 显存可跑；**1.5 起专门增强中文**；视频+音频型（正是“重对嘴”）；有在维护的 ComfyUI 节点包装。
+- **否决 Wav2Lip**：README 明写 *commercial use strictly prohibited*（非商用）；**LatentSync 1.6 出局**：官方 min **18GB** > 本卡 16GB。
+- 装完重启 3 次后：ComfyUI 0.38.2 正常、**H3/MiniMax 节点 57 → 57 丢失 0**、节点总数 4485 → 4487。
+- 最小样例（已有带对白片段 + TTS 音频）：**首跑 160.7s**（含加载 5GB 权重）；**换台词重跑 48.3s**；
+  显存峰值 **5.03–5.91GB**；约 **0.9 s/帧**（20 steps, 256px）。**对比重跑 H3 一条 ≈270s → 省约 5.6 倍**。
+- ⚠️ **质量上限**：1.5 走 **256×256**，嘴部/下脸**偏软、唇纹变模糊**（身份/构图/光照完好）。1.6 画质更好但显存不够。
+- ⚠️ 打了 1 行补丁（`torchaudio.save` → `soundfile.write`：147 的 torchaudio 2.10 走 torchcodec 缺 FFmpeg 共享 DLL，
+  而 147 是静态 build）→ 已留 `nodes.py.orig` 备份；**`git pull` 更新节点会覆盖此补丁**，需记进维护手册。
+| 一手：147 `/object_info` 有 `LatentSyncNode`/`VideoLengthAdjuster`（我本人核过）；产物 `/root/lipsync_out.mp4` h264 768×1376 109帧 + aac | — | 已装成 |
+
+**⚠️ 新发现 ①：H3 画面里把字幕烧死了**。H3 出片时**把台词作为字幕烧进画面**，走独立配音换台词后，
+**片内字幕仍是老台词** → 字幕与口型/音频不一致。**产线必须同步重做字幕**（或生成时不开字幕）。待评估。
+**⚠️ 新发现 ②（已修）**：真编译对照证明修复前 `source=shot_text_ambiguous / warnings=["speaker_ambiguous"]`
+—— 即旧字符串台词无法归属，正是「配音全落第一个角色」的根因。现已结构化 + 跨镜稳定编号。
+
+**✅ 台词归属已落地**（`8d89ace`，756/756）：`shot.dialogueLines[]` = `{speaker,text,performance}`（旧字符串兼容）；
+元数据 `dialogue-roles.js`（H3=`(S1)`+`<d>` / TTS=`SPEAKER`+`INSTRUCT` / 纯视频与生图=无）；归属逐级回落+warning；
+真编译产物 `阿海 (S1) says: <d>[English] …</d> 小满 (S2) …` 归属正确且跨镜稳定。
