@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
 import { SIZE_CATALOG, pixelCapForTemplate, sizeMetaForTemplate } from "../src/sizes.js";
-import { validateDurationParams, validateGenerationParams, validateSizeParams } from "../src/capability-limits.js";
+import { adaptDurationParams, adaptGenerationParams, adaptSizeParams, ratioOfSize, validateDurationParams, validateGenerationParams, validateSizeParams } from "../src/capability-limits.js";
 import { listTemplates } from "../src/providers/comfy.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -149,4 +149,144 @@ test("审计：每个视频模板的每个官方规格档都不超该模型的�
     assert.ok(derived, "H3 应有 1792x768 派生档");
     assert.equal(derived.width * derived.height, 1376256);
     assert.ok(derived.width * derived.height <= H3_CAP_PIXELS);
+});
+
+// ————————————————————— 自适应：把「拒绝」换成「按比例吸附到合法档」 —————————————————————
+
+test("ratioOfSize：从 W×H 判方向/比例（16:9 / 9:16 / 1:1 / 21:9 别名 / 4:3 / 3:4）", () => {
+    assert.equal(ratioOfSize(1920, 1080), "16:9");
+    assert.equal(ratioOfSize(1280, 720), "16:9");
+    assert.equal(ratioOfSize(1080, 1920), "9:16");
+    assert.equal(ratioOfSize(2048, 2048), "1:1");
+    assert.equal(ratioOfSize(1400, 600), "7:3"); // 与 H3 的 21:9 档同值（21/9 = 7/3）
+    assert.equal(ratioOfSize(1024, 768), "4:3");
+    assert.equal(ratioOfSize(768, 1024), "3:4");
+    assert.equal(ratioOfSize("auto", 720), "");
+});
+
+test("自适应①：2048x2048（超 H3 2.0MP 上限）→ 768x768，并留痕 from/to/ratio/reason", () => {
+    const result = adaptSizeParams("video_h3_i2v", { WIDTH: 2048, HEIGHT: 2048, PROMPT: "x" });
+    assert.equal(result.ok, true, "自适应不许报错");
+    assert.equal(result.params.WIDTH, 768);
+    assert.equal(result.params.HEIGHT, 768);
+    // 其它参数原样保留。
+    assert.equal(result.params.PROMPT, "x");
+    // 留痕可查（UI 不堆字，但任务记录里查得到）。
+    assert.deepEqual(
+        { from: result.sizeAdjust.from, to: result.sizeAdjust.to, ratio: result.sizeAdjust.ratio },
+        { from: "2048x2048", to: "768x768", ratio: "1:1" },
+    );
+    assert.match(result.sizeAdjust.reason, /上限/);
+    assert.match(result.sizeAdjust.reason, /1:1/);
+});
+
+test("自适应②：1920x1080（16:9，未登记档）→ 1344x768（同比例最大合法档）", () => {
+    const result = adaptSizeParams("video_h3_i2v", { WIDTH: 1920, HEIGHT: 1080 });
+    assert.equal(result.ok, true);
+    assert.deepEqual([result.params.WIDTH, result.params.HEIGHT], [1344, 768]);
+    assert.equal(result.sizeAdjust.from, "1920x1080");
+    assert.equal(result.sizeAdjust.to, "1344x768");
+    assert.equal(result.sizeAdjust.ratio, "16:9");
+});
+
+test("自适应③：1280x720（16:9，比官方小）→ 放大成 1344x768（把模型能力用满）", () => {
+    const result = adaptSizeParams("video_h3_i2v", { WIDTH: 1280, HEIGHT: 720 });
+    assert.equal(result.ok, true);
+    assert.deepEqual([result.params.WIDTH, result.params.HEIGHT], [1344, 768]);
+    assert.equal(result.sizeAdjust.to, "1344x768");
+    assert.equal(result.sizeAdjust.ratio, "16:9");
+    // 确实是放大（像素变多）。
+    assert.ok(1344 * 768 > 1280 * 720);
+});
+
+test("自适应：已是合法档且不超上限 → 原样放行（不偷改用户明确选的合法档）", () => {
+    for (const [WIDTH, HEIGHT] of [[1344, 768], [768, 1344], [480, 832], [1792, 768], [1024, 768], [768, 1024]]) {
+        const result = adaptSizeParams("video_h3_i2v", { WIDTH, HEIGHT });
+        assert.equal(result.ok, true);
+        assert.deepEqual([result.params.WIDTH, result.params.HEIGHT], [WIDTH, HEIGHT], `${WIDTH}x${HEIGHT} 不该被改`);
+        assert.equal(result.sizeAdjust, null);
+    }
+});
+
+test("自适应④：未知名比例 → 挑比例最接近且不超上限的合法档", () => {
+    // 1000x500 = 2:1（H3 无该档）→ 最接近 16:9(1.778) vs 21:9(2.333)：16:9 更近 → 1344x768。
+    const result = adaptSizeParams("video_h3_i2v", { WIDTH: 1000, HEIGHT: 500 });
+    assert.equal(result.ok, true);
+    assert.deepEqual([result.params.WIDTH, result.params.HEIGHT], [1344, 768]);
+    assert.equal(result.sizeAdjust.ratio, "2:1");
+    assert.match(result.sizeAdjust.reason, /最接近/);
+    // 选出的档绝不超上限。
+    assert.ok(result.params.WIDTH * result.params.HEIGHT <= H3_CAP_PIXELS);
+    // 21:9(=7:3) 同值别名：1400x600 直接命中 1792x768（同比例，非「最接近」）。
+    const alias = adaptSizeParams("video_h3_i2v", { WIDTH: 1400, HEIGHT: 600 });
+    assert.deepEqual([alias.params.WIDTH, alias.params.HEIGHT], [1792, 768]);
+    assert.equal(alias.sizeAdjust.to, "1792x768");
+});
+
+test("自适应：两侧都超上限时也不挑超上限的档（wan22_animate 16:9 → 上限内）", () => {
+    const result = adaptSizeParams("video_wan_animate", { WIDTH: 4096, HEIGHT: 2304 });
+    assert.equal(result.ok, true);
+    assert.ok(result.params.WIDTH * result.params.HEIGHT <= 921600, "吸附结果必须在上限内");
+    assert.deepEqual([result.params.WIDTH, result.params.HEIGHT], [1280, 720]);
+});
+
+test("兜底：模板无合法档 / 上限缺失 → 回落既有可读拒绝（不许静默放过）", () => {
+    // 连一个不超上限的合法档都没有（模拟能力元数据缺失 tiers）→ adaptSizeParams 回落 validateSizeParams。
+    const rejected = adaptGenerationParams("video_h3_i2v", { WIDTH: 2048, HEIGHT: 2048 }, { sizes: [] });
+    assert.equal(rejected.ok, false, "找不到合法档必须回落拒绝，不许静默放过");
+    assert.equal(rejected.code, "size_over_pixel_cap");
+    assert.match(rejected.error, /1920x1088|1920×1088|2,088,960/);
+    // 无能力元数据的模板（未映射 / 测试桩）→ 不臆造、不校验，原样放行（与旧口径一致）。
+    const unknown = adaptSizeParams("video_some_new_model", { WIDTH: 4096, HEIGHT: 4096 });
+    assert.equal(unknown.ok, true);
+    assert.equal(unknown.sizeAdjust, null);
+    assert.deepEqual([unknown.params.WIDTH, unknown.params.HEIGHT], [4096, 4096]);
+});
+
+test("自适应：缺参 / 非法 WIDTH/HEIGHT 不误拦（有些模板不吃 WIDTH/HEIGHT）", () => {
+    assert.equal(adaptSizeParams("video_h3_i2v", {}).ok, true);
+    assert.equal(adaptSizeParams("video_h3_i2v", {}).sizeAdjust, null);
+    const weird = adaptSizeParams("video_h3_i2v", { WIDTH: "auto", HEIGHT: null });
+    assert.equal(weird.ok, true);
+    assert.equal(weird.sizeAdjust, null);
+});
+
+// ————————————————————— 时长自适应（同口径上行吸附到 17k+5 网格） —————————————————————
+
+test("时长自适应：LENGTH 不在 17k+5 网格 → 向上吸附（100 → 107），并留痕", () => {
+    const result = adaptDurationParams("video_h3_i2v", { LENGTH: 100 });
+    assert.equal(result.ok, true);
+    assert.equal(result.params.LENGTH, 107, "100 帧向上吸附到 17k+5 的 107");
+    assert.deepEqual({ from: result.durationAdjust.from, to: result.durationAdjust.to }, { from: 100, to: 107 });
+    assert.match(result.durationAdjust.reason, /17k\+5/);
+    // 已在网格上（124/243/362）→ 原样放行、不留痕。
+    for (const length of [124, 243, 362]) {
+        const ok = adaptDurationParams("video_h3_i2v", { LENGTH: length });
+        assert.equal(ok.params.LENGTH, length);
+        assert.equal(ok.durationAdjust, null);
+    }
+});
+
+test("时长自适应：超出模型档位上限 → 吸附到最大合法档 362 帧并留痕（给可读结果）", () => {
+    const result = adaptDurationParams("video_h3_i2v", { LENGTH: 500 });
+    assert.equal(result.ok, true);
+    assert.equal(result.params.LENGTH, 362);
+    assert.equal(result.durationAdjust.to, 362);
+    assert.match(result.durationAdjust.reason, /365|362|上限/);
+});
+
+test("时长自适应：无档位模型 / 缺 LENGTH → 原样放行", () => {
+    assert.equal(adaptDurationParams("video_lipsync", { LENGTH: 100 }).durationAdjust, null);
+    assert.equal(adaptDurationParams("video_h3_i2v", {}).durationAdjust, null);
+});
+
+// ————————————————————— 总入口：一次给齐尺寸 + 时长留痕 —————————————————————
+
+test("总入口 adaptGenerationParams：尺寸自适应 + 时长吸附，两条留痕都带", () => {
+    const result = adaptGenerationParams("video_h3_i2v", { WIDTH: 2048, HEIGHT: 2048, LENGTH: 100, PROMPT: "p" });
+    assert.equal(result.ok, true);
+    assert.deepEqual([result.params.WIDTH, result.params.HEIGHT, result.params.LENGTH], [768, 768, 107]);
+    assert.equal(result.params.PROMPT, "p");
+    assert.equal(result.sizeAdjust.to, "768x768");
+    assert.equal(result.durationAdjust.to, 107);
 });

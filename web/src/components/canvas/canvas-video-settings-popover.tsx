@@ -5,11 +5,11 @@ import { Button } from "antd";
 
 import { VideoSettingsPanel, videoModeLabel, videoResolutionLabel, videoSecondsLabel, videoSizeLabel } from "@/components/video-settings-panel";
 import { canvasThemes } from "@/lib/canvas-theme";
-import { defaultSizeFor, findTemplate, loadTemplateCatalog, sizeNoteFor, sizeOptionsFor, type GatewayTemplateInfo, type TemplateSizeOption } from "@/services/api/template-sizes";
+import { defaultSizeFor, findTemplate, loadTemplateCatalog, adaptSizeForTemplate, sizeNoteFor, sizeOptionsFor, type GatewayTemplateInfo, type TemplateSizeAdjustment, type TemplateSizeOption } from "@/services/api/template-sizes";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { modelOptionName, type AiConfig } from "@/stores/use-config-store";
 
-type CanvasVideoSizePicker = { options: TemplateSizeOption[]; value: string; pending?: boolean; note?: string } | null;
+type CanvasVideoSizePicker = { options: TemplateSizeOption[]; value: string; pending?: boolean; note?: string; adjust?: TemplateSizeAdjustment | null } | null;
 
 type CanvasVideoSettingsPopoverProps = {
     config: AiConfig;
@@ -46,21 +46,31 @@ export function CanvasVideoSettingsPopover({ config, onConfigChange, buttonClass
     const template = useMemo(() => findTemplate(videoTemplates, templateName), [videoTemplates, templateName]);
     const sizeOptions = useMemo(() => sizeOptionsFor(template), [template]);
     const defaultSize = defaultSizeFor(template);
-    // 当前 size 不在官方档内（含历史 auto / 超限档）→ 一次性落回该模型默认档，保证提交的是合法档。
+    // 旧的超限 / 非官方尺寸 → 按「同比例、上限内像素最大」自适应到合法档（与后端同口径）：
+    // 提交前就把配置落成合法档；界面只展示最终值（规格下拉里选中它），调整明细用 Tooltip 表现，不堆解释性小字。
+    const [sizeAdjust, setSizeAdjust] = useState<TemplateSizeAdjustment | null>(null);
     const committedRef = useRef<string | null>(null);
     useEffect(() => {
         if (!sizeOptions?.length) return;
         if (sizeOptions.some((option) => option.value === config.size)) return;
-        const target = defaultSize && sizeOptions.some((option) => option.value === defaultSize) ? defaultSize : sizeOptions[0].value;
-        const key = `${templateName}:${target}`;
+        const adapted = adaptSizeForTemplate(template, config.size);
+        const target = adapted && sizeOptions.some((option) => option.value === adapted.to) ? adapted.to : defaultSize && sizeOptions.some((option) => option.value === defaultSize) ? defaultSize : sizeOptions[0].value;
+        const key = `${templateName}:${config.size}->${target}`;
         if (committedRef.current === key) return;
         committedRef.current = key;
+        setSizeAdjust(adapted ? { ...adapted, to: target } : null);
         onConfigChange("size", target);
-    }, [sizeOptions, defaultSize, config.size, onConfigChange, templateName]);
+    }, [sizeOptions, defaultSize, config.size, onConfigChange, templateName, template]);
 
     const sizePicker: CanvasVideoSizePicker = template
-        ? { options: sizeOptions ?? [], value: sizeOptions?.some((option) => option.value === config.size) ? config.size : defaultSize ?? "", pending: !sizeOptions, note: sizeNoteFor(template) }
+        ? { options: sizeOptions ?? [], value: sizeOptions?.some((option) => option.value === config.size) ? config.size : defaultSize ?? "", pending: !sizeOptions, note: sizeNoteFor(template), adjust: sizeAdjust }
         : null;
+
+    // 用户手动改规格 → 清掉「自动调整」提示（那是针对旧值的，改完就不适用了）。
+    const changeConfig = (key: keyof AiConfig, value: string) => {
+        if (key === "size") setSizeAdjust(null);
+        onConfigChange(key, value);
+    };
 
     useEffect(() => {
         if (!open) return;
@@ -83,7 +93,7 @@ export function CanvasVideoSettingsPopover({ config, onConfigChange, buttonClass
         };
     }, [open]);
 
-    const panel = open && buttonRect ? <VideoSettingsPortal buttonRect={buttonRect} panelRef={panelRef} placement={placement} theme={theme} config={config} onConfigChange={onConfigChange} sizePicker={sizePicker} /> : null;
+    const panel = open && buttonRect ? <VideoSettingsPortal buttonRect={buttonRect} panelRef={panelRef} placement={placement} theme={theme} config={config} onConfigChange={changeConfig} sizePicker={sizePicker} /> : null;
 
     return (
         <>

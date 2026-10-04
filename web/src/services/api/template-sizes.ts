@@ -48,3 +48,51 @@ export function defaultSizeFor(template?: GatewayTemplateInfo | null): string | 
 export function sizeNoteFor(template?: GatewayTemplateInfo | null): string {
     return template?.sizeMeta?.note ?? "";
 }
+
+/** 尺寸自适应结果（原值 → 合法档 + 画幅比例），界面只用来「表现最终值」，不堆解释字。 */
+export type TemplateSizeAdjustment = { from: string; to: string; ratio: string };
+
+const gcd = (a: number, b: number): number => {
+    let x = Math.abs(Math.round(a));
+    let y = Math.abs(Math.round(b));
+    while (y) [x, y] = [y, x % y];
+    return x || 1;
+};
+
+const aspectOfRatio = (size: GatewayTemplateSize): number => {
+    const match = /^(\d+(?:\.\d+)?):(\d+(?:\.\d+)?)$/.exec(String(size.ratio ?? "").trim());
+    if (match && Number(match[1]) > 0 && Number(match[2]) > 0) return Number(match[1]) / Number(match[2]);
+    return size.height > 0 ? size.width / size.height : Number.POSITIVE_INFINITY;
+};
+
+/**
+ * 后端 `capability-limits.adaptSizeParams` 的**前端镜像**（同口径）：把不在官方档内的 WxH
+ * 按「同比例、上限内像素最大」吸附到合法档（能放大就放大）；无严格同比例 → 挑比例最接近的。
+ * 返回 null = 无需调整（已是合法档 / 无法解析 / 该模型无规格）。**后端仍是权威**（会在任务里留痕）。
+ */
+export function adaptSizeForTemplate(template?: GatewayTemplateInfo | null, size?: string): TemplateSizeAdjustment | null {
+    const match = /^(\d+)x(\d+)$/.exec(String(size ?? "").trim());
+    if (!match) return null;
+    const width = Number(match[1]);
+    const height = Number(match[2]);
+    if (!(width > 0) || !(height > 0)) return null;
+    const sizes = template?.sizes;
+    if (!Array.isArray(sizes) || !sizes.length) return null;
+    const value = `${width}x${height}`;
+    if (sizes.some((item) => item.value === value)) return null; // 已是合法档 → 不动
+    const maxPixels = Number(template?.sizeMeta?.maxPixels) > 0 ? Number(template?.sizeMeta?.maxPixels) : null;
+    const candidates = maxPixels ? sizes.filter((item) => item.width * item.height <= maxPixels) : sizes.slice();
+    if (!candidates.length) return null;
+    const unit = gcd(width, height);
+    const ratio = `${width / unit}:${height / unit}`;
+    const wanted = width / height;
+    const same = candidates.filter((item) => item.ratio === ratio || Math.abs(aspectOfRatio(item) - wanted) <= 1e-6 * Math.max(1, Math.abs(aspectOfRatio(item))));
+    const closest = [...candidates].sort((a, b) => {
+        const da = Math.abs(aspectOfRatio(a) - wanted);
+        const db = Math.abs(aspectOfRatio(b) - wanted);
+        if (Math.abs(da - db) > 1e-9) return da - db;
+        return b.width * b.height - a.width * a.height;
+    });
+    const chosen = (same.length ? [...same].sort((a, b) => b.width * b.height - a.width * a.height) : closest)[0];
+    return { from: value, to: chosen.value, ratio };
+}

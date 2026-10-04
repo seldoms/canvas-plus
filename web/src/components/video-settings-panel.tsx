@@ -1,12 +1,12 @@
 import { type ReactNode } from "react";
-import { Select, Slider } from "antd";
+import { Select, Slider, Tooltip } from "antd";
 import { useTranslation } from "react-i18next";
 
 import i18n from "@/i18n";
 import { ImageSettingsTheme } from "@/components/image-settings-panel";
 import { type CanvasTheme } from "@/lib/canvas-theme";
 import { clampVideoSeconds, computeVideoSize, inferVideoRatio, parseVideoResolution, readVideoDimensions, VIDEO_SECONDS_MAX, VIDEO_SECONDS_MIN, videoRatioOptions } from "@/lib/media-size";
-import { type TemplateSizeOption } from "@/services/api/template-sizes";
+import { type TemplateSizeAdjustment, type TemplateSizeOption } from "@/services/api/template-sizes";
 import { type AiConfig } from "@/stores/use-config-store";
 
 const resolutionOptions = [
@@ -30,7 +30,7 @@ type VideoSettingsPanelProps = {
     showTitle?: boolean;
     className?: string;
     /** 该模型官方规格（来自 GET /api/providers 的 sizes）：给定时只读下拉，禁硬编码、禁自由填。 */
-    sizePicker?: { options: TemplateSizeOption[]; value: string; pending?: boolean; note?: string } | null;
+    sizePicker?: { options: TemplateSizeOption[]; value: string; pending?: boolean; note?: string; adjust?: TemplateSizeAdjustment | null } | null;
 };
 
 export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = true, className = "w-[320px] space-y-4 rounded-2xl px-1 py-0.5", sizePicker }: VideoSettingsPanelProps) {
@@ -56,17 +56,23 @@ export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = 
                 {sizePicker ? (
                     <SettingGroup title={t("settingsPanels.video.spec")} color={theme.node.muted}>
                         {/* 规格来自后端下发的该模型官方清单（只读下拉，不硬编码、不自由填）；超上限的档不下发。 */}
-                        <Select
-                            className="w-full"
-                            size="large"
-                            value={sizePicker.value || undefined}
-                            placeholder={sizePicker.pending ? t("settingsPanels.video.specPending") : sizePicker.note || t("settingsPanels.video.specPlaceholder")}
-                            disabled={!sizePicker.options.length}
-                            options={sizePicker.options}
-                            notFoundContent={sizePicker.pending ? t("settingsPanels.video.specPending") : sizePicker.note || t("settingsPanels.video.specPlaceholder")}
-                            onChange={(value) => onConfigChange("size", value)}
-                            onMouseDown={(event) => event.stopPropagation()}
-                        />
+                        {(() => {
+                            const specSelect = (
+                                <Select
+                                    className="w-full"
+                                    size="large"
+                                    value={sizePicker.value || undefined}
+                                    placeholder={sizePicker.pending ? t("settingsPanels.video.specPending") : sizePicker.note || t("settingsPanels.video.specPlaceholder")}
+                                    disabled={!sizePicker.options.length}
+                                    options={sizePicker.options}
+                                    notFoundContent={sizePicker.pending ? t("settingsPanels.video.specPending") : sizePicker.note || t("settingsPanels.video.specPlaceholder")}
+                                    onChange={(value) => onConfigChange("size", value)}
+                                    onMouseDown={(event) => event.stopPropagation()}
+                                />
+                            );
+                            // 旧的超限/非官方尺寸 → 自动按比例吸附到合法档：界面只展示最终值 + 一句 Tooltip，不堆解释性小字。
+                            return sizePicker.adjust ? <Tooltip title={t("settingsPanels.video.sizeAdapted", { from: sizePicker.adjust.from, to: sizePicker.adjust.to, ratio: sizePicker.adjust.ratio })}>{specSelect}</Tooltip> : specSelect;
+                        })()}
                     </SettingGroup>
                 ) : (
                     <>

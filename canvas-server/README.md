@@ -357,6 +357,13 @@ disableEmptyImageRefs(graph) => string[]        // 摘除 image 为空的 LoadIm
 `createLocalRunner` 对 `template` 以 `video_` 开头的任务，在渲染前把 `WIDTH`/`HEIGHT` 吸附到最近的 32 倍数（下限 32，720→736）并打日志。
 调用方仍应尽量传标准尺寸（480×864、768×1344），吸附只是兜底。
 
+**生成参数自适应（`capability-limits.js`）**：发起生成那一刻（`submitGeneration`）按所选模型的**能力元数据**（`sizes.js` 的 `SIZE_CATALOG`：官方规格 + 像素上限 `maxPixels`）把不合规的尺寸/时长**自动吸附到合法档**，**不再报错拒绝**（产品口径：「只要方向对，该压缩的压缩、该放大的放大」）：
+- `adaptSizeParams`：从 `WIDTH/HEIGHT` 判画幅比例（16:9 / 9:16 / 1:1 / 21:9 / 4:3 / 3:4 …）→ 在该模型合法档里挑**同比例、像素不超上限的最大档**（能放大就放大）；无同比例 → 挑比例最接近且不超上限的。已是合法档则原样放行（不偷改）。
+- `adaptDurationParams`：`LENGTH`（帧）不在 `17k+5` 网格 → **向上吸附**（复用 `durations.js` 口径）；超该模型档位上限 → 吸附到最大合法档。
+- **留痕可查（绝不静默偷改）**：调整写进该次任务 `job.meta.sizeAdjust = { from, to, ratio, reason }` / `meta.durationAdjust = { from, to, grid, reason }`，`params.WIDTH/HEIGHT/LENGTH` 用调整后的值；界面不堆解释字。
+- **兜底（不许静默放过）**：模板无规格 / 上限缺失 / 连一个不超上限的档都没有 → 回落 `validateSizeParams` 的**可读拒绝**。前端画布规格下拉只列合法档（`GET /api/providers` 的 `sizes`），旧的超限尺寸自动按比例吸附并展示最终值。
+
+
 **LoRA 可选化**：部分模板把 LoRA 参数化成 `{{LORA_FILE}}`，但通用调用方并不知道该填哪个 lora 文件名。网关的行为是：调用方没传 `LORA_FILE` 时补空串，渲染后由 `disableEmptyLoras` 把 `LoraLoaderModelOnly` 节点摘除并把下游重连到其上游，因此**调用方永远不需要感知 LoRA**；想固定形象时才显式传 `LORA_FILE` / `LORA_STRENGTH`。`LoraLoader`（双输出）无法安全摘除，缺 `lora_name` 时直接抛中文错误。
 
 **参考图槽位可选化**：`REF_IMAGE_1`…`REF_IMAGE_9` 是「额外参考图」槽位，与 LoRA 同一套机制——调用方没传时补空串，渲染后由 `disableEmptyImageRefs` 摘掉对应的 `LoadImage` 节点**并删掉引用它的输入键**（不需要重连下游，这是与 LoRA 的区别）。这样**一个模板就能服务 1~10 张参考图**，不必为每种数量各做一个模板。
