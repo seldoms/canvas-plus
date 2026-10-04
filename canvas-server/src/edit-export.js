@@ -881,7 +881,10 @@ export async function exportDeliveryPackage({
                     fps,
                     quality: plan.quality,
                     transitionDurationSec: plan.transitionDurationSec,
-                    subtitles: options.burnSubtitles !== false && srt.trim() ? srtPath : null,
+                    // ⚠️ 字幕默认**不烧进画面**（产品铁律）：成片要过剪映精剪，烧死的字幕是像素、没法改。
+                    // 交付包里仍然带**独立 `.srt` 文件**（`srtPath`，上一段已写盘），导入剪映即为可编辑轨道。
+                    // 口径与 delivery.js / pipeline.js 一致：只有调用方**显式** `burnSubtitles === true` 才烧。
+                    subtitles: options.burnSubtitles === true && srt.trim() ? srtPath : null,
                     subtitleStyle: options.subtitleStyle || null,
                     includeClipAudio: allHaveAudio,
                     cover: options.cover !== false,
