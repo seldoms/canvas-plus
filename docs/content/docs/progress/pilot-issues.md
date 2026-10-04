@@ -957,3 +957,34 @@ image_files 共 22 条：
 **临时绕法（已告知用户）**：画布节点尺寸改成 H3 官方档 `1344×768`（16:9）或 `768×1344`（9:16）即可跑。
 
 **体验教训**：把「模型能力上限」的违规**拦在提交那一刻并说人话**，而不是让 147 抛 `execution_error` 让用户猜。
+
+### 2026-10-04 【高·已查实·已派修】输入图会被【拉伸】到画布尺寸 —— 比例不一致就变形
+
+**产品负责人**：「压是什么意思，拉伸还是裁剪？」→ 追问「我总觉得不太对劲，你可以在 github 上看相关的工作流是如何处理的」。
+
+**一手证据（147 上已安装节点的源码 + 示例工作流）**
+`D:\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-minimax-h3-audio-T8\`：
+
+- `conditioning.py:190` 首帧（i2v / 参考生视频的输入图）：
+  `resize_image(first_frame[:1], width, height, "disabled")` → **crop="disabled" = 不保持比例，直接拉伸**
+- `conditioning.py:195` 尾帧：`resize_image(last_frame[:1], width, height, "center")` → **中心裁剪**
+- `conditioning.py:206` 参考图（ref_images）：`_resize_reference_image(...)`，
+  `ref_image_size="match"` → `scale = min(1.0, sqrt((W*H)/(w*h)))` → **等比缩放、只缩不放**
+- `core.py`：`resize_image` = `comfy.utils.common_upscale(samples, width, height, "lanczos", crop)`
+
+**示例工作流**（`ComfyUI-QuantFunc/example_workflows/QuantFunc-MiniMaxH3-ref2va.json`、
+`ComfyUI/user/default/workflows/MiniMax_H3_I2V_Turbo_10s.json`）：
+`LoadImage` → **直接**接 `MiniMaxH3AudioConditioningT8`，**中间没有任何 resize/scale 节点**。
+→ 官方示例靠「**画布跟着图走**」来避免这个问题；**平台是「先选画布、再喂图」** → 比例不一致必然拉伸。
+
+**结论**
+
+- **首帧 / 输入图 = 硬拉伸** → 比例不符即**变形** ❌
+- **参考图（ref_images）= 等比缩放** ✅ 不变形；**尾帧 = 中心裁剪**
+- README 亦确认上限来源：「把画布**像素面积上限放宽到 `1920×1088 = 2,088,960`**」
+
+**已派修（`deleg_7208e89f`）**：自适应改为**以输入图的真实比例为基准**（不信前端传的尺寸），
+留痕加 `basis:"input-image"|"requested"`；比例差 >2% 要标注可见；并评估「输入图改走 `ref_images`」的可行性。
+
+**教训**：上游不处理比例，下游就会替你"处理"（而且是暴力拉伸）。凡涉及"画布尺寸"的功能，
+必须问一句「这个尺寸是谁定的？跟内容的比例对得上吗？」
