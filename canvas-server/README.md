@@ -208,6 +208,25 @@ body：`{ template, family, shot, scene?, characters?, style?, slots?, overlays?
 （否则 `-shortest` 会把「音轨比视频短」的成片截短）。**无 `ref` 的音轨（镜头没音频/产物未就绪）直接跳过，绝不让合成失败。**
 `clipStartOffsets(plan)` 是同一套时间轴公式的纯函数出口。
 
+> ⚠️ **画面里的台词字幕来自关键帧，而非 H3**（真跑溯源，2026-10-04，`video_h3_i2v` + sh1）：
+> 曾经以为「H3 把 `<d>` 台词块烧成画面内字幕」，实为误判。真相是**图像（关键帧）阶段**把内容事实里的
+> `台词：…` 一并喂给了官方 Qwen PE 改写器，改写器逐字写出「Along the bottom edge of the frame, three lines
+> of white Chinese subtitles … read "姑娘，这么晚，去哪儿？" …」（见 `data/jobs.json` 里 `img_qwen21_edit`
+> 的 PROMPT 原文）—— 关键帧图**自带字幕**，H3 的 I2VA 只是**原样保留**。
+> 修复落在图像提示词侧：`prompt-compiler.js` 的 `tierTwoSourceText` / `rewriteSourceText` 不再把台词正文
+> 交给改写器（图像只负责画面，说话动作由 `action` 表达；台词归 TTS、字幕后期按音轨逐句烧）。
+> 重跑关键帧 + 视频后抽帧 0.5/2.5/4.5s，底部**无任何字幕**（对照：只在 H3 提示词里加/不加「画面内无文字」
+> 禁令都不改变结果；`strict_prompt_tags=false` 也无效）。
+>
+> 仍保留的兜底（若历史素材/其它路径已烧字幕）：按字幕带裁掉或模糊掉底部，例如（均已实跑验证无残留可读文字）：
+>
+> ```bash
+> # 裁掉底部字幕带（720p 竖屏去底部 ~220px；分辨率变为 768x1156）
+> ffmpeg -i in.mp4 -vf "crop=iw:ih-220:0:0" -c:a copy out.mp4
+> # 保原尺寸，仅模糊底部字幕带
+> ffmpeg -i in.mp4 -filter_complex "[0:v]crop=iw:230:0:ih-230,boxblur=25:3[bl];[0:v][bl]overlay=0:H-230" -c:a copy out.mp4
+> ```
+
 **运行是异步的**：`POST .../run` **立刻返回 202**，返回的 `run` 里该阶段是 `running`，工作在后台跑。
 不要指望这个请求解析时阶段已完成 —— 一个 163 块 / 83 分钟的阶段用一个阻塞式 POST 扛，隧道、反向代理、
 浏览器都会在几分钟内掐断连接，前端 `await` 抛错后按钮复位、页面「毫无反应」，而后端仍在继续跑并消耗 LLM 额度。

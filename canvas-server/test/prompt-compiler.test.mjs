@@ -669,3 +669,99 @@ test("compilePromptForTemplateAsync：Krea2 无官方改写器 → 经 llmCall �
     assert.match(calls[0].system, /English prompt/, "无官方改写器时用通用英文化 system");
     assert.ok(!out.includes("[untranslated"));
 });
+
+
+/* ————————————————————— H3 画面内文字：空 textOverlays 的强禁令 ————————————————————— */
+/*
+ * 产品口径：短剧默认独立配音（视频归 H3、台词归 TTS），画面里绝不能自带字幕 —— 字幕要由我们
+ * 后期按音轨逐句烧。已抽帧核实：即使 textOverlays 全空，H3 也会把 <d> 台词块烧成画面内文字。
+ * 故 textOverlays 为空时编译器必须显式下「画面内无任何文字/字幕」的禁令；非空时逐字口径一字不改。
+ */
+
+const H3_NO_TEXT_MARK = "Absolutely no on-screen text of any kind is present";
+
+test("H3：textOverlays 为空 → 提示词含「画面内无文字/字幕」强禁令，且 <d> 台词块仍在", () => {
+    const out = compileH3VideoPrompt({ template: "video_h3_talk", shot: SH5, scene, characters: [{ name: "老周" }], style: STYLE, slots: { images: [{ url: "/a/f.png", kind: "first_frame" }] }, overlays: [], durationSec: 4 });
+    assert.ok(out.includes(H3_NO_TEXT_MARK), "空 textOverlays 必须下画面内无文字禁令");
+    assert.match(out, /must never be displayed as text, subtitles, or captions/, "禁令必须点名台词不得显示为文字");
+    // ⚠️ 铁律：禁令只加文字约束，<d> 台词块照旧保留（H3 靠它合成台词与口型）。
+    assert.match(out, /<d>\[English\] 姑娘，这么晚，去哪儿？<\/d>/, "<d> 台词块必须保留");
+    // 禁令不破坏一级/字段结构：首行仍是对齐指令行，三字段顺序不变。
+    assert.ok(out.startsWith(I2VA_LINE), out.slice(0, 80));
+    assert.match(out, /non_diegetic_music: N\/A/);
+});
+
+test("H3：textOverlays 为空（kind 全 none 数组）同样下禁令", () => {
+    const out = compileH3VideoPrompt({ template: "video_h3_i2v", shot: SH2, scene, characters: [], style: STYLE, slots: { images: [{ url: "/a/f.png", kind: "first_frame" }] }, overlays: SH2.textOverlays, durationSec: 4 });
+    assert.ok(out.includes(H3_NO_TEXT_MARK), "kind 全 none 等价于空 → 必须下禁令");
+});
+
+test("H3：textOverlays 非空 → 逐字保留原句，且不得混入无文字禁令（逐字未改）", () => {
+    const out = compileH3VideoPrompt({ template: "video_h3_i2v", shot: SH1, scene, characters: [], style: STYLE, slots: { images: [{ url: "/a/f.png", kind: "first_frame" }] }, overlays: SH1.textOverlays, durationSec: 5 });
+    assert.match(out, /reading "末班车"/, "画面内文字逐字进产物（原文不改）");
+    assert.ok(!out.includes(H3_NO_TEXT_MARK), "有文字事实时不得出现无文字禁令（否则自相矛盾）");
+});
+
+test("H3 无文字禁令只作用于 H3：通用兜底 / 其他模型 textOverlays 为空仍逐字不变", () => {
+    // 通用兜底：空 overlays → legacyBody 原样返回，绝不追加 H3 禁令。
+    assert.equal(compileGenericPrompt({ style: {}, legacyBody: "bus at night", overlays: [] }), "bus at night");
+    assert.ok(!compileGenericPrompt({ style: {}, legacyBody: "bus at night", overlays: [] }).includes(H3_NO_TEXT_MARK));
+    // H3 之外的视频/图片模板：产物不含 H3 禁令。
+    const generic = compilePromptForTemplate({ template: "img_zimage_artistic", family: "image", shot: SH1, scene, characters: [], style: {}, slots: { images: [] }, overlays: [], basePrompt: SH1.prompt, legacyBody: SH1.prompt });
+    assert.ok(!generic.includes(H3_NO_TEXT_MARK), "非 H3 模板不得出现 H3 禁令");
+});
+
+
+/* ————————————————————— 图像提示词：台词绝不进图像（否则被渲染成画面内字幕） ————————————————————— */
+/*
+ * 真跑溯源：img_qwen21_edit 的关键帧 PROMPT 原文里出现「Along the bottom edge of the frame, three lines
+ * of small white Chinese subtitles ... read "姑娘，这么晚，去哪儿？" ...」—— 图像改写器把内容事实里的
+ * `台词：…` 逐字渲染成了画面内字幕，关键帧自带字幕，H3（I2VA）再原样烧进视频。
+ * 图像只负责画面；台词归 TTS，字幕后期按音轨逐句烧。故图像改写载荷必须**不含台词正文**。
+ */
+test("图像（分级改写）：改写器载荷不得含台词正文（否则被渲染成画面内字幕）", async () => {
+    const calls = [];
+    const shot = { ...SH5, dialogue: "姑娘，这么晚，去哪儿？（低声、语速慢）" };
+    await compilePromptForTemplateAsync({
+        template: "img_qwen21_edit",
+        family: "image",
+        shot,
+        scene,
+        characters: [{ name: "老周" }],
+        style: VERTICAL_STYLE,
+        slots: { images: [{ url: "/a/f.png", kind: "input_image" }] },
+        overlays: shot.textOverlays,
+        llmCall: async ({ system, user }) => {
+            calls.push({ system, user });
+            return "A cinematic vertical night scene of a bus driver.";
+        },
+    });
+    assert.equal(calls.length >= 1, true, "必须调用改写器");
+    for (const call of calls) {
+        assert.ok(!call.user.includes("姑娘，这么晚"), `改写器载荷不得含台词正文：${call.user}`);
+        assert.ok(!call.system.includes("姑娘，这么晚"), "改写器 system 不得含台词正文");
+    }
+    // 画面事实照旧在（只是不再带台词）。
+    assert.match(calls[0].user, /画面内容：/, "画面内容仍在改写载荷里");
+});
+
+test("图像（通用改写）：无分级编译器的模板同样不把台词喂进改写器", async () => {
+    const seen = [];
+    const shot = { ...SH5, dialogue: "姑娘，这么晚，去哪儿？" };
+    await compilePromptForTemplateAsync({
+        template: "scail2_action_transfer",
+        family: "image",
+        shot,
+        scene,
+        characters: [{ name: "老周" }],
+        style: {},
+        slots: { images: [] },
+        overlays: shot.textOverlays,
+        llmCall: async ({ system, user }) => {
+            seen.push({ system, user });
+            return "A cinematic night scene.";
+        },
+    });
+    assert.ok(seen.length >= 1, "必须真的走到改写器（否则本用例空转）");
+    for (const call of seen) assert.ok(!call.user.includes("姑娘，这么晚"), `通用改写载荷不得含台词：${call.user}`);
+});

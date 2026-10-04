@@ -319,6 +319,31 @@ const OVERLAY_CARRIER_EN = Object.freeze({
     subtitle: "subtitle",
 });
 
+/**
+ * H3「画面内无文字」禁令 —— textInImageRule 的**反向口径**：当 textOverlays 为空（本次画面
+ * 没有任何要呈现的文字事实）时，明确禁止画面内出现文字/字幕/标题。与 textOverlays 非空时
+ * 「逐字保留原句」的正向口径对称。
+ *
+ * ⚠️⚠️ 真跑溯源（2026-10-04）**推翻了最初的判断：烧进画面的台词字幕不是 H3 干的**。
+ *   现象：video_h3_i2v 的 sh1 成片底部三行中文台词、三帧静态相同，而 textOverlays 全空。
+ *   真因在**关键帧图**：图像编译器把内容事实里的 `台词：…` 一并交给了官方 Qwen PE 改写器，
+ *   改写出「Along the bottom edge of the frame, three lines of white Chinese subtitles … read
+ *   "姑娘，这么晚，去哪儿？" …」（见 data/jobs.json 里 img_qwen21_edit 的 PROMPT 原文）——
+ *   关键帧图自带字幕，H3 的 I2VA 只是**原样保留**。已在本文件的 tierTwoSourceText / rewriteSourceText
+ *   堵住（台词不再进图像提示词）：重跑关键帧 + 视频，抽帧 0.5/2.5/4.5s 底部均无任何字幕。
+ *   对照实验：① 只在 H3 提示词里加/不加本条禁令，成片都无字幕（关键帧干净时 H3 不会自加字幕）；
+ *   ② 把工作流 `strict_prompt_tags` 设 false 也不改变结果。
+ *
+ * 本条禁令仍**保留**：它是「画面内文字事实为空 → 显式声明画面内无文字」的正向兜底，成本为零、无副作用，
+ * 且与 textOverlays 非空时的逐字口径成对。它**不是**该问题的修复手段（修复在图像侧）。
+ *
+ * ⚠️ 只禁止画面内文字，**不删** `<d>` 台词块 —— H3 仍靠它合成台词语音与口型驱动（见 h3DialogueSentence）。
+ */
+const H3_NO_ON_SCREEN_TEXT =
+    "Absolutely no on-screen text of any kind is present: there are no subtitles, no captions, no titles, " +
+    "no logos, no signage, no graphical overlays, and no written characters anywhere in the frame. " +
+    "The spoken dialogue is conveyed by the audio only — it must never be displayed as text, subtitles, or captions in the picture.";
+
 /** 取有效文字层：text 非空且 kind !== none。 */
 function effectiveOverlays(overlays) {
     const out = [];
@@ -364,7 +389,10 @@ function overlayClauseCn(overlays) {
  */
 function overlayClauseH3(overlays, textInImage) {
     const items = effectiveOverlays(overlays);
-    if (!items.length) return "";
+    // textOverlays 为空（本次画面没有任何要呈现的文字事实）→ 走 textInImageRule 的反向口径：
+    // 显式禁止画面内出现任何文字/字幕/标题（H3 默认会把 <d> 台词块烧成画面内文字，已抽帧核实）。
+    // ⚠️ 只加禁令，<d> 台词块照旧保留（H3 靠它合成台词与口型）。
+    if (!items.length) return H3_NO_ON_SCREEN_TEXT;
     // 规则表未定义画面文字口径（如 WanAnimate/SCAIL-2）→ 退回通用英文逐字口径，保证不丢字。
     if (!hasText(textInImage)) return overlayClauseEn(overlays);
     const parts = items.map((item) => {
@@ -1093,7 +1121,7 @@ function rewriteSourceText(input) {
     if (camera) bits.push(`机位与运镜：${stripTail(camera)}`);
     const { anchor: styleAnchor } = readStyleFields(style);
     if (styleAnchor) bits.push(`风格：${styleAnchor}`);
-    if (hasText(shot?.dialogue)) bits.push(`台词：${String(shot.dialogue).trim()}`);
+    // ⚠️ 同理：台词绝不进图像提示词（会被改写器渲染成画面内字幕）。说话动作由画面内容表达。
     const overlay = overlayClauseCn(overlays);
     if (overlay) bits.push(overlay);
     // 画幅不混进内容事实串里：单独一行作为约束，改写器只能表达、不能猜测或覆盖。
@@ -1120,7 +1148,10 @@ function tierTwoSourceText(input) {
     if (action) bits.push(`画面内容：${action}`);
     const camera = cameraSentence(shot);
     if (camera) bits.push(`机位与运镜：${stripTail(camera)}`);
-    if (hasText(shot?.dialogue)) bits.push(`台词：${String(shot.dialogue).trim()}`);
+    // ⚠️ 台词**绝不进图像提示词**（真跑溯源核实）：把 `台词：…` 交给图像改写器，官方 PE 会把台词
+    // 逐字渲染成「画面底部三行白色中文字幕」（见 jobs 里 img_qwen21_edit 的 PROMPT 原文），
+    // 于是关键帧图自带字幕，再被 H3 的 I2VA 原样烧进视频。产品口径是「台词归 TTS、字幕后期按音轨逐句烧」，
+    // 图像只负责画面，说话动作由 action/画面内容表达。故此处不再输出台词正文。
     return bits.join("；");
 }
 
