@@ -795,3 +795,21 @@ drive_audio = 驱动口型的那条音轨（optional AUDIO）
 **✅ 台词归属已落地**（`8d89ace`，756/756）：`shot.dialogueLines[]` = `{speaker,text,performance}`（旧字符串兼容）；
 元数据 `dialogue-roles.js`（H3=`(S1)`+`<d>` / TTS=`SPEAKER`+`INSTRUCT` / 纯视频与生图=无）；归属逐级回落+warning；
 真编译产物 `阿海 (S1) says: <d>[English] …</d> 小满 (S2) …` 归属正确且跨镜稳定。
+
+### 2026-10-04 lip-sync 接入流水线的前置坑（实测，接之前必须处理）
+
+**⚠️ ComfyUI 执行缓存会让「同输入重跑」返回空产物**。
+一手证据（147 上同一个 lip-sync 工作流连续跑三次）：
+```
+真跑（首次）    : TOTAL_WALL=160.7s  PEAK_VRAM=5.91GB  OUTPUTS={"5":{"gifs":[{"filename":"lipsync_demo_00001-audio.mp4",...}]}}
+重跑（同输入） #1: TOTAL_WALL=  8.1s  PEAK_VRAM=1.24GB  OUTPUTS={}   ← 命中缓存，无产物路径
+重跑（同输入） #2: TOTAL_WALL= 16.1s  PEAK_VRAM=1.24GB  OUTPUTS={}   ← 同上
+```
+**影响**：若接入代码假定「POST /prompt 后轮询 /history 必得产物路径」，遇到缓存命中就会拿不到文件而误判失败。
+**接流水线时必须处理**（任选其一并在实现里写清）：① 每次提交**变化一个无副作用参数**（如 `seed`）以绕过缓存；
+② 从 `/history/<id>` 的 `outputs` 为空时**回落去输出目录按文件名找**；③ 提交前对相关节点清缓存。
+⚠️ 另注：147 ComfyUI 以 `--disable-smart-memory` 启动 → 每次真跑都重载 5GB 权重，
+「模型常驻」下的纯推理耗时（去掉加载）尚未测得。
+
+**✅ 之后仍需做**：把 lip-sync（LatentSync 1.5）接成流水线的一步（后处理）——
+`video_h3_talk` 音频驱动负责「口型准」，LatentSync 负责「改台词后不重跑视频」。
