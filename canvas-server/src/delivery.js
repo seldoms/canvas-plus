@@ -329,6 +329,25 @@ export function buildCoverArgs({ inputPath, outputPath, atSec = 0 } = {}) {
     return ["-y", "-ss", String(atSec), "-i", inputPath, "-frames:v", "1", "-q:v", "2", outputPath];
 }
 
+/**
+ * 决定成片是否保留**片段原声**（纯函数，便于测试）。
+ *
+ * H3 是**音画联合**模型 —— 台词/音效/配乐随片段**一次出**（每段自带 aac）。成片若不带上这些音轨，
+ * 产物就是**哑的**（实测事故：片段 `0,h264 + 1,aac`，成片只剩 `0,h264`）。对齐 `edit-export.js` 的
+ * `allHaveAudio` 判定。
+ *
+ * 规则：① 调用方显式指定则以调用方为准；② 传了独立音轨（TTS 配音）时**不保留**片段原声
+ * （否则双重人声）；③ 否则所有片段都带音轨就保留。
+ * ⚠️ ②③ 是最保守取舍 —— 「H3 全包」与「独立 TTS」两条路线如何共存见会诊结论。
+ *
+ * @param {{ explicit?: unknown, audioCount?: number, probes?: Array<{hasAudio?: boolean}|null> }} input
+ */
+export function shouldIncludeClipAudio({ explicit, audioCount = 0, probes = [] } = {}) {
+    if (typeof explicit === "boolean") return explicit;
+    if (audioCount > 0) return false;
+    return probes.length > 0 && probes.every((media) => media?.hasAudio === true);
+}
+
 /** 读媒体流的客观信息（分辨率/时长/是否有音轨），用来判定「成片」真的能被解析。任意 ffprobe 失败都返回 null 由调用方决定。 */
 export async function probeMedia(filePath, ffprobePath = "ffprobe") {
     let output;
@@ -410,6 +429,22 @@ export async function assembleEpisode({
 
     const inputPaths = plan.clips.map((clip) => resolveMediaPath(config, clip.ref));
     const audioPaths = plan.audio.map((item) => resolveMediaPath(config, typeof item === "string" ? item : item.ref));
+
+    // ── 片段原声：不显式指定时**自动判定**（规则见 shouldIncludeClipAudio）──────────────────
+    // H3 是**音画联合**模型 —— 台词/音效/配乐随片段**一次出**（每段自带 aac）。成片拼接若不带上
+    // 这些音轨，产物就是**哑的**（实测事故：片段 `0,h264 + 1,aac`，成片只剩 `0,h264`）。
+    {
+        const probes = typeof options.includeClipAudio === "boolean" || audioPaths.length || !inputPaths.length
+            ? []
+            : await Promise.all(inputPaths.map((file) => probeMedia(file, ffprobePath).catch(() => null)));
+        // probes 为空时 shouldIncludeClipAudio 会退回调用方的显式值，不会误开
+        plan.includeClipAudio = shouldIncludeClipAudio({
+            explicit: options.includeClipAudio,
+            audioCount: audioPaths.length,
+            probes,
+        });
+    }
+
     const args = buildConcatArgs(plan, { inputPaths, audioPaths, outputPath });
 
     const [ffmpegVersion] = await run(ffmpegPath, ["-version"]).then(({ output }) => output.split("\n"));

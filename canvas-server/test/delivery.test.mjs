@@ -7,7 +7,7 @@ import { test } from "node:test";
 
 import {
     assembleEpisode,
-    buildAssemblyPlan,
+    buildAssemblyPlan, shouldIncludeClipAudio,
     buildConcatArgs,
     buildCoverArgs,
     clipStartOffsets,
@@ -382,4 +382,21 @@ test("真机：外部音轨混流 + 字幕烧入成片带音轨且可解析", { 
     assert.equal(result.info.hasVideo, true);
     assert.equal(result.info.hasAudio, true, "混流后的成片应带音轨");
     assert.ok(result.bytes > 0);
+});
+
+test("成片片段原声：不显式指定时自动判定（H3 片段自带音轨 → 保留，否则成片是哑的）", () => {
+    // 现场事故：H3 片段 `0,h264 + 1,aac`，成片却只有 `0,h264` —— includeClipAudio 默认 false 把原声丢了。
+    // 下列断言把「何时保留片段原声」的规则钉死。
+    assert.equal(shouldIncludeClipAudio({ explicit: true }), true, "显式 true 以调用方为准");
+    assert.equal(shouldIncludeClipAudio({ explicit: false }), false, "显式 false 以调用方为准");
+    // 没显式指定：所有片段都有音轨 → 保留
+    assert.equal(shouldIncludeClipAudio({ probes: [{ hasAudio: true }, { hasAudio: true }] }), true);
+    // 有一段没音轨 → 不能开（开了 ffmpeg 会引用不存在的 [i:a]）
+    assert.equal(shouldIncludeClipAudio({ probes: [{ hasAudio: true }, { hasAudio: false }] }), false);
+    // ffprobe 失败（null）→ 不开，宁可哑也不炸
+    assert.equal(shouldIncludeClipAudio({ probes: [{ hasAudio: true }, null] }), false);
+    // 传了独立音轨（TTS 配音）→ 不保留片段原声，避免双重人声
+    assert.equal(shouldIncludeClipAudio({ audioCount: 2, probes: [{ hasAudio: true }] }), false);
+    // 空输入 → 不开
+    assert.equal(shouldIncludeClipAudio({}), false);
 });
