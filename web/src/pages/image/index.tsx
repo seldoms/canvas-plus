@@ -17,6 +17,7 @@ import { useThemeStore } from "@/stores/use-theme-store";
 import { nanoid } from "nanoid";
 import { formatBytes, formatDuration } from "@/lib/image-utils";
 import { enqueueImages, getImageJob, isActiveJobStatus, listImageJobs, type ImageJob, type ImageJobOutput, type ImageJobProgress } from "@/services/api/image-jobs";
+import { defaultSizeFor, findTemplate, loadTemplateCatalog, sizeNoteFor, sizeOptionsFor, type GatewayTemplateInfo } from "@/services/api/template-sizes";
 import { resolveGatewayUrl, uploadGatewayAsset } from "@/services/api/gateway";
 import { deleteStoredImages, ensureImagePreview, getImageBlob, getImagePreviewRevision, previewUrlFor, resolveImageUrl, subscribeImagePreviews, uploadImage } from "@/services/image-storage";
 import { useAssetStore } from "@/stores/use-asset-store";
@@ -165,6 +166,8 @@ export default function ImagePage() {
     const [isReferenceDragActive, setIsReferenceDragActive] = useState(false);
     const [autoRunToken, setAutoRunToken] = useState(0);
     const [viewingHistoryWhileRunning, setViewingHistoryWhileRunning] = useState(false);
+    // 生图模型的官方规格清单（后端 /api/providers 下发，前端不硬编码）——「选模型 → 再选规格」。
+    const [imageTemplates, setImageTemplates] = useState<GatewayTemplateInfo[]>([]);
     const activeSnapshotRef = useRef<GenerationSnapshot | null>(null);
     const viewingHistoryRef = useRef(false);
     const imageCommand = useWorkbenchAgentStore((state) => state.imageCommand);
@@ -205,6 +208,21 @@ export default function ImagePage() {
 
     useEffect(() => {
         void refreshLogs();
+    }, []);
+
+    // 拉一次生图模板清单（含官方规格 sizes）；网关不可达时保持空 → 规格选择退回旧控件，不阻塞工作台。
+    useEffect(() => {
+        let alive = true;
+        void loadTemplateCatalog("image")
+            .then((templates) => {
+                if (alive) setImageTemplates(templates);
+            })
+            .catch(() => {
+                if (alive) setImageTemplates([]);
+            });
+        return () => {
+            alive = false;
+        };
     }, []);
 
     const addReferences = async (files?: FileList | null) => {
@@ -720,7 +738,7 @@ export default function ImagePage() {
                             </div>
 
                             <div className="hidden gap-4 sm:grid sm:grid-cols-2">
-                                <GenerationSettings config={effectiveConfig} model={model} updateConfig={updateConfig} openConfigDialog={openConfigDialog} />
+                                <GenerationSettings config={effectiveConfig} model={model} updateConfig={updateConfig} openConfigDialog={openConfigDialog} imageTemplates={imageTemplates} />
                             </div>
                         </div>
 
@@ -808,7 +826,7 @@ export default function ImagePage() {
             </Drawer>
             <Drawer title={t("workbench.settings")} placement="bottom" size="82vh" open={settingsOpen} onClose={() => setSettingsOpen(false)}>
                 <div className="grid grid-cols-2 gap-3 pb-4">
-                    <GenerationSettings config={effectiveConfig} model={model} updateConfig={updateConfig} openConfigDialog={openConfigDialog} />
+                    <GenerationSettings config={effectiveConfig} model={model} updateConfig={updateConfig} openConfigDialog={openConfigDialog} imageTemplates={imageTemplates} />
                 </div>
             </Drawer>
             <PromptSelectDialog open={promptDialogOpen} onOpenChange={setPromptDialogOpen} onSelect={setPrompt} />
@@ -820,9 +838,22 @@ export default function ImagePage() {
     );
 }
 
-function GenerationSettings({ config, model, updateConfig, openConfigDialog }: { config: AiConfig; model: string; updateConfig: UpdateAiConfig; openConfigDialog: (shouldPromptContinue?: boolean) => void }) {
+function GenerationSettings({ config, model, updateConfig, openConfigDialog, imageTemplates }: { config: AiConfig; model: string; updateConfig: UpdateAiConfig; openConfigDialog: (shouldPromptContinue?: boolean) => void; imageTemplates: GatewayTemplateInfo[] }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const { t } = useTranslation();
+    // 当前生图模型（裸模板名）对应的后端模板信息；只有本地 comfy 模板才有官方规格。
+    const template = findTemplate(imageTemplates, modelOptionName(model));
+    const sizeOptions = sizeOptionsFor(template);
+    // 换模型 → 规格跟着变：当前 size 不在新模型官方清单里就落到该模型默认规格。
+    useEffect(() => {
+        if (!template) return;
+        const values = (sizeOptions ?? []).map((option) => option.value);
+        if (!values.length) return;
+        if (!values.includes(config.size)) updateConfig("size", defaultSizeFor(template) ?? values[0]);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [template, config.size]);
+    // 传了 sizePicker 才进入「规格只读下拉」模式（该模型官方规格，后端下发）；云端模型无模板 → 保持旧控件。
+    const sizePicker = template ? { options: sizeOptions ?? [], value: config.size, pending: !sizeOptions, note: sizeNoteFor(template) } : undefined;
 
     return (
         <>
@@ -831,7 +862,7 @@ function GenerationSettings({ config, model, updateConfig, openConfigDialog }: {
                 <ModelPicker config={config} value={model} onChange={(value) => updateConfig("imageModel", value)} capability="image" fullWidth registry onMissingConfig={() => openConfigDialog(false)} />
             </label>
             <div className="col-span-2">
-                <ImageSettingsPanel config={config} onConfigChange={(key, value) => updateConfig(key, value)} theme={theme} showTitle={false} className="space-y-4" maxCount={10} />
+                <ImageSettingsPanel config={config} onConfigChange={(key, value) => updateConfig(key, value)} theme={theme} showTitle={false} className="space-y-4" maxCount={10} sizePicker={sizePicker} />
             </div>
         </>
     );

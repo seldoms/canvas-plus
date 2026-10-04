@@ -87,6 +87,8 @@ export type GatewayHealth = {
     queue: { running: number; pending: number };
 };
 
+export type GatewayTemplateSize = { width: number; height: number; ratio: string; source: string; value: string };
+
 export type GatewayTemplateInfo = {
     name: string;
     family: string;
@@ -95,6 +97,9 @@ export type GatewayTemplateInfo = {
     /** D1 时长档位（秒数组）：与模型清单同源下发；null 表示该模型档位待查证，未登记。 */
     durations?: number[] | null;
     durationMeta?: { durations: number[] | null; verified: boolean; frameRate: number; formula: string; frameCounts: Record<string, number> | null; note: string } | null;
+    /** 官方建议规格（画幅口径跟模型走）：与模型清单同源下发；null 表示未查证 / 无独立规格。 */
+    sizes?: GatewayTemplateSize[] | null;
+    sizeMeta?: { sizes: GatewayTemplateSize[] | null; verified: boolean; model: string | null; default: string | null; mode: string; align: number | null; note: string } | null;
 };
 
 export type GatewayProviders = {

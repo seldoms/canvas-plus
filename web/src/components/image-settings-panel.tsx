@@ -1,10 +1,11 @@
 import { type ReactNode, useState } from "react";
-import { ConfigProvider, Switch } from "antd";
+import { ConfigProvider, Select, Switch } from "antd";
 import { useTranslation } from "react-i18next";
 
 import i18n from "@/i18n";
 import { type CanvasTheme } from "@/lib/canvas-theme";
 import { computeMediaSize, inferMediaRatio, inferMediaScale, mediaRatioOptions, mediaScaleOptions, readMediaDimensions } from "@/lib/media-size";
+import { type TemplateSizeOption } from "@/services/api/template-sizes";
 import type { AiConfig } from "@/stores/use-config-store";
 
 const qualityOptions = [
@@ -27,9 +28,14 @@ type ImageSettingsPanelProps = {
     className?: string;
     maxCount?: number;
     quickCount?: number;
+    /**
+     * 模型官方规格（画幅口径跟模型走）：**传了才进入「规格只读下拉」模式**（生图工作台按所选模型下发）。
+     * 不传（画布等旧入口）保持既有的自由尺寸控件。规格未查证 / 无独立规格时 options 为空 → 只读占位「待查证」，不允许自由填。
+     */
+    sizePicker?: { options: TemplateSizeOption[]; value: string; pending?: boolean; note?: string } | null;
 };
 
-export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = true, className = "w-[320px] space-y-4 rounded-2xl px-1 py-0.5", maxCount = 15, quickCount = 10 }: ImageSettingsPanelProps) {
+export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = true, className = "w-[320px] space-y-4 rounded-2xl px-1 py-0.5", maxCount = 15, quickCount = 10, sizePicker }: ImageSettingsPanelProps) {
     const { t } = useTranslation();
     const [snapDimensionToStep, setSnapDimensionToStep] = useState(true);
     const quality = config.quality || "auto";
@@ -71,6 +77,24 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
                         ))}
                     </div>
                 </div>
+                {sizePicker ? (
+                    <div className="space-y-2.5">
+                        <SettingTitle color={theme.node.muted}>{t("settingsPanels.image.spec")}</SettingTitle>
+                        {/* 规格来自后端下发的该模型官方清单（只读下拉，不自由填）；未查证 → 只读占位「待查证」。 */}
+                        <Select
+                            className="w-full"
+                            size="large"
+                            value={sizePicker.value || undefined}
+                            placeholder={sizePicker.pending ? t("settingsPanels.image.specPending") : sizePicker.note || t("settingsPanels.image.specPlaceholder")}
+                            disabled={!sizePicker.options.length}
+                            options={sizePicker.options}
+                            notFoundContent={sizePicker.pending ? t("settingsPanels.image.specPending") : sizePicker.note || t("settingsPanels.image.specPlaceholder")}
+                            onChange={(value) => onConfigChange("size", value)}
+                            onMouseDown={(event) => event.stopPropagation()}
+                        />
+                    </div>
+                ) : (
+                    <>
                 <div className="space-y-2.5">
                     <div className="flex items-center justify-between gap-3">
                         <SettingTitle color={theme.node.muted}>{t("settingsPanels.image.size")}</SettingTitle>
@@ -117,6 +141,8 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
                         ))}
                     </div>
                 </div>
+                    </>
+                )}
                 <div className="flex items-center justify-between gap-3">
                     <div className="space-y-0.5">
                         <SettingTitle color={theme.node.muted}>{t("settingsPanels.image.transparent")}</SettingTitle>

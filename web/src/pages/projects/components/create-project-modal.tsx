@@ -96,6 +96,14 @@ export function CreateProjectModal({
         const tiers = selectedVideoTemplate?.durations;
         return Array.isArray(tiers) && tiers.length ? tiers : null;
     }, [selectedVideoTemplate]);
+    // 画幅口径跟模型建议尺寸走：视频模型有官方规格时，预设画幅收敛到它支持的画幅（后端下发，前端不硬编码）；
+    // 无规格（未查证/未加载）保持全部预设。
+    const ratioOptions = useMemo(() => {
+        const ratios = new Set((selectedVideoTemplate?.sizes ?? []).map((size) => size.ratio));
+        if (!ratios.size) return RATIO_PRESETS;
+        const filtered = RATIO_PRESETS.filter((option) => ratios.has(option.value));
+        return filtered.length ? filtered : RATIO_PRESETS;
+    }, [selectedVideoTemplate]);
 
     // 每次打开重置原文草稿，并拉取视频模型清单（含时长档位）；网关不可达时退化回自由输入，不阻塞建项目。
     useEffect(() => {
@@ -131,6 +139,13 @@ export function CreateProjectModal({
         const current = Number(form.getFieldValue("episodeDurationSec"));
         if (!durationTiers.includes(current)) form.setFieldsValue({ episodeDurationSec: durationTiers[0] });
     }, [durationTiers, form]);
+
+    // 换模型 → 画幅跟着变：当前画幅不在该模型官方规格支持的画幅里就落到第一个可选画幅（预设收敛后的）。
+    useEffect(() => {
+        if (ratioOptions === RATIO_PRESETS) return;
+        const current = String(form.getFieldValue("ratio") || "");
+        if (!ratioOptions.some((option) => option.value === current)) form.setFieldsValue({ ratio: ratioOptions[0].value });
+    }, [ratioOptions, form]);
 
     const genreOptions = GENRE_PRESET_GROUPS.map((group) => ({ label: t(`projects.form.${group.labelKey}`), options: presetOptions(group.options) }));
     const multiPlaceholder = t("projects.form.multiOrCustom");
@@ -192,7 +207,7 @@ export function CreateProjectModal({
                         <Select mode="tags" optionLabelProp="value" allowClear placeholder={multiPlaceholder} options={presetOptions(VISUAL_STYLE_PRESETS)} />
                     </Form.Item>
                     <Form.Item name="ratio" label={t("projects.form.ratio")}>
-                        <Select options={RATIO_PRESETS.map((option) => ({ value: option.value, label: t(`projects.form.${option.labelKey}`) }))} />
+                        <Select options={ratioOptions.map((option) => ({ value: option.value, label: t(`projects.form.${option.labelKey}`) }))} />
                     </Form.Item>
                     <Form.Item name="dramaMode" label={t("projects.form.dramaMode")}>
                         <Select mode="tags" optionLabelProp="value" allowClear maxCount={1} placeholder={multiPlaceholder} options={presetOptions(DRAMA_MODE_PRESETS)} />
