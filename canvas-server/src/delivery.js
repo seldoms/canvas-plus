@@ -530,14 +530,23 @@ export async function assembleEpisode({
     const filename = sanitizeName(options.filename || `${episodeId || "episode"}-final.mp4`, "final.mp4");
     const outputPath = resolve(dir, filename);
 
-    // 字幕：调用方给「纯文本 SRT」（如按台词时间轴逐句生成）时落盘成 .srt 并交 ffmpeg 烧入。
-    // 无文本 / 已有显式 subtitles 路径时不动 —— 无字幕也照样出片，绝不因此失败。
-    if (!plan.subtitles && typeof options.subtitlesText === "string" && options.subtitlesText.trim()) {
+    // ── 字幕（独立交付）───────────────────────────────────────────────────────────────────
+    // 产品定性：成片是**粗剪装配**，精剪交剪映 —— 成片 mp4 必须**干净无字幕**（烧死的像素在剪映里没法改），
+    // 字幕以**独立 .srt 文件**存在项目里（可下载、可导入剪映）。因此：
+    //   ① 给了文本（`subtitlesText`）**总是**落盘成独立 `.srt` 产物（与成片同目录），并可下载；
+    //   ② **默认不烧进画面**（`burnSubtitles` 未开）；只有显式 `options.burnSubtitles === true`
+    //      才交 ffmpeg 烧入（烧录能力**保留**，不再默认启用）；
+    //   ③ 老用法：显式给 `options.subtitles`（字幕文件路径）照旧烧入，向后兼容；
+    //   ④ 无文本 → 不产字幕、不烧、不失败。
+    let subtitlesPath = null;
+    const subtitlesText = typeof options.subtitlesText === "string" && options.subtitlesText.trim() ? options.subtitlesText : null;
+    if (subtitlesText) {
         const srtName = sanitizeName(options.subtitlesFilename || `${episodeId || "episode"}.srt`, "subtitles.srt");
-        const srtPath = resolve(dir, srtName);
-        writeFileSync(srtPath, options.subtitlesText.endsWith("\n") ? options.subtitlesText : `${options.subtitlesText}\n`, "utf8");
-        plan.subtitles = srtPath;
+        subtitlesPath = resolve(dir, srtName);
+        writeFileSync(subtitlesPath, subtitlesText.endsWith("\n") ? subtitlesText : `${subtitlesText}\n`, "utf8");
+        if (options.burnSubtitles === true && !plan.subtitles) plan.subtitles = subtitlesPath;
     }
+    const subtitlesBurned = Boolean(plan.subtitles);
 
     const inputPaths = plan.clips.map((clip) => resolveMediaPath(config, clip.ref));
     const audioPaths = plan.audio.map((item) => resolveMediaPath(config, typeof item === "string" ? item : item.ref));
@@ -566,6 +575,10 @@ export async function assembleEpisode({
         audioInputs: audioPaths,
         commands: [`${ffmpegPath} ${args.join(" ")}`],
         ffmpegVersion,
+        // 独立字幕产物（默认不烧也一定有；供剪映精剪/下载）。`plan.subtitles` 仍是「已烧进画面的字幕文件」。
+        subtitleArtifact: subtitlesPath
+            ? { filename: basename(subtitlesPath), url: artifactUrl(config, id, basename(subtitlesPath)), burned: subtitlesBurned }
+            : null,
         status: "running",
     };
     writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), "utf8");
@@ -599,7 +612,13 @@ export async function assembleEpisode({
         dir,
         status: "done",
         outputPath,
+        /** 已烧进画面的字幕文件路径（向后兼容；默认不烧 → null）。 */
         subtitles: plan.subtitles || null,
+        /** 独立 SRT 产物路径（默认不烧也一定有；供下载/导入剪映）。 */
+        subtitlesPath: subtitlesPath || plan.subtitles || null,
+        subtitlesName: subtitlesPath ? basename(subtitlesPath) : null,
+        subtitlesUrl: subtitlesPath ? artifactUrl(config, id, basename(subtitlesPath)) : null,
+        subtitlesBurned,
         url: manifest.output.url,
         bytes: manifest.output.bytes,
         info,

@@ -264,6 +264,13 @@ body：`{ template, family, shot, scene?, characters?, style?, slots?, overlays?
 - **历史任务重放**：旧实现直接在模块加载时 `pipeline.bindJobs()`，会**同步重放 jobs.json 里全部终态 Job**（实测 535 个、其中 350 个命中同一个数 MB 的 `run.json`，逐条读写 ≈ **104 秒纯 CPU**，把 listen 拖到 100 秒开外）。现在只保留廉价的 `jobs.on("change")` 订阅（模块加载即挂），重放改成 listen 之后的 `replayHistoricalJobs()`：**逐条 `setImmediate` 让出事件循环**，重放期间 `/api/health`、`/api/jobs` 全程可应答。
 - **各阶段计时**：被直接启动时打 `[startup] <阶段>: +Nms` 日志，一眼看出瓶颈在哪一段。
 
+**成片字幕（独立交付，默认不烧）**：产品定性 —— 成片是**粗剪装配**，精剪交剪映。因此成片 mp4 **默认不含字幕**
+（烧死的像素在剪映里改不了），字幕以**独立 `.srt` 文件**与成片同交付目录落盘、暴露成 `/api/artifacts/<deliverableId>/<episodeId>.srt`，
+并登记进 run 的 `assembly.subtitles = { burned:false, cueCount, lines, url, name }`。`delivery.assembleEpisode` 的
+`subtitlesText` 现在**总是**落盘 SRT、但只在显式 `options.burnSubtitles === true`（或直给 `options.subtitles` 文件路径）时才交 ffmpeg 烧入
+（烧录能力保留）。无台词/无时间轴 → 无字幕 + `成片无独立字幕：…` warning，成片照常产出。前端成片预览（站内弹窗）会把该 SRT
+转成 WebVTT 自动挂成 `<track>`，无 SRT 时静默不挂。
+
 ### 生成产物与前端的关系
 
 前端通过 `GET /api/jobs/:id` 轮询任务，`status === "done"` 后取 `outputs[].url`，URL 直接指向 `GET /api/artifacts/...`，可被 `<img>` / `<video>` 直接消费。

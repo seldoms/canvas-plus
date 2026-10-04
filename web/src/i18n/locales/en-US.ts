@@ -224,6 +224,10 @@ export default {
         taskDone: "Completed",
         taskPartial: "Partially completed",
         taskFailed: "Failed",
+        taskQueued: "Queued",
+        taskCanceled: "Canceled",
+        canceled: "Canceled",
+        cancel: "Cancel",
     },
     imageWorkbench: {
         title: "Image Studio",
@@ -656,6 +660,8 @@ export default {
             failed: "Film assembly failed",
             downloadFilm: "Download film",
             downloadFailedTitle: "Film download failed",
+            previewFilm: "Preview film",
+            subtitleTrackLabel: "Subtitles",
         },
         keyframes: {
             title: "Shot candidates",

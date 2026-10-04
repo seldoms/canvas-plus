@@ -3081,7 +3081,10 @@ ${JSON.stringify(partials, null, 2)}
             : [];
         // 独立配音且有 TTS 音轨 → 不保留片段原声（delivery 亦有硬规则兜底）；无音轨时交 delivery 自动判定，避免哑片。
         const includeClipAudio = separate ? (assembleAudio.length ? false : undefined) : true;
-        // 字幕与 TTS 产物解耦：从分镜台词的 Cue（shotId + startSec）逐句生成 SRT；无台词/无时间轴 → 空串（不烧、不失败）。
+        // 字幕与 TTS 产物解耦：从分镜台词的 Cue（shotId + startSec）逐句生成 SRT；无台词/无时间轴 → 空串（不产、不失败）。
+        // 独立交付：SRT 作为**独立产物**落盘（供剪映精剪/下载），成片 mp4 **默认不烧字幕**（烧死了剪映改不了）；
+        // 烧录能力保留 —— 仅当调用方显式 `options.burnSubtitles === true` 时才交 delivery 烧入。
+        const burnSubtitles = options.burnSubtitles === true;
         const subtitleCues = subtitleCuesFor(run);
         const srt = buildCueSrt({
             clips,
@@ -3090,6 +3093,7 @@ ${JSON.stringify(partials, null, 2)}
             transitionDurationSec: options.transitionDurationSec ?? assembly.transitionDurationSec,
             cues: subtitleCues,
         });
+        const srtLines = srt ? srt.trim().split(/\n\s*\n/).filter(Boolean).length : 0;
         try {
             const result = await assemble({
                 config,
@@ -3107,20 +3111,32 @@ ${JSON.stringify(partials, null, 2)}
                     includeClipAudio,
                     subtitles: options.subtitles,
                     subtitlesText: options.subtitlesText || srt || null,
-                    subtitleStyle: (options.subtitles || options.subtitlesText || srt) ? (options.subtitleStyle || DEFAULT_SUBTITLE_STYLE) : null,
+                    burnSubtitles,
+                    subtitleStyle: burnSubtitles && (options.subtitles || options.subtitlesText || srt) ? (options.subtitleStyle || DEFAULT_SUBTITLE_STYLE) : null,
                     cover: options.cover,
                 },
                 now: nowIso(),
             });
-            // 字幕结果与降级告警（无台词/无时间轴 → 无字幕 + warning，绝不让出片失败）。
-            const burned = Boolean(result.subtitles);
+            // 字幕产物登记：独立 SRT 落盘 + 可下载 URL；默认未烧（burned:false）。无台词/无时间轴 → 无字幕 + warning，绝不让出片失败。
+            const generated = Boolean(result.subtitlesUrl);
             assembly.subtitleCues = subtitleCues.length;
-            assembly.subtitles = { burned, cueCount: subtitleCues.length };
-            if (!burned) {
-                const reason = subtitleCues.length === 0 ? "没有台词，无可烧字幕" : "缺少可对齐的片段时间轴，字幕未生成";
+            assembly.subtitles = {
+                burned: Boolean(result.subtitlesBurned),
+                cueCount: subtitleCues.length,
+                lines: generated ? srtLines : 0,
+                url: result.subtitlesUrl || null,
+                name: result.subtitlesName || null,
+            };
+            if (generated) {
+                // 新语义：字幕是**独立文件**（不是失败），成片照常干净出片。
+                assembly.subtitles.reason = "已生成独立字幕文件（未烧入画面，供剪映精剪）";
+            } else {
+                const reason = subtitleCues.length === 0 ? "没有台词，未生成字幕文件" : "缺少可对齐的片段时间轴，未生成字幕文件";
                 assembly.subtitles.reason = reason;
-                const prior = Array.isArray(stage.warnings) ? stage.warnings.filter((w) => !String(w).startsWith("成片未烧字幕：")) : [];
-                stage.warnings = [...prior, `成片未烧字幕：${reason}（降级为无字幕，成片照常产出）`];
+                const prior = Array.isArray(stage.warnings)
+                    ? stage.warnings.filter((w) => !String(w).startsWith("成片无独立字幕：") && !String(w).startsWith("成片未烧字幕："))
+                    : [];
+                stage.warnings = [...prior, `成片无独立字幕：${reason}（成片照常产出）`];
             }
             assembly.status = "done";
             assembly.deliverableId = result.id;

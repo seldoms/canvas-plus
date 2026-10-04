@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Alert, Button, Card, Space, Spin, Typography } from "antd";
 import { saveAs } from "file-saver";
-import { Clapperboard, Download } from "lucide-react";
+import { Clapperboard, Download, Play } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { downloadArtifactBlob } from "@/services/api/delivery";
@@ -9,6 +9,7 @@ import { downloadArtifactBlob } from "@/services/api/delivery";
 import { useAssemblyExport } from "../hooks/use-assembly-export";
 import type { StageStatusMap, WorkspaceGate } from "../workspace-gates";
 import { DeliveryExportButton } from "./delivery-export-button";
+import { FilmPreviewModal } from "./film-preview-modal";
 
 /** 单文件下载上限；超过不读进内存（与交付包导出同一口径）。 */
 const MAX_FILM_BYTES = 512 * 1024 * 1024;
@@ -37,6 +38,7 @@ export function AssemblyExportPanel({
     const { assembly, assembling, progressLabel, error, assemble } = useAssemblyExport({ runId, refresh });
     const [downloading, setDownloading] = useState(false);
     const [downloadError, setDownloadError] = useState("");
+    const [previewOpen, setPreviewOpen] = useState(false);
 
     // 前置：门禁（服务端 /gates）就绪 + 片段阶段已完成（服务端 run 阶段状态）。
     const stageDone = stageStatus["assembly"] === "done";
@@ -118,6 +120,12 @@ export function AssemblyExportPanel({
                         )}
 
                         {done ? (
+                            <Button icon={<Play className="size-4" />} onClick={() => setPreviewOpen(true)}>
+                                {t("projects.assembly.previewFilm")}
+                            </Button>
+                        ) : null}
+
+                        {done ? (
                             <Button icon={<Download className="size-4" />} loading={downloading} onClick={() => void downloadFilm()}>
                                 {t("projects.assembly.downloadFilm")}
                             </Button>
@@ -129,6 +137,12 @@ export function AssemblyExportPanel({
                     </Space>
                 </Space>
             </Card>
+            <FilmPreviewModal
+                open={previewOpen}
+                filmUrl={assembly?.url}
+                subtitlesUrl={assembly?.subtitles?.url}
+                onClose={() => setPreviewOpen(false)}
+            />
         </section>
     );
 }

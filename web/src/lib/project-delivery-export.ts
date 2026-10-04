@@ -75,20 +75,27 @@ async function collectManifest(file: DeliveryFile, episode: DeliveryEpisode, ent
     }
 }
 
-/** 从拼接清单的 `subtitles` 字段推导字幕产物地址（与成片同在交付目录下）。 */
+/** 从拼接清单推导字幕产物地址（与成片同在交付目录下）。优先读新的独立字幕产物 `subtitleArtifact`，兼容旧的 `subtitles` 字符串。 */
 function discoverSubtitle(manifestText: string, episode: DeliveryEpisode, t: (key: string, opts?: Record<string, unknown>) => string): DeliveryFile | null {
-    let subtitles = "";
+    let name = "";
+    let url = "";
     try {
-        const parsed = JSON.parse(manifestText) as { subtitles?: unknown };
-        subtitles = typeof parsed?.subtitles === "string" ? parsed.subtitles : "";
+        const parsed = JSON.parse(manifestText) as { subtitles?: unknown; subtitleArtifact?: unknown };
+        const artifact = parsed?.subtitleArtifact as { filename?: unknown; url?: unknown } | undefined;
+        if (artifact && typeof artifact === "object" && typeof artifact.filename === "string") {
+            name = artifact.filename;
+            url = typeof artifact.url === "string" ? artifact.url : "";
+        } else if (typeof parsed?.subtitles === "string") {
+            // 兼容旧清单：`subtitles` 是已烧进画面的字幕文件绝对路径。
+            name = parsed.subtitles.split(/[\\/]/).pop() || "";
+        }
     } catch {
         return null;
     }
-    const name = subtitles.split(/[\\/]/).pop() || "";
     if (!name) return null;
     const dot = name.lastIndexOf(".");
     const ext = dot > -1 ? name.slice(dot + 1).toLowerCase() : "srt";
-    const sourceUrl = episode.deliverableId ? `/api/artifacts/${encodeURIComponent(episode.deliverableId)}/${encodeURIComponent(name)}` : "";
+    const sourceUrl = url || (episode.deliverableId ? `/api/artifacts/${encodeURIComponent(episode.deliverableId)}/${encodeURIComponent(name)}` : "");
     return {
         kind: "subtitle",
         slot: `${episode.slotPrefix}-subtitles.${ext}`,

@@ -213,6 +213,10 @@ export default {
         taskDone: "已完成",
         taskPartial: "部分成功",
         taskFailed: "失败",
+        taskQueued: "排队中",
+        taskCanceled: "已取消",
+        canceled: "已取消",
+        cancel: "取消",
     },
     imageWorkbench: {
         title: "生图工作台",
@@ -645,6 +649,8 @@ export default {
             failed: "合成成片失败",
             downloadFilm: "下载成片",
             downloadFailedTitle: "下载成片失败",
+            previewFilm: "预览成片",
+            subtitleTrackLabel: "字幕",
         },
         keyframes: {
             title: "镜头候选",

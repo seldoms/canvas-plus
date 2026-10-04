@@ -243,7 +243,23 @@ function build(env, project) {
     const record = [];
     const assemble = async (args) => {
         record.push(args);
-        return { id: "delivery-x", url: "/api/artifacts/delivery-x/final.mp4", manifestUrl: "/api/artifacts/delivery-x/assembly-manifest.json", logPath: "/tmp/ffmpeg.log", coverUrl: null, bytes: 123, info: { hasVideo: true, hasAudio: true }, subtitles: args.options?.subtitlesText ? "/api/artifacts/delivery-x/ep.srt" : null };
+        const hasText = Boolean(args.options?.subtitlesText);
+        const burn = args.options?.burnSubtitles === true;
+        return {
+            id: "delivery-x",
+            url: "/api/artifacts/delivery-x/final.mp4",
+            manifestUrl: "/api/artifacts/delivery-x/assembly-manifest.json",
+            logPath: "/tmp/ffmpeg.log",
+            coverUrl: null,
+            bytes: 123,
+            info: { hasVideo: true, hasAudio: true },
+            // 独立字幕产物：给了文本就落盘成 .srt（默认不烧）；只有显式 burnSubtitles 才烧进画面。
+            subtitles: hasText && burn ? "/api/artifacts/delivery-x/ep.srt" : null,
+            subtitlesPath: hasText ? `/tmp/delivery-x/${args.episodeId}.srt` : null,
+            subtitlesName: hasText ? `${args.episodeId}.srt` : null,
+            subtitlesUrl: hasText ? "/api/artifacts/delivery-x/ep.srt" : null,
+            subtitlesBurned: hasText && burn,
+        };
     };
     const pipeline = createPipeline({
         config: env.config,
@@ -269,7 +285,7 @@ async function prepare(env, project) {
     return { pipeline, jobs, record, runId: run.id };
 }
 
-test("audioMode=separate_dialogue_track（默认）：入队 TTS，成片用独立音轨且不保留片段原声，逐句烧字幕", async (t) => {
+test("audioMode=separate_dialogue_track（默认）：入队 TTS，成片用独立音轨且不保留片段原声，逐句生成独立 SRT（默认不烧）", async (t) => {
     const env = makeEnv();
     t.after(() => rmSync(env.root, { recursive: true, force: true }));
     const { pipeline, jobs, record, runId } = await prepare(env, makeProject());
@@ -285,17 +301,24 @@ test("audioMode=separate_dialogue_track（默认）：入队 TTS，成片用独�
     const opts = record[0].options;
     assert.equal(opts.audio.length, 2, "成片混音应带独立 TTS 音轨");
     assert.equal(opts.includeClipAudio, false, "有独立音轨 → 不保留片段原声（防双重人声）");
+    // 字幕仍按台词时间轴逐句生成（作为独立产物交付），但**默认不烧**进画面。
+    assert.equal(opts.burnSubtitles, false, "成片默认不烧字幕（要过剪映精剪）");
+    assert.equal(opts.subtitleStyle, null, "不烧 → 不传烧录样式");
     assert.ok(opts.subtitlesText && opts.subtitlesText.includes("你好。"), "应生成含纯台词的 SRT");
     assert.ok(opts.subtitlesText.includes("走吧。"));
     assert.doesNotMatch(opts.subtitlesText, /[（）()【】]/, "字幕不带表演注解");
     assert.match(opts.subtitlesText, /00:00:00,000 --> 00:00:02,000\n你好。/);
 
     const run = pipeline.get(runId);
-    assert.equal(run.stages.assembly.output.assembly.subtitles.burned, true);
+    const subtitles = run.stages.assembly.output.assembly.subtitles;
+    assert.equal(subtitles.burned, false, "默认未烧字幕");
     assert.equal(run.stages.assembly.output.assembly.subtitleCues, 2);
+    assert.ok(subtitles.url, "SRT 应暴露为可下载 URL");
+    assert.equal(subtitles.name, `${runId}.srt`, "独立 SRT 与成片同目录同名");
+    assert.equal(subtitles.lines, 2, "SRT 逐句两条");
 });
 
-test("audioMode=embedded（原声）：不入队 TTS、不产独立配音；成片保留片段原声，字幕照烧", async (t) => {
+test("audioMode=embedded（原声）：不入队 TTS、不产独立配音；成片保留片段原声，字幕照常生成独立 SRT", async (t) => {
     const env = makeEnv();
     t.after(() => rmSync(env.root, { recursive: true, force: true }));
     const { pipeline, jobs, record, runId } = await prepare(env, makeProject("embedded"));
@@ -308,7 +331,8 @@ test("audioMode=embedded（原声）：不入队 TTS、不产独立配音；成�
     const opts = record[0].options;
     assert.deepEqual(opts.audio, [], "原声：不混独立音轨");
     assert.equal(opts.includeClipAudio, true, "原声：保留片段内嵌音频");
-    assert.ok(opts.subtitlesText && opts.subtitlesText.includes("你好。"), "字幕与 TTS 解耦，原声模式照烧逐句字幕");
+    assert.equal(opts.burnSubtitles, false, "原声模式：同样默认不烧"); 
+    assert.ok(opts.subtitlesText && opts.subtitlesText.includes("你好。"), "字幕与 TTS 解耦，原声模式照常生成独立 SRT");
 });
 
 test("audioMode 缺省即默认独立配音（未绑项目也回落默认）", async (t) => {
@@ -318,7 +342,7 @@ test("audioMode 缺省即默认独立配音（未绑项目也回落默认）", a
     assert.ok([...jobs.store.values()].some((job) => job.kind === "audio"), "默认应走独立配音（入队 TTS）");
 });
 
-test("空台词降级：无对白 → 不烧字幕 + warning，成片照常产出", async (t) => {
+test("空台词降级：无对白 → 无独立字幕 + warning，成片照常产出", async (t) => {
     const env = makeEnv();
     t.after(() => rmSync(env.root, { recursive: true, force: true }));
     const { pipeline, record, runId } = build(env, makeProject());
@@ -331,34 +355,69 @@ test("空台词降级：无对白 → 不烧字幕 + warning，成片照常产�
     const done = await pipeline.assembleStage(run.id);
     assert.equal(done.stages.assembly.output.assembly.status, "done", "无台词也必须能出片");
     const opts = record[0].options;
-    assert.equal(opts.subtitlesText, null, "无台词 → 不烧字幕");
+    assert.equal(opts.subtitlesText, null, "无台词 → 不产字幕");
     assert.equal(opts.subtitleStyle, null);
-    assert.equal(done.stages.assembly.output.assembly.subtitles.burned, false);
-    assert.ok((done.stages.assembly.warnings || []).some((w) => String(w).startsWith("成片未烧字幕：")), "应记降级 warning");
+    const subtitles = done.stages.assembly.output.assembly.subtitles;
+    assert.equal(subtitles.burned, false);
+    assert.equal(subtitles.url, null, "无台词 → 无独立字幕文件");
+    assert.ok((done.stages.assembly.warnings || []).some((w) => String(w).startsWith("成片无独立字幕：")), "应记降级 warning（新语义）");
 });
 
 // ---------------------------------------------------------------------------
-// 6. 真机：subtitlesText 落盘 SRT 并烧进成片
+// 6. 真机：subtitlesText 落盘独立 SRT，成片**默认不烧**字幕
 // ---------------------------------------------------------------------------
 
-test("真机：subtitlesText 生成 SRT 文件并烧进成片（可解析）", { skip: !hasFfmpeg && "本机无 ffmpeg/ffprobe" }, async (t) => {
-    const dir = mkdtempSync(join(tmpdir(), "delivery-subtitle-"));
-    t.after(() => rmSync(dir, { recursive: true, force: true }));
+/** 造一段 3s 的纯色片段（真机用例共用）。 */
+function makeClip(dir) {
     const clip = join(dir, "clip.mp4");
     const made = spawnSync("ffmpeg", ["-y", "-f", "lavfi", "-i", "color=c=navy:s=320x240:r=10:d=3", "-pix_fmt", "yuv420p", "-c:v", "libx264", clip], { encoding: "utf8" });
     assert.equal(made.status, 0, made.stderr);
+    return clip;
+}
+
+test("真机：subtitlesText 落盘独立 SRT，成片**默认不烧**（画面不含字幕）", { skip: !hasFfmpeg && "本机无 ffmpeg/ffprobe" }, async (t) => {
+    const dir = mkdtempSync(join(tmpdir(), "delivery-subtitle-noburn-"));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const clip = makeClip(dir);
+
+    const srt = "1\n00:00:00,000 --> 00:00:01,500\n你好，世界。\n\n2\n00:00:01,500 --> 00:00:03,000\n再见。\n";
+    const result = await assembleEpisode({
+        config: { dataDir: dir, pipeline: { videoWidth: 320, videoHeight: 240, videoFps: 10 } },
+        episodeId: "subtitle-noburn",
+        clips: [{ id: "c1", shotId: "sh1", artifactUrl: clip, durationSec: 3 }],
+        options: { id: "subtitle-noburn", subtitlesText: srt, subtitleStyle: "FontName=Noto Sans CJK SC" },
+    });
+
+    assert.equal(result.status, "done");
+    // 独立 SRT 产物落盘（默认不烧也一定有）
+    assert.equal(result.subtitlesBurned, false, "默认不烧字幕");
+    assert.equal(result.subtitles, null, "未烧 → 无烧入字幕路径（向后兼容字段）");
+    assert.ok(result.subtitlesPath && readFileSync(result.subtitlesPath, "utf8").includes("你好，世界。"), "独立 SRT 应落盘且内容正确");
+    assert.equal(result.subtitlesName, "subtitle-noburn.srt", "SRT 与成片同目录同名");
+    assert.ok(result.subtitlesUrl && result.subtitlesUrl.includes("subtitle-noburn.srt"), "应暴露可下载 URL");
+    const manifest = JSON.parse(readFileSync(result.manifestPath, "utf8"));
+    assert.ok(!manifest.commands[0].includes("subtitles=filename="), "ffmpeg 命令**不得**含字幕烧入");
+    assert.equal(manifest.subtitleArtifact?.burned, false, "清单登记独立字幕产物且未烧");
+    assert.equal(result.info.hasVideo, true);
+    assert.ok(result.bytes > 0);
+});
+
+test("真机：显式 burnSubtitles:true 时才烧字幕（烧录能力保留）", { skip: !hasFfmpeg && "本机无 ffmpeg/ffprobe" }, async (t) => {
+    const dir = mkdtempSync(join(tmpdir(), "delivery-subtitle-burn-"));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const clip = makeClip(dir);
 
     const srt = "1\n00:00:00,000 --> 00:00:01,500\n你好，世界。\n\n2\n00:00:01,500 --> 00:00:03,000\n再见。\n";
     const result = await assembleEpisode({
         config: { dataDir: dir, pipeline: { videoWidth: 320, videoHeight: 240, videoFps: 10 } },
         clips: [{ id: "c1", shotId: "sh1", artifactUrl: clip, durationSec: 3 }],
-        options: { id: "subtitle-delivery", subtitlesText: srt, subtitleStyle: "FontName=Noto Sans CJK SC" },
+        options: { id: "subtitle-burn", subtitlesText: srt, burnSubtitles: true, subtitleStyle: "FontName=Noto Sans CJK SC" },
     });
 
     assert.equal(result.status, "done");
-    assert.ok(result.subtitles && readFileSync(result.subtitles, "utf8").includes("你好，世界。"), "SRT 落盘内容应正确");
+    assert.equal(result.subtitlesBurned, true, "显式开启才烧");
+    assert.ok(result.subtitles && readFileSync(result.subtitles, "utf8").includes("你好，世界。"), "烧入用 SRT 落盘内容应正确");
     const manifest = JSON.parse(readFileSync(result.manifestPath, "utf8"));
     assert.ok(manifest.commands[0].includes("subtitles=filename="), "ffmpeg 命令应含字幕烧入");
     assert.equal(result.info.hasVideo, true);
-    assert.ok(result.bytes > 0);
 });
