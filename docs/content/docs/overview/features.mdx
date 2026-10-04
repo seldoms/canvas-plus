@@ -60,8 +60,22 @@ See [Third-party Prompt Sources](/docs/overview/third-party-prompt-repositories)
 - Store application data and API credentials locally in the browser.
 - Use WebDAV for optional cross-device synchronization.
 
+## Local gateway and film pipeline
+
+This branch adds an optional local gateway backend (`canvas-server/`) that turns local models and a local ComfyUI into one API, and drives a seven-stage short-drama pipeline on top of it:
+
+`novel → script → storyboard → costume & props → casting → keyframes → audio → clip assembly`
+
+- **Runs on your own hardware**: the text side (Ollama / LM Studio / llama.cpp) and the image/video side (ComfyUI templates, optional RunningHub) stay on your machines; jobs are queued per resource class so a 16 GB GPU runs one heavy task at a time.
+- **Observable, cancellable, resumable**: a stage request returns `202` immediately, progress is written to a lightweight `progress.json`, every novel chunk is stored on its own so a re-run resumes instead of restarting, and leftover `running` stages are reconciled on boot.
+- **Candidate slots**: each generated keyframe or clip keeps its full history — re-roll one shot with another model without destroying the previous take.
+- **Delivery executor**: clips are stitched with ffmpeg (concat / xfade), mixed with an independent dialogue track, subtitled, cover-extracted and zipped into a delivery package.
+- **Projects**: one project is one drama; episodes share one set of characters, locations and props, and every stage is gated on its upstream stage.
+
+Setup and the frozen API contract are in [`development/local-gateway`](/docs/development/local-gateway) and `canvas-server/README.md`.
+
 ## Current limitations
 
-- The project is frontend-first and does not provide built-in cloud accounts or cloud storage.
+- There is no hosted service and no account system. Note the split: canvas projects and “My assets” live in browser storage, while the **short-drama projects, source revisions and generated artifacts of the local gateway are stored on the machine running `canvas-server`** (`data/projects/`, `data/artifacts/`), so they do not follow you between devices.
 - API keys remain in browser storage and requests are sent directly to configured providers.
 - Production Docker static-resource paths still require broader deployment verification.

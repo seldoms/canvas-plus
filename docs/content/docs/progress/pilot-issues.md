@@ -1068,3 +1068,37 @@ image_files 共 22 条：
 
 **教训（已写进《交互规范》第 0 条）**：验收必须**以用户视角完整走一遍动线**；逐点验证/截图/子代理自报"真点成功"都不算。
 本轮之前正是**只看"功能实现"、没人以用户身份走一遍**，才会由产品负责人一条条点出来。
+
+### 2026-10-05 独立代码审查（基线 `0ca5698`；只读核查 + 文档回写）
+
+**基线（一手实测）**：`git status` 干净；后端 `node --test test/*.test.mjs` → **860/860 pass / 0 fail / 5.36s**；`/api/providers` → **19 个模板**（image 4 / edit 4 / upscale 1 / video 10）；`/api/pipeline/stages` → **7 段**（script / storyboard / design / casting / keyframe / audio / assembly）；`/api/health` → **1.8~2.4ms**；公网探测 8788 / 3000 不可达。
+
+**新发现的两个硬伤（本轮只登记，未改代码）**
+
+| # | 严重度 | 问题 | 证据 |
+| --- | --- | --- | --- |
+| 68 | 🔴 功能阻断 | **分镜「逐镜编辑」与「镜头重排」必然 404**：前端 `updateShot` 用 `PATCH /api/projects/:id/shots/:shotId`，后端**同一路径只注册了 POST**；路由器对方法不符的路线直接跳过 → 404。调用方 `use-storyboard.ts:80`（保存单镜）与 `:97`（拖拽重排）。后端对 `/api/projects/:id`、`/asset-refs/:refId`、`/bibles/:bibleId` 都成对补了 `router.add("PATCH", …)`，**只有 shots 漏了** | 实测 `curl -X PATCH .../projects/prj_x/shots/sh_x` → `{"error":{"message":"未找到路由：PATCH …"}}`；同路径 `-X POST` → `项目不存在：prj_x`（路由在、方法缺）。`index.js:1082`、`web/src/services/api/projects.ts:220`、`http.js:208` |
+| 69 | 🟠 静默回归风险 | **`scripts/remote-deploy.sh` 生成的配置把 `maxKeyframesPerShot` 写成 2**，而代码默认是 4（D3 要求 ≥4）、线上 `config.json` 也是 4 → 走该脚本部署会把 D3 打回原形 | `scripts/remote-deploy.sh:73` vs `canvas-server/src/config.js:85`、`canvas-server/config.json:51` |
+
+**已闭环但文档原先仍写「未修」的（本轮已回写）**：#26 渠道表双写者（后端改为按 name 增量 upsert）、`/api/health` 同步探测（已 30s TTL 缓存 + 3s 硬超时）、PRD §2.2「五段流水线只有四段半」断链（`bindJobs` + 回写）、D1 时长档位与 D3 关键帧 ≥4 + 自动重生成、`bible.js` 未被消费（`gates.js` 已消费）、`runIds` 回填与多 run 选择器、TTS 已进流水线（独立 `audio` 阶段 + `AudioCue` 落库）。
+
+**文档口径修正**：五段 → **七段**；模板 16 → **19**；测试基线六种写法 → **860**；user-manual「成片拼接无按钮」→ 已有按钮；工作区 6 → **7**（补「角色定妆」）；features 补「本地网关与短剧流水线」并修正「无云存储」。
+
+**建议后续（未做，待产品负责人定）**：① 修 #68（前端改 POST 或后端补 `router.add("PATCH", …)`，后者与既有三段 PATCH 的写法一致）；② 修 #69 的默认值；③ 清理 4 个孤儿前端模块与 3 组重复实现（详见 `development-plan.md` §11 与 `todo.mdx`）；④ 给 `local-asset-inventory.md` / `local-capability-audit.md` / `acceptance-round4*.md` / `p0a-project-kernel-plan.md` 这类时点快照加过期标记或归档。
+
+**后端补充发现（同一轮，编号续 #70；全部只读取证）**
+
+| # | 严重度 | 问题 | 证据 |
+| --- | --- | --- | --- |
+| 70 | 🔴 安全 | **网关无鉴权 + CORS `*`，且存在「静默外带已存 API Key」链**：`POST /api/llm/providers` 只校验 `baseUrl` 是 http(s)，而 `apiKey: incomingKey \|\| prev?.apiKey`（不传 key 就保留旧 key），随后 `providers/llm.js:108` 用 `authorization: Bearer <旧 key>` 发往**新 baseUrl** —— 同网段任何人可把渠道改指自己的服务器，下次调用即把真 Key 送出去。无鉴权可打的写接口还有 `/api/images/enqueue`、`/api/generate/*`、`ANY /v1/*path`（转发烧额度）、`/api/artifacts/delete`、`POST /api/pipeline/runs`、`assemble`、`regenerate`、`PATCH /api/projects/:id` | `index.js:597-630`、`:612-618`、`providers/llm.js:108`、`config.js:8`（host `0.0.0.0`）、`http.js:62-68`。实测未授权 GET/POST/DELETE 均非 401/403；`data/llm-providers.json` 明文且权限 600。**Key 外带为代码路径推断，未实际发送** |
+| 71 | 🟠 未收口 | **`/api/providers` 仍同步 `await` ComfyUI**，用的是任务级超时 `comfy.timeoutMs = 7200000`（2 小时）；前端 `fetchGatewayProviders` 无 timeout → ComfyUI「连得上但不回包」时模型下拉与新建项目弹窗会长时间挂死。**`/api/health` 的异步化只解决了一半** | `index.js:434-436`、`providers/comfy.js:190`、`config.js:24`、`web/src/services/api/gateway.ts:257-259` |
+| 72 | 🟠 锁死 | **重启收敛漏掉 `assembly.status === "assembling"`**：`reconcileRunning()` 只收敛 `stage.status === "running"`，而 `beginAssemble` 只改 `assembly.status`；ffmpeg 合成中途进程被杀 → 重启后成片永远卡在 `assembling`，用户点「生成成片」必得 400「正在合成中」，前端又没有 force 入口 | `pipeline.js:3530-3548`、`:3343-3371`、`assembly-export-panel.tsx:45,116`（代码路径完整，推断） |
+| 73 | 🟡 数据 | `retryFailedItem` 对 lipsync / design / casting 入队 `kind: undefined`（`STAGE_TEMPLATE_FAMILY` 只含 keyframe/assembly/audio）。jobs.json 实测 2 条 `kind is None`，正是自动重试产物 → `GET /api/jobs?kind=video` 会漏掉它们 | `pipeline.js:34`、`:2607`、`jobs.js:27-32`、`workbench-jobs.js:113-137` |
+| 74 | 🟡 死条件 | `/api/jobs/:id/cancel` 里 `job.status === "running"` **恒假**（`jobs.cancel` 先改成 `canceled` 再返回），真正生效的只有 `job.promptId`，而它在 `queuePrompt` 之后才写入 → 取消「已出队但尚未提交」的任务不会 interrupt | `jobs.js:176`、`index.js:733-737`、`generate.js:156-157` |
+| 75 | 🟡 语义 | **HEAD 打不到任何 API 路由**：`HEAD /api/health` → `200 text/html`（落进 SPA 兜底），HEAD 产物 URL → 404，而同 URL `GET -r 0-99` → 206。用 HEAD 探活的监控/反代会恒 200 | `http.js:207-208`、`index.js:1322-1347`（实测） |
+| 76 | 🟡 死配置 | 除 `comfy.maxQueue` 外，**`comfy.maxConcurrency` 同样是死的**（只写进 device 记录与注册表，零读取点），真实并发硬编码 `concurrency: 1`；job `progress` 实测只有 `(0,0)` 与 `(n,n)` 两种取值（jobs.json 分布 `{(1,1):317, (0,0):308}`） | `config.js:33`、`index.js:107,149-152`、`registry.js:143`、`jobs.js:152,195` |
+| 77 | 🟡 分层 | AGENTS.md 点名的 `files.js` import `http.js` 的 `guessContentType` **仍在**；同类 `providers/llm.js:4` 也 import `http.js`；`index.js:1182-1250`（影响分析视图 + 中文文案）、`:984-997`（门禁 glue）把业务写在路由层 | `files.js:6,8`、`providers/llm.js:4`、`index.js` |
+| 78 | 🟡 可维护 | `pipeline.js` **3551 行 / 219KB，只有 1 个导出**、122 处内嵌函数，同时承担编排 + 提示词 + 门禁 + 配音 + 字幕 + 成片 + 存储读写；`index.js` 1404 行、**79 处路由注册**，兼配置加载、渠道持久化、模型注册表、内核装配 | `wc -l`、导出数、`router.*` 计数 |
+| 79 | 🟡 契约 | 死导出与契约漂移：`contracts.js` 的 `STAGE_STATUS/JOB_STATUS/CANDIDATE_STATUS/REVIEW_NOTE_*`、`files.js listFiles`、`http.js corsPreflight`、`providers/llm.js createLlmProvider` 等零引用；`CANDIDATE_STATUS.FAILED = "failed"` 而实现写的是 `"error"` | `contracts.js:36-44`、`jobs.js:7`、`pipeline.js:1155-1187` |
+| 80 | 🟡 双实现 | `pipeline.bindJobs()` 已是生产死代码：生产走 `index.js:206-212 wireJobProjection()` + `:224-242 replayHistoricalJobs()`，`bindJobs` 只被测试调用（30+ 处）→ 测试与线上不同源，且再被调用会二次订阅 | `pipeline.js:3103-3113`、`index.js:206-242` |
+| 81 | 🟡 数据安全 | `saveRun` / `saveOutput` **非原子写**（直接 `writeFileSync`），而同模块其它落盘都用 tmp + rename；`readJsonFile` 解析失败只 warn 并返回 null → 截断的 run.json 会让该 run 从 `pipeline.list()` **静默消失**（文件还在，接口报「流水线不存在」） | `pipeline.js:343-362`、`:423-436` vs `projects.js:209`、`artifacts.js:112` |

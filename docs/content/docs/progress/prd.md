@@ -6,7 +6,8 @@
 > 以及第 0 条：**验收必须「以用户视角完整走一遍动线」，逐点验证不算验收。**
 
 > 内部文档，**有意不登记进 `meta.json`**，不进文档站导航。
-> 版本：v1（2026-10-02）。本文描述**现状**与**目标架构**，是后续所有开发的对齐基准。
+> 版本：v1（2026-10-02）**+ 2026-10-05 独立复核（基线 `0ca5698`）**。本文描述**现状**与**目标架构**，是后续所有开发的对齐基准。
+> ⚠️ **凡标注「现状」的段落，先读 §2.2 的复核表与 `development-plan.md` §11.1 的修正表** —— 两处列出的旧缺口多数已闭环（回写断链、ffmpeg 拼接、run 持久化、方法论接线、活扣候选、D1/D3 拍板约束等），别照旧结论重做。
 > 姊妹文档：`local-asset-inventory.md`（对内资产盘点）、`gateway-api-benchmark.md`（对外能力对标）。
 >
 > 现状描述全部经代码或真机核实，标注 `file:line` 或任务 id。
@@ -44,12 +45,12 @@
 
 | 能力 | 证据 |
 | --- | --- |
-| 五段流水线 + SKILL.md 驱动的依赖图 | `skills/registry.json` 声明 `requires`/`produces`；`createPipeline` |
+| 七段流水线 + SKILL.md 驱动的依赖图 | `skills/registry.json` 声明 `requires`/`produces`；`createPipeline` |
 | 超长小说分块改编（map-reduce） | `src/chunk-novel.js`；222 万字 / 163 块 / 83 分钟真机跑通（`run-muqv28e9-i0j3b`） |
 | **进度可见 / 可取消 / 断点续跑 / 成本预估** | `progress.json` + `chunks/<i>.json` + `GET .../progress` + `POST .../cancel` + `run.estimate`；实测 `run-mur4csot-suj8z` |
 | 单 worker 串行队列 + 重启收敛 | `jobs.js`；`reconcileRunning()` |
 | ComfyUI 模板 token 契约三件套 | `extractTokens` / `renderTemplate` / `disableEmptyLoras` / `disableEmptyImageRefs` |
-| 16 个工作流模板（生图 4 / 编辑 3 / 放大 1 / 视频 8） | `/api/providers` |
+| **19 个**工作流模板（image 4 / edit 4 / upscale 1 / video 10） | `/api/providers`，2026-10-05 实测（原记「16 个：生图 4 / 编辑 3 / 放大 1 / 视频 8」） |
 | **Qwen-Image 2.1 五项能力** | 文生图、指令改图、抠背景、透明贴纸直出、多图参考（≤10 张）—— 全部真机跑通 |
 | 外部 LLM 渠道注册表 + `渠道名::模型名` 路由 | `GET/POST /api/llm/providers`；密钥不落 run、GET 脱敏 |
 | 画布插件 SDK + 第一个插件 | `plugin-node-context.ts`；`plugins/canvas/storyboard-studio`（分镜工作台） |
@@ -57,9 +58,17 @@
 
 ### 2.2 已知缺口（详见 `local-asset-inventory.md` §D 与 `development-plan.md`）
 
-**最严重的一条**：`attachGeneration` 把 `item.artifactUrl` 置 null 后**全仓再无任何代码写回**（任务队列完成时没有回调进流水线），导致 `pipeline.js:483`（尾帧取首帧当参考图）、`:497-498`（assembly 入队条件）、`:513`（`stage.artifacts`）三处恒假 —— **五段流水线实际只有四段半，结构性到不了成片**。图确实生成了、前端靠直接轮询 jobs 也能看见，但 run 自己永远不知道，下游拿不到。
+> **2026-10-05 复核（独立代码审查，基线 `0ca5698`，后端 860/860 pass）**：本节原先列的缺口**绝大多数已闭环**，逐条状态如下 —— 只剩最后一行仍然成立。
 
-其余缺口：`assembly` 还**另外**缺一个 ffmpeg 拼接执行体（这是与上面那条**不同**的问题：前者是拿不到关键帧所以不入队，后者是即使入队产出了片段也没有拼接成片的执行体）· 前端 `run` 是裸 `useState`，刷新即永久丢失且服务端已有的 `GET /api/pipeline/runs` 前端没封 · 五个阶段的 SKILL.md 提示词很薄（各约 90 行，只有机器契约没有创作方法论）· `skills/libraries/` 两个库导入未接线 · 生图/生视频模板选择写死在全局 config，重跑会清空上次产物，**无法对比** · 网关局域网侧无鉴权。
+| 原缺口 | 2026-10-05 状态 |
+| --- | --- |
+| `attachGeneration` 把 `item.artifactUrl` 置 null 后全仓无写回 → **五段流水线实际只有四段半** | ✅ **已修**：任务终态经 `jobs.on("change")` + 启动重放回写（`canvas-server/src/pipeline.js:3103-3113`），`upsertCandidate` / `syncItem` / `recomputeStage` 重建 `item.artifactUrl` 与 `stage.artifacts`（`:1154-1185`、`:1208-1214`），`assembly` 能真正入队 |
+| `assembly` 另缺一个 ffmpeg 拼接执行体 | ✅ **已修**：`canvas-server/src/delivery.js`（concat/xfade + `amix` 混音 + 字幕烧入 + 封面 + 可复现清单 + 日志）与独立 `assemble` 接口 |
+| 前端 `run` 是裸 `useState`，刷新即永久丢失；`GET /api/pipeline/runs` 前端没封 | ✅ **已修**：run 持久化到 localforage（`infinite-canvas:pipeline_runs_v1`）+ 历史流水线列表 |
+| 五个阶段 SKILL.md 很薄（各约 90 行），只有机器契约没有创作方法论 | ✅ **已修**：五阶段已接管 `script-writing-studio` 与 `Luster-iwai-aesthetic-prompt` |
+| `skills/libraries/` 两个库导入未接线 | ✅ **已修**（同上） |
+| 生图/生视频模板写死在全局 config，重跑清空上次产物、**无法对比** | ✅ **已修**：`GenerationSlot.candidates[]` + 逐条 `regenerate`，`jobId`/`artifactUrl`/`status` 降为 selected 的派生别名 |
+| 网关局域网侧无鉴权 | ❌ **仍成立**：监听 `0.0.0.0:8788` 且无鉴权，启动仅打一条告警（`canvas-server/src/index.js:1389-1394`）。已核实**不是公网暴露**（公网探测 8788/3000 不可达），但同网段任何人可提交生成任务并消耗已注册渠道额度。PRD §8 已登记「正经 `auth.mode` 待做」 |
 
 ## 3. 目标架构
 
@@ -123,7 +132,7 @@ item.template = pipelineConfig.imageTemplate;  // 全局单值；run.options.ima
 
 ## 4. 六阶段流水线（吸收短剧创作方法论后）
 
-现状 5 段，提示词各约 90 行、只有机器契约。吸收外部方法论后为 **6 段**（新增阶段 0），并保留我们已有的输出契约与校验规则 —— 方法论灌进「提示词模板」段，不破坏编排器依赖的 JSON 契约。
+现状 **7 段**（剧本 → 分镜 → 服化道 → 角色定妆 → 关键帧 → 配音 → 片段合成），提示词各约 90 行、只有机器契约。吸收外部方法论后规划为 **6 段方法论**（新增阶段 0），并保留我们已有的输出契约与校验规则 —— 方法论灌进「提示词模板」段，不破坏编排器依赖的 JSON 契约。
 
 | 阶段 | 现状 | 目标补强（关键项） |
 | --- | --- | --- |
@@ -222,10 +231,10 @@ item.template = pipelineConfig.imageTemplate;  // 全局单值；run.options.ima
 ## 11. 基线（复核用）
 
 ```bash
-cd canvas-server && node --test test/*.test.mjs   # 73/73
+cd canvas-server && node --test test/*.test.mjs   # 860 pass / 0 fail（2026-10-05 实测，5.36s）
 cd web && npx tsc --noEmit                        # 退出码 0
-curl -s http://127.0.0.1:8788/api/health          # llm.ok / comfy.ok 均 true，ComfyUI 0.38.2
-curl -s http://127.0.0.1:8788/api/providers       # 16 个模板：image 4 / video 8 / edit 3 / upscale 1
+curl -s http://127.0.0.1:8788/api/health          # 约 2ms 返回；llm.probed=false，comfy.ok=true，ComfyUI 0.38.2
+curl -s http://127.0.0.1:8788/api/providers       # 19 个模板：image 4 / edit 4 / upscale 1 / video 10
 ```
 
 147 的 ComfyUI **0.38.2**（`comfy-aimdo` 0.5.5，H3 主力管线已复测通过 `video-muqp3s3h-26kei`）。

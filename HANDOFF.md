@@ -16,7 +16,7 @@
 ## 项目是什么
 
 上游是开源项目 **infinite-canvas（无限画布）**，纯前端 Vite + React，AI 请求由浏览器直连第三方接口。
-本项目 `画布强化` 在它之上新增了一个**本地网关后端** `canvas-server`，把内网模型和本地 GPU 的生图/生视频收口成一套接口，并编排五段式短剧流水线。
+本项目 `画布强化` 在它之上新增了一个**本地网关后端** `canvas-server`，把内网模型和本地 GPU 的生图/生视频收口成一套接口，并编排七段式短剧流水线（剧本 → 分镜 → 服化道 → 角色定妆 → 关键帧 → 配音 → 片段合成）。
 
 **总目标（用户明确过两次，不要跑偏）**：
 - 生图、生视频等任务**必须跑在本地**（本地 ComfyUI，RTX 5060 Ti）。
@@ -24,9 +24,37 @@
 
 ## 当前状态
 
-**最后更新**：2026-10-04（GPT 复核 4 条收口 + 一次自伤事故修复；**本轮维护到此结束**。**进度细节的唯一入口**：`docs/content/docs/progress/development-plan.md` §11「进度快照与问题台账」+ `pilot-issues.md`）
+**最后更新**：2026-10-05（独立代码审查：核对代码完成度与文档差异、清理已失效结论。**进度细节的唯一入口**：`docs/content/docs/progress/development-plan.md` §11「进度快照与问题台账」+ `pilot-issues.md`）
 
-**2026-10-04 本轮结论（先读这段，再往下看历史表格）**
+**2026-10-05 独立审查结论（先读这段，再往下看历史表格）**
+
+> 审查基线：HEAD `0ca5698`、工作区干净、后端 `node --test` → **860/860 pass / 0 fail / 5.36s**、模板 **19 个**（实测 `/api/providers`）。以下每条均为一手实测。
+
+| 结论 | 证据 |
+| --- | --- |
+| ✅ **#26 渠道表双写者已修**（历史表格与 todo 里的「根因未修」已失效）：`POST /api/llm/providers` 改为**按 name 增量 upsert** —— 不在请求里的渠道绝不删除、`apiKey` 为空保留原 key、删除走显式 `DELETE`（405/404 可解释），写后立即 `modelRegistry.sync()` | `canvas-server/src/index.js:591-645`；`pilot-issues.md` #26 登记修复 `d9e9501`。前端仍整车提交数组，但服务端合并语义使「冲掉 deepseek」不可复现 |
+| ✅ **`/api/health` 不再同步等待依赖探测**（「#64 只做了一半」对 health 而言已失效）：comfy / runninghub 走 30s TTL 缓存 + 后台刷新、单次探测硬超时 3s，首次未就绪返回 `pending:true`。⚠️ **但同类问题在 `/api/providers` 仍未收口** —— 它仍同步 `await` ComfyUI 且吃任务级 2h 超时（前端调用无 timeout），ComfyUI「连得上不回包」时模型下拉会挂住，见 #71 | 连打 3 次实测 **1.8 / 1.8 / 2.4 ms**（历史记录为 8s+）；`test/health-async.test.mjs`、`index.js:434-436`、`config.js:24` |
+| ✅ **PRD §2.2 的「五段流水线只有四段半」断链已修**：任务终态经 `jobs.on("change")` + 启动重放回写流水线，`upsertCandidate` / `syncItem` / `recomputeStage` 重建 `item.artifactUrl` 与 `stage.artifacts`，`assembly` 能真正入队 | `canvas-server/src/pipeline.js:1154-1185`、`:1208-1214`、`:3103-3113`。PRD §2.2 描述的是 10-02 的旧事实 |
+| ✅ **D1 时长档位跟模型、D3 关键帧 ≥4 张 + 不达标自动重生成——均已落地**（「产品拍板未实现」已失效） | D1：`src/durations.js` + `src/capability-limits.js:25,89,266` + `GET /api/durations`（`index.js:494`）；D3：`config.js:83 maxKeyframesPerShot: 4` + `pipeline.js:2578` 单镜失败自动重试 |
+| ✅ **`bible.js` 已被门禁消费**（§11.1「只有 1 处自引用、未被任何模块消费」已失效） | `gates.js:16` 导入 `BIBLE_KIND_LABEL` / `BIBLE_KIND_STAGE` / `isConsumable`，`:66-70` 对未批准圣经产出 `blockedBy` |
+| ⚠️ **文档口径全面滞后于代码**：模板数 6 份文档写「16 个（生图 4 / 编辑 3 / 放大 1 / 视频 8）」，实际 **19 个（image 4 / edit 4 / upscale 1 / video 10）**；测试基线分别写着 52/73/206/667/673/716，实际 **860** | `curl /api/providers`；逐处行号见本轮审查报告 |
+| ⚠️ **「五段式流水线」口径整体过期**：实际 **7 段** —— `GET /api/pipeline/stages` 返回 script / storyboard / design / **casting** / keyframe / **audio** / assembly；`skills/` 下有 8 个阶段技能目录（多一个 `07-lipsync`，未进默认流水线） | `curl /api/pipeline/stages`、`skills/registry.json`。README / PRD / local-gateway / user-manual 已按本轮改为七段 |
+| ⚠️ **网关仍无鉴权，且监听 `0.0.0.0:8788`**（PRD §8 已登记「正经 `auth.mode` 待做」）：同网段任何人都能提交生成任务、消耗已注册渠道额度。**已核实不是公网暴露**：从公网探测 8788 / 3000 均不可达，16601 返回 403（边缘拦截） | `index.js:1389-1394` 启动告警；本机 `ss -lntp`；公网探测见审查报告 |
+| ⚠️ **`pipeline.js` 3551 行 / 219KB**（10-04 记的是 2947 行）、`index.js` 1404 行 —— 与 AGENTS.md「一个文件只干一件事」持续背离，属维护性硬伤（非功能缺陷） | `wc -l` |
+
+**🚧 复核后仍然成立的未收口项**
+
+| # | 项 | 现状 |
+| --- | --- | --- |
+| #70 | 🔴 **网关无鉴权 + CORS `*`，且存在「静默外带已存 API Key」链**：往 `POST /api/llm/providers` 传一个自己的 `baseUrl`、**不传 `apiKey`**（服务端会保留旧 key），下次调用即把真 Key 以 `Bearer` 发到该地址；同网段任何人还可提交 GPU 任务、删产物、中断 run | `index.js:612-618`、`providers/llm.js:108`、`config.js:8`。无鉴权为实测；Key 外带为代码路径推断（未实际发送） |
+| #68 | 🔴 **分镜逐镜编辑与镜头重排 404**：前端 `updateShot` 走 `PATCH /api/projects/:id/shots/:shotId`，后端同路径只注册了 POST → 路由未命中 | 实测 `PATCH` 返回「未找到路由」、同路径 `POST` 返回业务错误；`index.js:1082`、`projects.ts:220` |
+| #72 | 🟠 **成片 `assembling` 残留会永久锁死**：`reconcileRunning()` 只收敛 `stage.status`，而成片状态写在 `assembly.status`，ffmpeg 中途被杀后无 force 入口可自救 | `pipeline.js:3530-3548`、`:3343-3371`（推断） |
+| — | `data/runs/run-murvf1vq-aqyqm/run.json.bak-bloated`（**529MB**）仍在盘上；run.json 本身已修回 1.08MB，确认无副作用后即可删 | `ls -la` 实测（10-04 00:59） |
+| #22 | 角色**形象**一致性：参考图链路（`reference-lock.js`、`REF_IMAGE_1..N`、`stableSeed`）已落地，但「定妆图成为**显式可确认的项目资产**」仍有缺口 | §11.1 P1-a 残留缺口③ |
+| #23/#24 | 角色**音色**：**已接进流水线** —— registry 有独立 `audio` 阶段，`pipeline.js:34` 的 `STAGE_TEMPLATE_FAMILY` 把 audio 归入 `audio` 族、`:2746` 取 `audioTemplate`、`:2797` 入队 TTS Job、`:3085` 对失败留 warning；`projectAudioCues` / `projectVoiceProfiles`（`audio-track.js`）已投影落库。**仍缺**：响度 / M&E / 多语言音轨；配乐与配音一致性根因未定位。（§11.1 P1-e 那行「未接进 pipeline 阶段」已过期，见本轮报告） | `canvas-server/src/pipeline.js`、`src/audio-track.js` |
+| — | 视频速度瓶颈（147 物理内存）；RunningHub 需新 Key 真机验证；生成任务 `progress` 仍只填 0/0（未接 ComfyUI WebSocket）；`comfy.maxQueue` 仍是死字段 | `todo.mdx` |
+
+**2026-10-04 本轮结论（历史）**
 
 | 结论 | 指针 |
 | --- | --- |
@@ -35,8 +63,8 @@
 | **H3 i2v 真实 UI 入队证据已取到**：独立 headless 测试页点「换个模型再出一张 → H3 图生视频」，jobs 488→489，新 job 三段式新稿、旧 job 旧拼法可对照；取证后撤销、队列归零 | `docs/content/docs/progress/h3-i2v-ui-evidence.md`、`pilot-issues.md` #66 |
 | 🔴 **自伤事故（已修复）**：warning 追加不去重 + 回灌 plan.warning → 启动重放自我放大 → `RangeError` 启动崩溃，且把 `run-murvf1vq-aqyqm/run.json` 撑到 **529MB**。代码改 `appendWarning()` 去重；数据用一次性脚本修复（run.json 回 930KB），坏文件备份在 `data/runs/run-murvf1vq-aqyqm/run.json.bak-bloated`（**529MB，确认后可删**） | `pilot-issues.md` #67、`canvas-server/scripts/repair-bloated-warnings.mjs` |
 | **测试基线**：后端 `node --test test/*.test.mjs` → **673/673**；前端 `tsc --noEmit` 0 错；`web/dist` 已重建、服务已重启跑在新代码上 | 同上命令 |
-| ⚠️ **仍未收口**：① `comfy`/`runninghub` 探测还在 `/api/health` 里同步等待（#64 只做了一半）；② 画幅缺真实任务验收；③ 带台词镜头的视频逐字台词未取证；④ 渠道表里 4 个死渠道仍在（对清单/health 已无害）；⑤ #19 浏览器双写者根因未除（旧前端重写渠道表会丢字段） | `pilot-issues.md` #64/#65/#66、§「契约/数据流视角」 |
-| ⚠️ **工作区未提交**，且**混着 GPT 的未提交改动**（`web/src/pages/image/index.tsx`、`router.tsx`、`web/src/pages/tasks/`、`llm-client.js`、`prompt-api.js` 等）。提交前必须按作者/主题分批，别一把梭 | `git status --short` |
+| ~~⚠️ **仍未收口**：① `comfy`/`runninghub` 探测还在 `/api/health` 里同步等待（#64 只做了一半）；⑤ #19 浏览器双写者根因未除~~ → **① 与 ⑤ 已于 2026-10-05 复核为「已修」**（见本节顶部新表）。**仍成立**：② 画幅缺真实任务验收；③ 带台词镜头的视频逐字台词未取证；④ 渠道表里 4 个死渠道仍在（对清单/health 已无害） | `pilot-issues.md` #64/#65/#66 |
+| ✅ ~~⚠️ **工作区未提交**~~ → **已全部提交**（2026-10-05 复核 `git status --short` 为空，HEAD `0ca5698`） | `git status --short` |
 
 **2026-10-03 本轮结论（历史）**
 
@@ -49,7 +77,7 @@
 | **测试基线**：后端 `node --test` → **206 tests / 206 pass / fail 0**（本轮实测）；前端此前 `tsc --noEmit` 0 错、`npm run build` 通过 | `cd canvas-server && node --test test/*.test.mjs` |
 | ⚠️ **工作区仍有 20 个文件未提交**（含 `canvas-server/src/pipeline.js`、`test/pipeline.test.mjs`、`pending-test.mdx`、`skills/04-keyframes/SKILL.md`、7 个前端新文件如 `process-timeline.tsx` / `source-import-modal.tsx`）—— 测试与 tsc 均绿、属"已验证待落盘"，接手者按主题分批提交即可 | `git status --short` |
 | ❌ **出片结果：assembly `partial`（16 镜里 6 镜全废）**：前 10 镜 ✅、`sh11`–`sh16` 全数 ComfyUI `SamplerCustomAdvanced` 报 `VBAR OOM`（147 的 16GB 显存），成片未合 | `pilot-issues.md` #25 |
-| 🔴 **渠道表被前端全量覆盖（实测复现）**：`data/llm-providers.json` 只剩死渠道「默认渠道 → api.openai.com（无 key）」，deepseek 被冲掉 → 这就是「疯狂弹认证」的根因，**#19 上轮标「已修复」是误判**。**已手动恢复**（备份→取回 deepseek→写回→重启）：`/v1/models` 现 10 个（含 `deepseek::deepseek-flash` / `deepseek::deepseek-v4-pro`）、死渠道刷屏停止。**根因（双写者）未修** | `pilot-issues.md` #26 |
+| 🔴 **渠道表被前端全量覆盖（实测复现）**：`data/llm-providers.json` 只剩死渠道「默认渠道 → api.openai.com（无 key）」，deepseek 被冲掉 → 这就是「疯狂弹认证」的根因，**#19 上轮标「已修复」是误判**。**已手动恢复**（备份→取回 deepseek→写回→重启）：`/v1/models` 现 10 个（含 `deepseek::deepseek-flash` / `deepseek::deepseek-v4-pro`）、死渠道刷屏停止。**根因（双写者）未修** → **2026-10-05 复核：已修**（后端按 name upsert，见本节顶部新表） | `pilot-issues.md` #26 |
 | ✅ 出片结束后已确认 `在跑 job = 0`，重启 `canvas-server` 已完成（`/v1/models` 修复顺带生效）；工作区已全部提交、干净 | `systemctl is-active canvas-server` |
 | **本轮 git**：`b3874d5`（文档：§11 + 21 条复核 + #22–#24）、`d601800`/`639508a`/`154e0d3`/`2f85b4e`（上一轮） | `git log --oneline` |
 
@@ -95,35 +123,35 @@
 
 | 部分 | 状态 | 证据 |
 | --- | --- | --- |
-| `canvas-server` 网关（零依赖 Node ESM） | 完成 | `node --test test/*.test.mjs` → **52/52 全绿** |
+| `canvas-server` 网关（零依赖 Node ESM） | 完成 | 当时 `node --test` **52/52**；2026-10-05 实测已 **860/860 pass / 0 fail** |
 | 本地 LLM 接入（Ollama / LM Studio / llama.cpp，SSE 逐块透传） | 完成 | 真实 Ollama 列出 8 个模型；真实 `/v1/chat/completions` 返回正常 |
 | 本地 ComfyUI 生图 | 完成 | 真实产出 768×1344 PNG（`img_krea2_artistic`、`img_zimage_artistic` 均验过） |
 | 本地 ComfyUI 生视频 | 完成 | 真实产出 768×1344 / 24fps / **5.17s / H.264 + AAC 原生音频**（`video_minimax_h3_t2v`） |
-| 五段式流水线（小说→剧本→分镜→服化道→关键帧→片段合成） | 前四段跑通，片段合成只有规划 | 真实跑通 `script`→`storyboard`→`design`→`keyframe`，关键帧**真实出图** 768×1344 PNG |
+| ~~五段式~~ → **七段式**流水线（小说 → 剧本 → 分镜 → 服化道 → 角色定妆 → 关键帧 → 配音 → 片段合成） | ✅ 阶段全链已打通（含成片） | 阶段由 `skills/registry.json` 定义、`GET /api/pipeline/stages` 返回 **7 段**；`delivery.js` 已能出成片（见 10-04 块）；关键帧真实出图 768×1344 PNG |
 | 前端的接入（配置页「本地网关」页签、流水线页面、5 个脚本模板） | 完成 | `npx tsc --noEmit` 新增文件 0 错；`npm run build` 通过 |
 | 生成后端抽象（本地优先 + RunningHub 可选） | 完成 | `/api/backends` 返回 local 可用且默认、runninghub 未配置；显式 runninghub 会明确失败，不静默回落 |
 | RunningHub 适配器（提交/轮询/上传/取消） | 代码完成，**未真机验证** | 13 项 stub 用例通过；旧 Key 已失效，见下 |
-| skill 库导入（script-writing-studio、Luster 岩井俊二美学） | 已入库，**未接线** | `skills/libraries/README.md` |
+| skill 库导入（script-writing-studio、Luster 岩井俊二美学） | ~~未接线~~ → **已接线**（五阶段技能已接管） | `skills/libraries/README.md` |
 | 本地能力盘点 | 完成 | `docs/content/docs/progress/local-capability-audit.md`（400 行，结论分【实测】/【文档】/【推断】） |
 | 远程部署 `/sobey/canvas-plus` | 完成 | systemd `active`，远程真实生图成功 |
 
 **进行中 / 未完成**
 
 - ~~**流水线阶段尚未引用导入的 skill 库**~~ → **已完成**：五个阶段技能已接管 `script-writing-studio` 与 `Luster-iwai-aesthetic-prompt`，每阶段新增「内容创作红线（硬约束）」，逐条对照见 `skills/libraries/` 下两份接线说明。
-- ~~**片段合成只有「生成」没有「后期」**~~ → **已大部分完成**：`canvas-server/src/delivery.js` 已实现 ffmpeg concat/xfade 拼接 + 外部音轨 `amix` 混音 + 字幕烧入 + 抽封面 + 可复现拼接清单 + 独立合成接口。**仍缺**：**音频无人产生**（`plan.audio` 靠外部手工传入）——即 `pilot-issues.md` #23/#24，以及视频超分。
+- ~~**片段合成只有「生成」没有「后期」**~~ → **已完成**：`canvas-server/src/delivery.js` 已实现 ffmpeg concat/xfade 拼接 + 外部音轨 `amix` 混音 + 字幕烧入 + 抽封面 + 可复现拼接清单 + 独立合成接口（前端也已有「合成成片」按钮）。**仍缺**：~~音频无人产生（`plan.audio` 靠外部手工传入）~~ → **2026-10-05 复核：音频已由流水线 `audio` 阶段产出**（`audioTemplate` 入队 TTS Job、`projectAudioCues` 落库）；仍缺响度 / M&E / 多语言音轨，以及视频超分。见 `pilot-issues.md` #23/#24。
 - **视频速度是最大体验瓶颈**：当前节点图上 H3 480×864 / 56 帧就要 8.2 分钟（【实测】），5s 短剧单镜会更久；上游现成的 `video_h3_i2v_sla` / `_blockcache` 加速模板**未实测**。
 - 前端**还没有 RunningHub 的 UI**（本轮只做了后端接口，`/api/backends`、`/api/runninghub/models`）。
 - 换装精确性不足：`img_boogu_outfit_edit` 已跑通但属**语义重绘**（领口袖型与参考图不一致），精确换装需要 SAM3 遮罩链路（SAM3 在盘，无模板）。
-- `video_h3_ref2v` 只接了 1 张参考图，多图锁角色需要补 `ref_image_1/2` 之类输入 —— **这正是产品负责人报的「角色形象没有固定下来」的技术底座**（`video_h3_ref2v_image` 一张参考图即可锁角色，但**流水线根本没把角色定妆图接进去**）。见 `pilot-issues.md` #22。
+- ~~`video_h3_ref2v` 只接了 1 张参考图……**流水线根本没把角色定妆图接进去**~~ → **2026-10-05 复核：已接线**（03 产出并绑定正脸特写/三视图/场景母版，04 注入 `REF_IMAGE_1..N` + `stableSeed`）。多图锁角色的剩余缺口见「下一步」第 1 条。见 `pilot-issues.md` #22。
 
 ## 下一步（按优先级）
 
-> 2026-10-03 重排。1–2 条（skill 库接线、后期拼接链路）已完成，见上节；顶上来的四条是产品负责人当面报的成片级缺陷与拍板约束。
+> 2026-10-05 重排（独立审查后）。原 1–4 条里的 skill 库接线、后期拼接链路、D1/D3 拍板约束、runIds 回填与渠道双写者**均已落地**（见本节顶部新表）；仍在推进的是角色/音色的**资产化**、视频速度与 RunningHub。
 
-1. **角色形象固定（最高优先，阻断成片）**：把角色**定妆图**变成流水线的真实产物，并让它作为参考图喂给生图/生视频（`video_h3_ref2v_image` 已具备一张参考图锁角色的能力）。路线图已在 `skills/libraries/doubao-creative-drama/references/assets.md`（主角设定图 → 用户确认 → 配角逐位确认 → 一致性锚点），要做的是**接进 03「服化道」/04「关键帧」的产物契约**（角色 ID → 定妆图 → 参考图槽位）。见 `pilot-issues.md` #22。
-2. **角色音色固定（阻断成片）**：`voice` 字段目前无人消费。要补**音色锚点 + TTS 生成 + 音频轨作为 05 阶段必需产物**；方法论（总时长 > 15s 必须先出 1 条 5–10 秒角色台词视频建立音色基准）已在 `doubao-creative-drama/references/assets.md:25`。见 `pilot-issues.md` #23。同源解决 #24「配乐与配音不一致」。
-3. **产品拍板 D1 / D3**：D1 时长档位跟模型（H3 `24×秒+3`，仅 5/10/15s；**档位是模型能力元数据**、与模型清单同源、plan 从档位里选）；D3 关键帧单镜一次出 **≥4 张**候选、不达标自动重生成。代码位置已空出（`pipeline.js`）。见 `pilot-issues.md` §「产品负责人拍板」。
-4. **多 run 与跨路径回填**：`runIds` 回填**已经通了** —— 项目内建 run 后 `attachProjectRun` 显式 `PATCH`（`use-project-run.ts:106`，`004f30a` 落地），实测 `context.runIds = ["run-murnwa81-k27eq"]` 非空；`context.runIds` 已被阶段门禁/时间线/资源面板/项目总览共用。**残留两条缺口**：① 从**流水线页**建的 run 不回填（出片 run `run-murpt28o-46f5q` 的 `options.projectId` 指向项目、却不在 `runIds[]` 里）；② 多 run 时前端只取 `runIds[0]`（`workspace-gate-panel.tsx:40`、`use-project-timeline.ts:20`）。同批还有渠道注册表双写者（前端 `POST /api/llm/providers` 整车覆盖，曾冲掉服务端配置）。见 `development-plan.md` §11.2。
+1. **角色形象资产化（收尾，阻断成片）**：参考图链路已通 —— 03 产出并绑定正脸特写/三视图/场景母版，04 注入 `REF_IMAGE_1..N` + `stableSeed` 并切到具备参考图能力的 `img_qwen21_edit`，无参考图能力或缺图时显式 `blocked` 而不假装已锁定。**仍缺**：定妆图尚未成为「用户可逐个确认、可跨集复用」的显式项目资产（03 契约里的 `confirmed` 门禁未完整接入）。见 `pilot-issues.md` #22、§11.1 P1-a。
+2. **角色音色收尾（阻断成片）**：~~TTS 未接进流水线~~ → **2026-10-05 复核已接线**：registry 有独立 `audio` 阶段，`pipeline.js` 按 `audioTemplate` 入队 TTS Job（`:2746`/`:2797`），`projectAudioCues` / `projectVoiceProfiles` 已落库（`audio-track.js`），音色可客观区分（老周 143.7Hz / 女孩 254.0Hz），台词清洗与语速解析已落（注解不再驱动生产参数）。**仍缺**：响度 / M&E / 多语言音轨；配乐与配音一致性根因未定位。见 `pilot-issues.md` #23/#24。
+3. ~~**产品拍板 D1 / D3**~~ → **已落地**：D1 = `src/durations.js` + `GET /api/durations` + `capability-limits.js` 按模型吸附 `17k+5` 并在提交前校验；D3 = `config.pipeline.maxKeyframesPerShot` 默认 **4**，`pipeline.js:2578` 做单镜不达标自动重试。
+4. ~~**多 run 与跨路径回填**~~ → **缺口已修**：服务端建 run 时按 `options.projectId` 幂等追加进 `project.runIds`（`index.js:190`／`projects.js:352`／`pipeline.js:593`），前端已有 run 选择器（`workspace-layout.tsx:138`）；`use-project-timeline.ts` 的 `runId` 改为入参，硬编码 `runIds[0]` 与 `workspace-gate-panel.tsx` 均已不存在。渠道表双写者亦已修（按 name upsert）。
 5. **解决视频速度**：turbo（8 步 LoRA + BlockCache@0.3）与 QuantFunc INT4 均已实测（见下方两份实录），当前瓶颈是 **147 的物理内存**而非引擎；先降分辨率出草稿是零成本方案。
 6. **RunningHub 真机验证**：需要用户提供**新的有效 API Key**（旧 Key 已失效，见「坑」）。拿到后跑一次最小生图任务，确认 submit/query/upload 三条链路。
 7. 前端补 RunningHub 配置与后端切换入口（如果用户要求把它做成可选 UI）。
@@ -206,13 +234,13 @@ canvas-server/            本地网关后端（零依赖 Node ESM）
 ├── src/index.js          HTTP 入口：路由、后端分派、静态托管
 ├── src/generate.js       本地 ComfyUI 执行器（模板渲染→提交→轮询→回收产物）
 ├── src/jobs.js           单 worker 串行队列（含 backend 字段与持久化）
-├── src/pipeline.js       五段式编排器
+├── src/pipeline.js       七段式编排器
 ├── src/skills.js         skill 装载与 registry 解析
 ├── src/providers/        comfy.js / llm.js / runninghub.js
-├── workflows/            ComfyUI API 格式模板（12 个，`{{TOKEN}}` 占位）
+├── workflows/            ComfyUI API 格式模板（**19 个**，`{{TOKEN}}` 占位）
 ├── scripts/smoke.mjs     端到端冒烟（打真实 HTTP 接口）
-└── test/                 54 项 node:test 用例
-skills/                   五段式阶段技能 + libraries/（导入的第三方 skill 库，逐字保留）
+└── test/                 80 个测试文件 / **860** 项 node:test 用例（`node --test test/*.test.mjs`）
+skills/                   七段式阶段技能（01~03b/04~07）+ libraries/（导入的第三方 skill 库，逐字保留）
 web/                      无限画布前端（配置页、流水线页、5 个生图生视频脚本模板）
 docs/                     文档站；开发说明在 development/local-gateway，进度在 progress/
 deploy/                   systemd 单元

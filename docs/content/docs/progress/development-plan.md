@@ -529,7 +529,7 @@ ReviewNote { id, scope: project|episode|scene|shot, targetId?, stage,
 
 > 本章回答两个问题：**做到什么程度**、**遇到哪些问题**。§8 写的是「要做什么 + 验收标准」，本章写「实际到哪了」。
 > **复核方式**：读代码 + 跑后端测试 + 打接口，不采信 CHANGELOG 自述。
-> **复核基线**：本轮提示词策略复核在允许回环监听的受控环境执行 `cd canvas-server && node --test test/*.test.mjs` → **667 tests / 667 pass / fail 0 / 4.31s**。此前 206/206 是旧快照，不再作为当前基线。
+> **复核基线**：本轮提示词策略复核在允许回环监听的受控环境执行 `cd canvas-server && node --test test/*.test.mjs` → 当时 **667 tests / 667 pass / fail 0 / 4.31s**（**2026-10-05 独立复核：860 tests / 860 pass / 0 fail / 5.36s**）。更早的 206/206 是旧快照。
 > 问题详情与整改单在 `pilot-issues.md`（只追加、不替换）；本章只做**汇总与分级**。
 
 > ⚠️⚠️ **本节是 2026-10-03 傍晚的快照，下列结论已被后续代码超越。**
@@ -544,8 +544,13 @@ ReviewNote { id, scope: project|episode|scene|shot, targetId?, stage,
 > | 「服化道登记 `artifactIds: []`，没有生成参考图」 | **已生成并绑定**：`attachDesignReferences` / `bindDesignReferenceArtifacts`（仅无 prompt 的绑定留空占位） |
 > | 「多 run 时前端只取 `runIds[0]`，第二个不可见」 | **已有 run 选择器**：`use-project-workspace.ts` + `workspace.runSelector` |
 > | 「`pipeline.js` **1456 行**全能编排器」 | 实际 **2947 行** |
-> | 「阶段 ID 冻结 `plan/script/storyboard/design/keyframe/assembly/post`」 | 运行时注册表只有 **5 个 run 阶段**（`skills/registry.json`）；`plan` 是项目级阶段 0、**`post` 不存在** |
-> | 「测试基线 **667/667**」 | 现为 **716/716**（2026-10-04，多轮修复后） |
+> | 「阶段 ID 冻结 `plan/script/storyboard/design/keyframe/assembly/post`」 | 运行时注册表实际有 **7 个 run 阶段**（`script`/`storyboard`/`design`/**`casting`**/`keyframe`/**`audio`**/`assembly`，见 `skills/registry.json`）；`plan` 是项目级阶段 0、**`post` 不存在** |
+> | 「测试基线 **667/667**」 | 现为 **716/716**（2026-10-04，多轮修复后）→ **860/860**（2026-10-05 独立复核实测，5.36s） |
+> | 「P0-f `bible.js` 只有 1 处自引用、**未被任何模块消费**」 | **已被门禁消费**：`gates.js:16` 导入 `BIBLE_KIND_LABEL`/`BIBLE_KIND_STAGE`/`isConsumable`，`gates.js:66-70` 对未批准圣经产出 `blockedBy` |
+> | 「#26 渠道表双写者**根因未修**」 | **已修**：`POST /api/llm/providers` 改为按 name 增量 upsert（不删未提及渠道、`apiKey` 空则保留原 key），删除走显式 `DELETE`。`canvas-server/src/index.js:591-645`、登记 `d9e9501` |
+> | 「`comfy`/`runninghub` 探测仍在 `/api/health` 里同步等待（#64 只做了一半）」 | **已缓存**：30s TTL + 过期后台刷新 + 单次探测 3s 硬超时；`/api/health` 实测 **1.8~2.4ms** |
+> | 「模板 16 个（生图 4 / 编辑 3 / 放大 1 / 视频 8）」 | 现为 **19 个**（image 4 / edit 4 / upscale 1 / video 10），`curl /api/providers` 实测 |
+> | 「P0-a/P0-c：从**流水线页**建的 run 不回填 `runIds[]`；多 run 只取 `runIds[0]`」 | **均已修**：服务端建 run 时按 `options.projectId` 幂等追加（`index.js:190`、`projects.js:352`、`pipeline.js:593`）+ 前端 run 选择器（`workspace-layout.tsx:138`）；`workspace-gate-panel.tsx` 已不存在 |
 > | 「帧数口径 `24×秒+3` → 5s=123 / 15s=363」 | **此口径是错的**。权威 = 官方工作流自述的 **`17k+5` 网格（向上吸附，24fps）** → **5s=124 / 10s=243 / 15s=362**；`durations.js` 与 `pipeline.js` 已统一（提交 `72ccc88`） |
 >
 > 其余历史结论（含 §11.3 那句「证据效力只覆盖旧代码版本」的自我提醒）**保持原样**，作为演变记录，不删改。
@@ -623,7 +628,7 @@ ReviewNote { id, scope: project|episode|scene|shot, targetId?, stage,
 
 1. **本轮提示词策略与门禁修复仍在工作区待统一提交**。本轮复核：后端 **667/667 pass**、前端 `tsc 0` 错、`npm run build` 通过；生产服务已在确认 GPU 队列空闲后受控重载，并完成真实 CDP 关键帧点击（run job **177→282**）与 Qwen `params.PROMPT` 全文取证。
 2. **出片复跑已结束，但成片没出来**。`run-murpt28o-46f5q` 落 assembly `partial`（16 镜 10 成 / 6 镜 OOM）。要先出片，顺序是：解决 147 显存（#25，建议先降 480×864 出草稿）→ **逐镜重试 `sh11`–`sh16`**（已有 `regenerate` 能力，不必重跑整条）→ 调 `assemble`。
-3. **服务已重启（在确认无在跑 job 后）**：`canvas-server` active @ `127.0.0.1:8788`，`/api/health` ok，模板 16 个；`/v1/models` 现 **10 个**（8 本地 + `deepseek::deepseek-flash` + `deepseek::deepseek-v4-pro`），那个压了很久的门禁修复顺带生效；外部渠道表已恢复到 `deepseek`（**但前端一保存/一键接入就会再被冲掉**，见 #26）。远端 ComfyUI `192.168.123.147:8188`（0.38.2，活着）。
+3. **服务已重启（在确认无在跑 job 后）**：`canvas-server` active @ `127.0.0.1:8788`，`/api/health` ok，当时模板 16 个（2026-10-05 复核：**19 个**）；`/v1/models` 现 **10 个**（8 本地 + `deepseek::deepseek-flash` + `deepseek::deepseek-v4-pro`），那个压了很久的门禁修复顺带生效；外部渠道表已恢复到 `deepseek`（**但前端一保存/一键接入就会再被冲掉**，见 #26）。远端 ComfyUI `192.168.123.147:8188`（0.38.2，活着）。
 4. **⚠️ 证据效力提醒（接手者必读）**：`run-murpt28o-46f5q` 是**跨代码版本**的产物 —— 它的 script 段跑的是三段式**之前**的旧代码（`stage.steps` 字段缺失可证）。因此**只能拿它证明**两件事：① P0-b 回写断链已通（keyframe 29 / assembly 10 产物）；② 147 显存 OOM（#25）。**不能**用它评判集数对齐、时长、三段式、styleAnchor 等修复的效果 —— 要评判必须**新建 run 重跑**。本轮新增的 DeepSeek 与 CDP 证据来自 `run-murnwa81-k27eq`，其片段任务在验收后已通过 UI 取消，未保留 GPU 运行任务。
 
 ### 11.4 第二轮复跑结论（run `run-murpt28o-46f5q`，2026-10-03）
@@ -1006,7 +1011,7 @@ const provenance = {
 
 ### 11.7 当前问题登记：健康检查边界与生产事实
 
-**状态：部分整改完成（2026-10-03 夜），2026-10-04 收口移交。** 产品负责人就「外部模型探测」拍板：**探测不实用，模型清单只读注册表**（见 `model-registry-contract.md` §3.1）。据此 LLM 侧探测链路（`probeLlm`/`listLlmModels`/`modelsAt`/探测缓存/`config.llm.probeTimeoutMs`）已整条删除，四处清单接口改为读注册表静态展开；「画幅校正尝试」已由**只检测不改稿**的 `aspectRatioConflict()` 取代。后端 `node --test test/*.test.mjs` → **673/673**（4.46s）。**残留**：`comfy`/`runninghub` 仍是同步探测（存活接口还会等这两项），画幅与 H3 视频提示词都还缺真实任务验收。本轮维护到此结束，移交清单见 `HANDOFF.md`「2026-10-04 本轮结论」与 `pilot-issues.md` #64–#67。
+**状态：部分整改完成（2026-10-03 夜），2026-10-04 收口移交。** 产品负责人就「外部模型探测」拍板：**探测不实用，模型清单只读注册表**（见 `model-registry-contract.md` §3.1）。据此 LLM 侧探测链路（`probeLlm`/`listLlmModels`/`modelsAt`/探测缓存/`config.llm.probeTimeoutMs`）已整条删除，四处清单接口改为读注册表静态展开；「画幅校正尝试」已由**只检测不改稿**的 `aspectRatioConflict()` 取代。后端 `node --test test/*.test.mjs` → 当时 **673/673**（4.46s；2026-10-05 复核 **860/860**、5.36s）。~~**残留**：`comfy`/`runninghub` 仍是同步探测（存活接口还会等这两项）~~ → **2026-10-05 复核：已改 30s TTL 缓存 + 后台刷新 + 3s 硬超时，实测约 2ms**；画幅与 H3 视频提示词仍缺真实任务验收。本轮维护到此结束，移交清单见 `HANDOFF.md`「2026-10-04 本轮结论」与 `pilot-issues.md` #64–#67。
 
 #### P0：网关存活、依赖连通与生产就绪混为一谈
 

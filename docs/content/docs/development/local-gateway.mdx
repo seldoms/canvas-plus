@@ -5,7 +5,7 @@ description: Connect on-prem models and ComfyUI through canvas-server to run nov
 
 # Local Gateway and Drama Pipeline
 
-`canvas-server/` is the **local gateway backend** this fork adds on top of upstream infinite-canvas. It funnels on-prem LLM and ComfyUI image/video generation into one stable API, and orchestrates the five-stage pipeline: novel → script → storyboard → costume & props → keyframes → clip assembly.
+`canvas-server/` is the **local gateway backend** this fork adds on top of upstream infinite-canvas. It funnels on-prem LLM and ComfyUI image/video generation into one stable API, and orchestrates the seven-stage pipeline: novel → script → storyboard → costume & props → casting → keyframes → audio → clip assembly.
 
 Upstream is a pure front-end app whose AI requests go straight from the browser to third-party endpoints. The gateway exists because the browser alone cannot solve four things:
 
@@ -53,7 +53,7 @@ Create a channel under **Config → Channels** with the address `http://<gateway
 
 > When writing custom scripts: relative paths get `/v1` appended automatically, so calls to the gateway's image/video endpoints must use **absolute URLs** — derive the gateway root from the injected `baseUrl` and append `/api/...`.
 
-## 3. The five-stage pipeline
+## 3. The seven-stage pipeline
 
 ```
 Novel text
