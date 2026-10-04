@@ -6,7 +6,7 @@ import { splitNovelIntoChunks } from "./chunk-novel.js";
 import { buildMixInput, resolveDialogueLines } from "./audio.js";
 import { projectAudioCues, projectVoiceProfiles } from "./audio-track.js";
 import { ASSET_ROLE, AUDIO_MODE } from "./contracts.js";
-import { assembleEpisode, buildCueSrt, DEFAULT_SUBTITLE_STYLE } from "./delivery.js";
+import { assembleEpisode, buildCueSrt, DEFAULT_SUBTITLE_STYLE, probeMedia } from "./delivery.js";
 // D1：模型时长档位（与「模型清单」同源）。骨架对齐、plan 时长校验都从这里取口径。
 import { durationsForTemplate, durationMetaForTemplate, frameCountForDuration, skeletonAlignment } from "./durations.js";
 import { artifactUrl, ensureDir, safeJoin } from "./files.js";
@@ -236,6 +236,20 @@ function resolvingOutputUrl(config, job) {
 function outputPrefixFor(runId, itemId) {
     const clean = (value) => String(value ?? "").replace(/[^A-Za-z0-9_.-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 80);
     return `canvas/${clean(runId) || "run"}_${clean(itemId) || "item"}`;
+}
+
+/** 对口型（lipsync）条目 id：由源片段 id 派生，稳定可幂等（同一片段只对应一条对口型条目）。 */
+function lipsyncItemId(sourceClipId) {
+    return `${String(sourceClipId ?? "clip")}-lipsync`;
+}
+
+/**
+ * 每次 attempt 换一个新的 seed：既是 LatentSync 的生成参数，也作为「同输入命中 ComfyUI 执行缓存 →
+ * `/history` 返回空 outputs」的**缓存击穿**手段（任务不得假定提交后一定拿得到产物路径）。
+ * 对口型是「改一句台词才重跑」的后处理，换 seed 的重跑成本可接受且换来确定可得的产物。
+ */
+function freshSeed() {
+    return Math.floor(Math.random() * 2147483647);
 }
 
 /** 阶段产物条目：关键帧用 frames、片段合成用 clips、服化道参考图用 references、配音用 audio（顺序即优先级）。 */
@@ -2233,6 +2247,15 @@ ${JSON.stringify(partials, null, 2)}
         item.warning = [...parts, text].join("；");
     }
 
+    /** 追加一条**阶段级** warning（去重，供前端/交付读取；与 appendWarning 同语义，只是挂在 stage 上）。 */
+    function appendStageWarning(stage, reason) {
+        const text = String(reason ?? "").trim();
+        if (!text || !stage) return;
+        const parts = Array.isArray(stage.warnings) ? stage.warnings.map((part) => String(part).trim()).filter(Boolean) : [];
+        if (parts.includes(text)) return;
+        stage.warnings = [...parts, text];
+    }
+
     /** 编译事实指纹：排除 item 的派生字段，内容/槽位/模板变化就会得到新指纹。 */
     function promptCompileFingerprint(compileInput) {
         const { item: _item, ...facts } = compileInput || {};
@@ -2785,6 +2808,102 @@ ${JSON.stringify(partials, null, 2)}
     }
 
     /**
+     * 对口型阶段（lipsync）：**生成型后处理**，插在「片段产出之后、成片之前」。
+     *
+     * 位置选择：**新增可选阶段**（而非塞进 `assembly` 子步骤）—— 理由：
+     *   - `assembly.requires` 仍只有 `keyframe`：对口型**不阻塞、不延迟**成片；成片永远能按原片段出；
+     *   - 与 `audio` 阶段同构，天然复用既有「候选活扣 + Job 终态回写 + 逐条重跑」机制，
+     *     「改一句台词只重跑该镜口型」可按条目精准重跑，不与 ffmpeg 拼片耦合；
+     *   - 不污染 `assembly` 的「计划片段 + 拼成片」语义。
+     *
+     * 触发条件（逐镜判定，二者同时满足才做；否则跳过）：
+     *   ① 该镜**片段存在**（assembly 产物里有该 shotId 且有 artifactUrl）；
+     *   ② 该镜**有台词音频产物**（audio 产物里有同 shotId 且有 artifactUrl 的 AudioCue）。
+     *   —— 无台词镜（无 AudioCue 或音频失败）**直接跳过**：它的环境音/音效来自片段原声，不该动。
+     *
+     * 输入：源片段（`INPUT_VIDEO`）+ 该镜 TTS 音频（`INPUT_AUDIO`）；产物**另存**为新条目（`output.clips[]`），
+     * **绝不覆盖原片段**（原片段仍留在 `assembly.output.clips` 里，可回滚、可对比）。
+     * 模型/参数取自**服务端注册表**：模板名来自 `config.pipeline.lipsyncTemplate`，模型专属参数写在模板 JSON 里，
+     * 本层只下发模型无关的素材槽与兜底开关。失败/超时由 Job 终态投影落 warning，成片回落原片段，绝不阻塞。
+     */
+    function attachLipsync(run, def, stage, prev) {
+        const clips = Array.isArray(run.stages?.assembly?.output?.clips) ? run.stages.assembly.output.clips : [];
+        const audioItems = Array.isArray(run.stages?.audio?.output?.audio) ? run.stages.audio.output.audio : [];
+        const template = String(pipelineConfig.lipsyncTemplate || "").trim();
+        const prevItems = Array.isArray(prev?.clips) ? prev.clips : [];
+        // 台词音频产物索引：只认**已有产物**的 AudioCue（TTS 失败/未跑配音 → 该镜跳过）。
+        const audioByShot = new Map();
+        for (const entry of audioItems) {
+            if (!entry?.artifactUrl || entry.shotId === undefined || entry.shotId === null) continue;
+            audioByShot.set(String(entry.shotId), entry);
+        }
+        const items = [];
+        // 本次调用的 attempt 标记：拼进 OUTPUT_PREFIX，让输出节点**每次 attempt 都 cache-miss** →
+        // 产物文件名确定唯一（`<prefix>_00001-audio.mp4`），同时消除「同输入命中缓存 → history outputs 为空」。
+        const attemptTag = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+        for (const clip of clips) {
+            // 触发条件①：该镜片段存在。
+            if (!clip?.artifactUrl || clip.shotId === undefined || clip.shotId === null) continue;
+            // 触发条件②：该镜有台词音频产物；无台词/无音频镜跳过（不动片段原声）。
+            const audio = audioByShot.get(String(clip.shotId));
+            if (!audio) continue;
+            const id = lipsyncItemId(clip.id);
+            const old = prevItems.find((entry) => entry.id === id);
+            const item = {
+                id,
+                shotId: clip.shotId,
+                sourceClipId: clip.id,
+                sourceClipUrl: clip.artifactUrl,
+                sourceAudioUrl: audio.artifactUrl,
+                text: audio.text ?? "",
+                characterId: audio.characterId ?? null,
+                startSec: Number.isFinite(Number(audio.startSec)) ? Number(audio.startSec) : 0,
+                durationSec: Number.isFinite(Number(clip.durationSec)) ? Number(clip.durationSec) : null,
+                candidates: old?.candidates ? old.candidates.map((candidate) => ({ ...candidate })) : [],
+                artifactUrl: old?.artifactUrl ?? null,
+                selected: old?.selected ?? null,
+                jobId: old?.jobId ?? null,
+                status: old?.status ?? "queued",
+            };
+            if (!template) {
+                item.status = "blocked";
+                item.blockedReason = "未配置对口型工作流模板（config.pipeline.lipsyncTemplate），无法对口型（成片仍按原片段产出）";
+                items.push(item);
+                continue;
+            }
+            // 幂等 + 变更检测：输入（片段/音频）未变且已有候选/产物 → 跳过；输入变了（如换了台词重跑 audio）
+            // → 追加新候选，只重跑对口型这一步，绝不重回 H3 视频。
+            const unchanged = old && old.sourceClipUrl === clip.artifactUrl && old.sourceAudioUrl === audio.artifactUrl && (item.candidates.length > 0 || item.artifactUrl);
+            if (unchanged) {
+                syncItem(item);
+                items.push(item);
+                continue;
+            }
+            const params = {
+                INPUT_VIDEO: item.sourceClipUrl,
+                INPUT_AUDIO: item.sourceAudioUrl,
+                SEED: freshSeed(),
+                OUTPUT_PREFIX: `${outputPrefixFor(run.id, item.id)}-${attemptTag}`,
+                RECOVER_BY_PREFIX: true,
+            };
+            enqueueAttempt(run, def, item, { kind: "video", template, params, ready: true });
+            if (item.candidates.length) syncItem(item);
+            items.push(item);
+        }
+        stage.output = { clips: items };
+        recomputeStage(stage, run);
+        if (!items.length) {
+            appendStageWarning(stage, "没有需要对口型的镜头（需同时满足：该镜有片段产物 + 该镜有台词音频产物）；无台词镜跳过");
+            stage.status = stage.blocked?.length ? "blocked" : "done";
+            stage.finishedAt = nowIso();
+        } else if (!items.some((item) => (item.candidates || []).length)) {
+            // 无可跑任务（模板缺失 / 未接 runJob）：blocked 优先，否则 done。
+            stage.status = items.some((item) => item.status === "blocked") ? "blocked" : "done";
+            stage.finishedAt = nowIso();
+        }
+    }
+
+    /**
      * 角色定妆阶段（casting）：**确定性组装**身份卡，不调 LLM。
      *
      * 只做两件事 —— 定脸 + 定声音：
@@ -2964,6 +3083,8 @@ ${JSON.stringify(partials, null, 2)}
         syncItem(item);
         // 配音失败只降级记 warning（该对白不进成片音轨），绝不影响成片能否产出。
         if (def.id === "audio" && job.status === "error") appendWarning(item, `配音失败（${job.error || "TTS 任务失败"}），该对白不进成片音轨`);
+        // 对口型失败/超时只降级记 warning（该镜成片**回落原片段**），绝不因此让成片失败。
+        if (def.id === "lipsync" && job.status === "error") appendWarning(item, `对口型失败（${job.error || "lip-sync 任务失败"}），该镜成片回落原片段`);
         const shots = run.stages?.storyboard?.output?.shots || [];
         if (def.id === "keyframe") enqueueReady(run, def, stage, items, items, shots);
         else if (def.id === "assembly") enqueueReady(run, def, stage, items, run.stages?.keyframe?.output?.frames || [], shots);
@@ -3057,10 +3178,11 @@ ${JSON.stringify(partials, null, 2)}
             // 生成型阶段重排前的产物，用于继承旧候选（重跑只追加候选，不清空旧 jobId/artifactUrl）。
             // design 也保留 prev：它现在会真正产出参考图（与基类生成型阶段相同的候选继承语义）。
             // casting 保留 prev：重跑时继承已确认的 face/voice 确认状态（不抹掉人确认过的结果）。
-            const prevOutput = GENERATIVE_STAGES.has(def.id) || def.id === "design" || def.id === "audio" || def.id === "casting" ? stage.output : null;
-            // 配音 / 角色定妆阶段不调 LLM：Cue 由分镜台词与角色音色确定性派生（见 attachAudio），
-            // 身份卡由剧本角色 + design 脸产物 + VoiceProfile 确定性组装（见 attachCasting）。
-            if (def.id !== "audio" && def.id !== "casting") {
+            const prevOutput = GENERATIVE_STAGES.has(def.id) || def.id === "design" || def.id === "audio" || def.id === "casting" || def.id === "lipsync" ? stage.output : null;
+            // 配音 / 角色定妆 / 对口型阶段不调 LLM：Cue 由分镜台词与角色音色确定性派生（见 attachAudio），
+            // 身份卡由剧本角色 + design 脸产物 + VoiceProfile 确定性组装（见 attachCasting），
+            // 对口型由「源片段 + TTS 音频」确定性派生任务（见 attachLipsync）。
+            if (def.id !== "audio" && def.id !== "casting" && def.id !== "lipsync") {
                 await composeWithLlm(run, def, stage, provider, { signal: runOptions.signal, resume: Boolean(runOptions.resume), estSecondsPerChunk });
             }
             if (def.id === "audio") {
@@ -3075,6 +3197,9 @@ ${JSON.stringify(partials, null, 2)}
             } else if (def.id === "casting") {
                 // 角色定妆：定脸 + 定声音 → 身份卡；未确认则立即把 keyframe / audio 置 blocked。
                 attachCasting(run, def, stage, prevOutput);
+            } else if (def.id === "lipsync") {
+                // 对口型：片段产出后、成片前的生成型后处理；逐镜判定触发条件，产物另存，失败回落原片段。
+                attachLipsync(run, def, stage, prevOutput);
             } else if (GENERATIVE_STAGES.has(def.id)) {
                 // 语言适配预编译：入队前用注入的 llmCall 把「仅英文有官方依据」的模型提示词英文化（异步、失败只降级不阻塞）。
                 const genItems = def.id === "keyframe" ? stage.output?.frames : stage.output?.clips;
@@ -3160,12 +3285,37 @@ ${JSON.stringify(partials, null, 2)}
      * 只把**已有产物**的 audio item 交给 delivery（带 `shotId + startSec`）；无产物（TTS 失败/未跑配音）
      * 自动跳过 —— delivery 的 normalizeAudioItems 也会丢弃空 ref，因此配音失败绝不阻塞出片。
      */
-    function audioForAssemble(run) {
-        const items = run?.stages?.audio?.output?.audio;
+    /**
+     * 给成片准备独立配音音轨。
+     *
+     * ⚠️ **只喂磁盘上真实存在的音频产物**：此前只判 `item.artifactUrl` 是否存在（登记了就算数），
+     * 于是「音频产物登记了 URL 但文件不在磁盘上」会一路喂进混音 → **ffmpeg 直接退码非 0，整部成片失败**。
+     * 这不是理论问题：实测构造该场景时成片 `status=error`、ffmpeg 退出码 254。
+     * 现在改为**跳过缺失项 + 写可读 warning**，让成片照出（宁愿少一句台词，也不要整片挂掉）。
+     */
+    function audioForAssemble(run, config) {
+        const stage = run?.stages?.audio;
+        const items = stage?.output?.audio;
         if (!Array.isArray(items) || !items.length) return [];
-        const cues = items
-            .filter((item) => item && item.artifactUrl)
-            .map((item) => ({ id: item.id, ref: item.artifactUrl, shotId: item.shotId, startSec: item.startSec, type: item.type, gainDb: item.gainDb }));
+        const cues = [];
+        const missing = [];
+        for (const item of items) {
+            if (!item || !item.artifactUrl) continue;
+            // 只在「能解析成本网关的磁盘路径、但文件确实不在」时才跳过。
+            // 非本网关地址（外部 URL / 测试夹具）解析不出路径 → 交给下游处理，别自作主张丢弃。
+            const localPath = artifactFilePath(config, item.artifactUrl);
+            if (localPath && !existsSync(localPath)) {
+                missing.push(item);
+                continue;
+            }
+            cues.push({ id: item.id, ref: item.artifactUrl, shotId: item.shotId, startSec: item.startSec, type: item.type, gainDb: item.gainDb });
+        }
+        if (missing.length) {
+            appendStageWarning(
+                stage,
+                `有 ${missing.length} 条配音产物在磁盘上不存在（${missing.map((item) => item.id).join("、")}），已跳过这些音轨 —— 成片会缺这几句台词，请重跑这些条目的配音`,
+            );
+        }
         if (!cues.length) return [];
         const clips = run?.stages?.assembly?.output?.clips || [];
         return buildMixInput({ clips, cues }).audio;
@@ -3228,6 +3378,38 @@ ${JSON.stringify(partials, null, 2)}
         const { run, def, stage, id } = begun;
         const assembly = stage.output.assembly;
         const clips = stage.output.clips;
+        // ── 对口型（lipsync）产物优先：只用**另存**的新片段替换进片用清单，**绝不改写** assembly.output.clips ──────
+        // ① 有对口型产物（且成功）的镜 → 成片用新片段；② 失败/取消/未跑 → 回落原片段（绝不阻塞成片）。
+        // 原片段清单保持不动，因此可回滚、可对比；替换只发生在交 delivery 的这份「派生副本」上。
+        const lipsyncItems = Array.isArray(run.stages?.lipsync?.output?.clips) ? run.stages.lipsync.output.clips : [];
+        const lipSyncByShot = new Map();
+        for (const item of lipsyncItems) {
+            if (item?.artifactUrl && item.shotId !== undefined && item.shotId !== null) lipSyncByShot.set(String(item.shotId), item);
+        }
+        const clipsForFilm = [];
+        for (const clip of clips) {
+            const key = clip?.shotId !== undefined && clip?.shotId !== null ? String(clip.shotId) : null;
+            const lip = key ? lipSyncByShot.get(key) : null;
+            if (!lip) {
+                clipsForFilm.push(clip);
+                continue;
+            }
+            // 对口型产物长度随音频对齐（可能短于原片段）：探**真实时长**，保证成片时间轴（后续片段/音轨偏移）正确。
+            // 探不到就沿用原 durationSec（不臆造、不阻塞）。
+            let durationSec = clip.durationSec;
+            const lipFile = artifactFilePath(config, lip.artifactUrl);
+            if (lipFile) {
+                const media = await probeMedia(lipFile, pipelineConfig.ffprobePath).catch(() => null);
+                if (Number.isFinite(Number(media?.durationSec)) && Number(media.durationSec) > 0) durationSec = Number(media.durationSec);
+            }
+            clipsForFilm.push({ ...clip, artifactUrl: lip.artifactUrl, durationSec, lipSyncArtifactUrl: lip.artifactUrl, lipSyncJobId: lip.jobId ?? null });
+        }
+        // 失败/取消/未配置模板的镜：写可读 warning（成片照常出，只是该镜用原片段）。
+        for (const item of lipsyncItems) {
+            if (item?.artifactUrl) continue;
+            const reason = item?.warning || item?.blockedReason || (item?.status === "canceled" ? "对口型已取消" : "对口型未产出");
+            appendStageWarning(stage, `镜头「${item?.shotId ?? item?.id}」${reason}，成片已回落原片段`);
+        }
         writeProgress(run.id, { runId: run.id, stage: def.id, phase: "assembling", label: `正在把 ${clips.length} 个片段合成成片` });
         // 成片尺寸与片段同一口径：都从「该视频模型的官方规格登记表」取（H3 竖屏 = 768x1344），避免片段与成片不一致被二次重采样。
         const assembleDims = sizeForRatio(pipelineConfig.videoTemplate, productionDefaults(run).ratio, { base: Math.min(Number(pipelineConfig.videoWidth) || 768, Number(pipelineConfig.videoHeight) || 1344) });
@@ -3236,7 +3418,7 @@ ${JSON.stringify(partials, null, 2)}
         const separate = audioMode !== AUDIO_MODE.EMBEDDED;
         // 独立配音：用现有 audio 阶段产物（TTS 音轨）；原声：不混独立音轨，片段原声即人声事实源。
         const assembleAudio = separate
-            ? (Array.isArray(options.audio) && options.audio.length ? options.audio : audioForAssemble(run))
+            ? (Array.isArray(options.audio) && options.audio.length ? options.audio : audioForAssemble(run, config))
             : [];
         // 独立配音且有 TTS 音轨 → 不保留片段原声（delivery 亦有硬规则兜底）；无音轨时交 delivery 自动判定，避免哑片。
         const includeClipAudio = separate ? (assembleAudio.length ? false : undefined) : true;
@@ -3257,7 +3439,7 @@ ${JSON.stringify(partials, null, 2)}
             const result = await assemble({
                 config,
                 episodeId: run.id,
-                clips,
+                clips: clipsForFilm,
                 order: assembly.order,
                 transition: assembly.transition,
                 options: {
@@ -3305,6 +3487,11 @@ ${JSON.stringify(partials, null, 2)}
             assembly.coverUrl = result.coverUrl || null;
             assembly.bytes = result.bytes;
             assembly.info = result.info || null;
+            // 对口型落地情况：本片用了几条对口型片段（其余回落原片段）——可验证、可追溯。
+            assembly.lipSync = {
+                used: clipsForFilm.filter((clip) => clip.lipSyncArtifactUrl).length,
+                total: clips.length,
+            };
             assembly.finishedAt = nowIso();
             assembly.error = undefined;
         } catch (error) {

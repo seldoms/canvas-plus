@@ -1,7 +1,8 @@
 import { readFile } from "node:fs/promises";
+import { basename, dirname, extname, join } from "node:path";
 
-import { safeJoin, sanitizeName } from "./files.js";
-import { collectOutputs, disableEmptyImageRefs, disableEmptyLoras, extractTokens, renderTemplate } from "./providers/comfy.js";
+import { artifactUrl, ensureDir, safeJoin, sanitizeName, saveBuffer } from "./files.js";
+import { MEDIA_TYPES, collectOutputs, disableEmptyImageRefs, disableEmptyLoras, extractTokens, renderTemplate } from "./providers/comfy.js";
 
 /** 这些 token 的值是素材（本机路径 / 远端 URL / 网关产物地址），提交前要先上传到 ComfyUI。 */
 export const ASSET_TOKENS = [
@@ -13,9 +14,18 @@ export const ASSET_TOKENS = [
     "REF_VIDEO",
     "PERSON_IMAGE",
     "CLOTHING_IMAGE",
+    // 对口型（video_lipsync）：输入是「已有片段 + 该镜 TTS 音频」，二者都必须先上传到 ComfyUI 输入目录再接线。
+    "INPUT_VIDEO",
+    "INPUT_AUDIO",
     // REF_IMAGE_1..9 是「额外参考图」槽位，Qwen-Image 2.1 最多支持 10 张（INPUT_IMAGE 占第 1 张）。
     ...Array.from({ length: 9 }, (_, index) => `REF_IMAGE_${index + 1}`),
 ];
+
+/**
+ * 音频类素材槽：上传后需带 `input/` 前缀才能被 VHS_LoadAudio 之类按「输入目录相对路径」读取的节点找到
+ * （图像槽走 LoadImage，只认裸文件名，绝不加前缀，否则会破坏既有生图/生视频模板）。
+ */
+const AUDIO_ASSET_TOKENS = new Set(["INPUT_AUDIO"]);
 
 /**
  * 可选图像素材 token：缺省填空串，渲染后由 disableEmptyImageRefs 把对应的 LoadImage 节点摘掉（而不是报错）。
@@ -64,6 +74,35 @@ export function createLocalRunner({ config, comfy, jobs }) {
         return comfy.uploadFile(buffer, sanitizeName(text.split(/[\\/]/).pop()));
     }
 
+    /**
+     * 缓存命中兜底：ComfyUI 执行缓存命中时 `/history` 的 `outputs` 为空，本函数按 `OUTPUT_PREFIX`
+     * 从输出目录**按文件名**回落取回产物（下载后仍落 `data/artifacts/<jobId>/`，与正常产物同一登记链路）。
+     * 仅对显式声明 `RECOVER_BY_PREFIX` 的任务生效（对口型），不改变其它模板「无产物即失败」的语义。
+     * 命名约定来自视频合成节点：`<prefix>_00001-audio.mp4`（首次写入序号 00001），并兼容无 `-audio` 后缀的保存节点。
+     */
+    async function recoverByOutputPrefix(job, config, comfy) {
+        if (job?.params?.RECOVER_BY_PREFIX !== true) return [];
+        const prefix = String(job?.params?.OUTPUT_PREFIX || "").replace(/\\/g, "/").trim();
+        if (!prefix) return [];
+        const dir = dirname(prefix);
+        const subfolder = dir && dir !== "." ? dir : "";
+        const base = basename(prefix);
+        const candidates = [`${base}_00001-audio.mp4`, `${base}_00001.mp4`];
+        const outDir = ensureDir(join(config.dataDir, "artifacts", job.id));
+        for (const filename of candidates) {
+            let buffer;
+            try {
+                buffer = await comfy.view({ filename, subfolder, type: "output" });
+            } catch {
+                continue;
+            }
+            if (!buffer || !buffer.length) continue;
+            await saveBuffer(join(outDir, filename), buffer);
+            return [{ filename, url: artifactUrl(config, job.id, filename), type: MEDIA_TYPES[extname(filename).toLowerCase()] || "file", bytes: buffer.length, recovered: true }];
+        }
+        return [];
+    }
+
     /** 生图/生视频任务的真实执行体：渲染模板 → 提交 ComfyUI → 轮询 → 回收产物。 */
     async function runJob(job, ctx) {
         const templatePath = safeJoin(config.workflowsDir, `${job.template}.json`);
@@ -86,7 +125,11 @@ export function createLocalRunner({ config, comfy, jobs }) {
         }
 
         for (const token of ASSET_TOKENS) {
-            if (params[token]) params[token] = await resolveAsset(params[token]);
+            if (params[token]) {
+                const uploaded = await resolveAsset(params[token]);
+                // 音频槽节点（VHS_LoadAudio）按「输入目录相对路径」找文件；图像槽只认裸文件名，绝不加前缀。
+                params[token] = AUDIO_ASSET_TOKENS.has(token) && !uploaded.startsWith("input/") ? `input/${uploaded}` : uploaded;
+            }
         }
 
         // H3 视频节点硬性要求宽高可被 32 整除（conditioning.py 直接抛 ValueError），
@@ -135,7 +178,17 @@ export function createLocalRunner({ config, comfy, jobs }) {
             throw new Error(detail.length ? JSON.stringify(detail, null, 2) : "ComfyUI 执行失败");
         }
 
-        const outputs = await collectOutputs(entry, job.id, config, comfy);
+        let outputs = await collectOutputs(entry, job.id, config, comfy);
+        // 前置坑（必处理）：ComfyUI 命中**执行缓存**时，同一输入的 /history 会返回空 `outputs: {}` ——
+        // 提交成功却拿不到产物路径，若直接判失败就是误判。带 RECOVER_BY_PREFIX 的任务（对口型）在
+        // outputs 为空时按 OUTPUT_PREFIX 从输出目录按文件名回落兜底取回产物，绝不假定「提交后一定有路径」。
+        if (!outputs.length) {
+            const recovered = await recoverByOutputPrefix(job, config, comfy);
+            if (recovered.length) {
+                console.warn(`[job ${job.id}] history 无 outputs（疑似缓存命中），已按 OUTPUT_PREFIX 从输出目录回落取回 ${recovered.length} 个产物`);
+                outputs = recovered;
+            }
+        }
         if (!outputs.length) throw new Error("ComfyUI 未返回任何产物，请检查模板的输出节点");
         ctx.progress(outputs.length, outputs.length, "已完成");
         return { outputs };

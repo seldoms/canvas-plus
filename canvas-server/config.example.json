@@ -49,6 +49,7 @@
     "upscaleTemplate": "upscale_4x",
     "audioTemplate": "audio_qwen3_tts",
     "audioDevice": "cuda",
+    "lipsyncTemplate": "video_lipsync",
     "imageWidth": 768,
     "imageHeight": 1344,
     "imageBatch": 1,

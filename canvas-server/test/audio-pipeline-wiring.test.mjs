@@ -244,3 +244,28 @@ test("配音：无对白镜头不产任何音频任务/条目", async (t) => {
     assert.deepEqual(pipeline.get(run.id).stages.audio.output.audio, []);
     assert.equal(pipeline.get(run.id).stages.audio.status, "done");
 });
+
+test("配音产物『登记了但文件不在磁盘上』→ 跳过该音轨 + 可读 warning，成片照样产出（不让整片挂）", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    const { pipeline, jobs, record, runId } = await runAudio(env);
+
+    const audioJobs = [...jobs.store.values()].filter((job) => job.kind === "audio");
+    // 第 1 条写真实产物；第 2 条**只登记 URL、不落盘**（历史上会让 ffmpeg 挂掉整部成片）。
+    jobs.finish(audioJobs[0].id, "done", { outputs: [{ url: writeArtifact(env.config, audioJobs[0].id, "a.flac"), type: "audio", bytes: 100 }] });
+    jobs.finish(audioJobs[1].id, "done", { outputs: [{ url: `/api/artifacts/${audioJobs[1].id}/ghost.flac`, type: "audio", bytes: 100 }] });
+    jobs.finish(audioJobs[2].id, "done", { outputs: [{ url: writeArtifact(env.config, audioJobs[2].id, "c.flac"), type: "audio", bytes: 100 }] });
+
+    const run = pipeline.get(runId);
+    const audio = run.stages.audio.output.audio;
+    assert.equal(audio.filter((item) => item.artifactUrl).length, 3, "三条都登记了产物 URL（其中一条文件其实不在）");
+
+    pipeline.setStageInput(runId, "assembly", { output: CLIPS });
+    const done = await pipeline.assembleStage(runId);
+    assert.equal(done.stages.assembly.status, "done", "成片必须照常产出，不能因缺一个音频文件整片失败");
+    assert.equal(done.stages.assembly.output.assembly.status, "done");
+    assert.equal(record[0].options.audio.length, 2, "只把磁盘上真实存在的音轨交给混音");
+    const warnings = (done.stages.audio.warnings || []).join(" ");
+    assert.match(warnings, /磁盘上不存在/, "缺失要降级成可读 warning");
+    assert.match(warnings, /重跑这些条目的配音/, "warning 要给出可执行的下一步");
+});

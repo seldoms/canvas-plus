@@ -66,6 +66,10 @@ const DEFAULTS = {
         // 文本→音频模板都可用；默认 Qwen3-TTS 命名音色。DEVICE 默认 cuda，显存/内存紧张时可切 cpu。
         audioTemplate: "audio_qwen3_tts",
         audioDevice: "cuda",
+        // 对口型（lipsync）阶段用的工作流模板（服务端注册表项）：输入=已有片段 + 该镜 TTS 音频，输出=另存的新片段。
+        // 留空则「对口型」阶段不产任务（显式 blocked + 可读原因），成片仍按原片段产出。模型/采样参数都写在模板里，
+        // 内容层与前端不得出现模型专属参数。
+        lipsyncTemplate: "video_lipsync",
         // 关键帧/片段生成时补进模板的尺寸参数；模板要求的 token 缺一个就会在渲染阶段报错。
         imageWidth: 768,
         imageHeight: 1344,

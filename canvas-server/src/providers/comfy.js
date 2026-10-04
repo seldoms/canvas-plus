@@ -15,7 +15,7 @@ import { dialogueMetaForTemplate } from "../dialogue-roles.js";
 const TOKEN_RE = /\{\{([A-Z0-9_]+)\}\}/g;
 
 /** Artifact.type 按扩展名判定。 */
-const MEDIA_TYPES = {
+export const MEDIA_TYPES = {
     ".png": "image", ".jpg": "image", ".jpeg": "image", ".webp": "image", ".gif": "image", ".bmp": "image",
     ".mp4": "video", ".webm": "video", ".mov": "video", ".mkv": "video",
     ".mp3": "audio", ".wav": "audio", ".flac": "audio", ".ogg": "audio",
@@ -40,6 +40,7 @@ const TITLES = {
     video_h3_quantfunc_ref2v: "H3 参考图生视频（QuantFunc INT4）",
     video_minimax_h3_t2v: "MiniMax H3 文生视频",
     video_h3_talk: "H3 台词对口型",
+    video_lipsync: "片段对口型（后处理）",
     video_wan_animate: "Wan 动画驱动",
     scail2_action_transfer: "Scail2 动作迁移",
     audio_qwen3_tts: "Qwen3-TTS 语音合成",
