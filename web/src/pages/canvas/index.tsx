@@ -50,7 +50,12 @@ export default function CanvasPage() {
                         const blob = zip.get(item.path);
                         if (!blob) return;
                         const typedBlob = blob.type ? blob : blob.slice(0, blob.size, item.mimeType);
-                        await (item.storageKey.startsWith("image:") ? setImageBlob(item.storageKey, typedBlob) : setMediaBlob(item.storageKey, typedBlob));
+                        try {
+                            await (item.storageKey.startsWith("image:") ? setImageBlob(item.storageKey, typedBlob) : setMediaBlob(item.storageKey, typedBlob));
+                        } catch (error) {
+                            // 画布包里这一份是空壳/损坏：跳过，别让整个导入失败，也别覆盖本地已有的好图。
+                            console.warn(`[canvas] 跳过不可用的媒体 ${item.storageKey}`, error);
+                        }
                     }),
                 ),
             );

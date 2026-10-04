@@ -27,6 +27,7 @@ export default {
         durationMinutes: "{{minutes}}分{{seconds}}秒",
         durationSeconds: "{{seconds}}秒",
         imageReadFailed: "读取图片失败",
+        imageEmpty: "图片为空或已损坏",
     },
     settingsPanels: {
         common: { auto: "自动", low: "低", medium: "中", high: "高", xhigh: "极高" },
@@ -243,6 +244,10 @@ export default {
         submitFailed: "提交失败：{{message}}",
         jobFailed: "生成失败：{{message}}",
         referenceUploadFailed: "参考图上传失败：{{name}}",
+        referenceReadFailed: "参考图读取失败：{{message}}",
+        imageUnavailable: "图片不可用",
+        imageUnavailableLocal: "本地图库中的原图已损坏或缺失",
+        imageUnavailableRemote: "生成结果地址缺失",
     },
     videoWorkbench: {
         title: "视频创作台",

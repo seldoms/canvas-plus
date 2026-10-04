@@ -29,6 +29,12 @@ const IMAGE_REMOTE_LOAD_TIMEOUT_MS = 10 * 60_000;
 const IMAGE_DECODE_TIMEOUT_MS = 10_000;
 const IMAGE_RESPONSE_ERROR = "ImageResponseError";
 const IMAGE_TIMEOUT_ERROR = "ImageTimeoutError";
+const IMAGE_EMPTY_ERROR = "ImageEmptyError";
+/**
+ * 体积下限：真实生成结果 / 用户素材不可能这么小，而「1×1 空白 PNG」恰好 ≈70B —— 正是空壳的特征。
+ * 低于它的一律当作「取不到图」，既不写入图库，也不顶上原图槽位。
+ */
+const MIN_IMAGE_BYTES = 128;
 
 type StoredImagePreview = { version: number; blob?: Blob };
 
@@ -50,12 +56,12 @@ export async function uploadImage(input: string | Blob, options?: ImageReadOptio
 }
 
 async function storeImage(blob: Blob, options?: ImageReadOptions): Promise<UploadedImage> {
+    // 先解码校验、后落盘：空壳（取不到真图）绝不允许拿到 storageKey，更不允许写进图库。
+    const meta = await readUsableImageMeta(blob, options);
+    throwIfAborted(options?.signal);
     const storageKey = `image:${nanoid()}`;
     const url = URL.createObjectURL(blob);
     try {
-        const meta = await loadImageMeta(url, options);
-        if (!meta) throw new Error(i18n.t("common.imageReadFailed"));
-        throwIfAborted(options?.signal);
         await store.setItem(storageKey, blob);
         throwIfAborted(options?.signal);
         objectUrls.set(storageKey, url);
@@ -122,8 +128,8 @@ function loadImageMeta(url: string, options?: ImageReadOptions, timeoutMs = IMAG
     });
 }
 
-function namedError(name: string) {
-    const error = new Error(i18n.t("common.imageReadFailed"));
+function namedError(name: string, message?: string) {
+    const error = new Error(message || i18n.t("common.imageReadFailed"));
     error.name = name;
     return error;
 }
@@ -140,19 +146,49 @@ function throwIfAborted(signal?: AbortSignal) {
     if (signal?.aborted) throw abortReason(signal);
 }
 
+/** 便宜的「是不是能用的图片」判定：只认体积，不解码 —— 给同步/缓存路径（resolveImageUrl / getImageBlob）用。 */
+function isUsableImageBlob(blob: unknown): blob is Blob {
+    return blob instanceof Blob && blob.size >= MIN_IMAGE_BYTES;
+}
+
+/** 解码尺寸退化（≤1×1）只可能是空白占位，不是真实产物。 */
+function isDegenerateImageSize(width: number, height: number) {
+    return width <= 1 || height <= 1;
+}
+
+/**
+ * 解码并校验一张「能用的图片」：体积达标、能解码、尺寸不退化为 1×1。
+ * 不达标就抛错 —— 调用方据此放弃写入，绝不把空壳当成原图存下去。
+ */
+async function readUsableImageMeta(blob: Blob, options?: ImageReadOptions) {
+    throwIfAborted(options?.signal);
+    if (!isUsableImageBlob(blob)) throw namedError(IMAGE_EMPTY_ERROR, i18n.t("common.imageEmpty"));
+    const url = URL.createObjectURL(blob);
+    try {
+        const meta = await loadImageMeta(url, options);
+        if (!meta) throw namedError(IMAGE_EMPTY_ERROR, i18n.t("common.imageEmpty"));
+        if (isDegenerateImageSize(meta.width, meta.height)) throw namedError(IMAGE_EMPTY_ERROR, i18n.t("common.imageEmpty"));
+        return meta;
+    } finally {
+        URL.revokeObjectURL(url);
+    }
+}
+
 export async function resolveImageUrl(storageKey?: string, fallback = "") {
     if (!storageKey) return fallback;
     const cached = objectUrls.get(storageKey);
     if (cached) return cached;
     const blob = await store.getItem<Blob>(storageKey);
-    if (!blob) return fallback;
+    // 空壳/损坏当「取不到图」：返回 fallback，让上层走降级占位，而不是渲染成 1×1 骗人。
+    if (!isUsableImageBlob(blob)) return fallback;
     const url = URL.createObjectURL(blob);
     objectUrls.set(storageKey, url);
     return url;
 }
 
 export async function getImageBlob(storageKey: string) {
-    return store.getItem<Blob>(storageKey);
+    const blob = await store.getItem<Blob>(storageKey);
+    return isUsableImageBlob(blob) ? blob : null;
 }
 
 // 缩略图按图片的 storageKey 另存一份 WebP，只放在本地 IndexedDB 里，不写进节点数据，也不参与导出和 WebDAV 同步。
@@ -213,7 +249,9 @@ async function deleteImagePreview(storageKey: string) {
     await previewStore.removeItem(storageKey).catch(() => undefined);
 }
 
-export async function setImageBlob(storageKey: string, blob: Blob) {
+export async function setImageBlob(storageKey: string, blob: Blob, options?: ImageReadOptions) {
+    // 先校验、后覆盖：不允许空壳顶掉已经存好的原图（WebDAV 回灌 / 资产包导入既走这里）。
+    await readUsableImageMeta(blob, options);
     await store.setItem(storageKey, blob);
     await deleteImagePreview(storageKey);
     await storeImagePreview(storageKey, blob);

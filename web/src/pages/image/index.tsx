@@ -1,4 +1,4 @@
-import { ArrowLeft, ArrowRight, BookOpen, CheckSquare, ClipboardPaste, Download, FolderPlus, History, ImagePlus, LoaderCircle, PenLine, Plus, SlidersHorizontal, Sparkles, Trash2, Upload, XCircle } from "lucide-react";
+import { ArrowLeft, ArrowRight, BookOpen, CheckSquare, ClipboardPaste, Download, FolderPlus, History, ImageOff, ImagePlus, LoaderCircle, PenLine, Plus, SlidersHorizontal, Sparkles, Trash2, Upload, XCircle } from "lucide-react";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { App, Button, Checkbox, Drawer, Empty, Image, Input, Modal, Progress, Tag, Tooltip, Typography } from "antd";
 import localforage from "localforage";
@@ -282,13 +282,18 @@ export default function ImagePage() {
 
     const addReferences = async (files?: FileList | null) => {
         const imageFiles = Array.from(files || []).filter((file) => file.type.startsWith("image/"));
-        const nextReferences = await Promise.all(
+        if (!imageFiles.length) return;
+        const results = await Promise.allSettled(
             imageFiles.map(async (file) => {
                 const image = await uploadImage(file);
                 return { id: nanoid(), name: file.name, type: image.mimeType, dataUrl: image.url, storageKey: image.storageKey };
             }),
         );
-        setReferences((value) => [...value, ...nextReferences]);
+        // 读不出来的（空壳/损坏）直接不上屏，并给可读原因 —— 绝不让它混进参考图。
+        const added = results.flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
+        if (added.length) setReferences((value) => [...value, ...added]);
+        const rejected = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+        if (rejected) message.error(t("imageWorkbench.referenceReadFailed", { message: rejected.reason instanceof Error ? rejected.reason.message : String(rejected.reason) }));
     };
 
     const addReferencesFromClipboard = async () => {
@@ -299,14 +304,20 @@ export default function ImagePage() {
                 message.error(t("imageWorkbench.clipboardEmpty"));
                 return;
             }
-            const nextReferences = await Promise.all(
+            const results = await Promise.allSettled(
                 blobs.map(async (blob, index) => {
                     const image = await uploadImage(blob);
                     return { id: nanoid(), name: `clipboard-${index + 1}.png`, type: image.mimeType, dataUrl: image.url, storageKey: image.storageKey };
                 }),
             );
-            setReferences((value) => [...value, ...nextReferences]);
-            message.success(t("imageWorkbench.clipboardAdded", { count: nextReferences.length }));
+            const added = results.flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
+            if (added.length) setReferences((value) => [...value, ...added]);
+            const rejected = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+            if (rejected) {
+                message.error(t("imageWorkbench.referenceReadFailed", { message: rejected.reason instanceof Error ? rejected.reason.message : String(rejected.reason) }));
+                return;
+            }
+            message.success(t("imageWorkbench.clipboardAdded", { count: added.length }));
         } catch {
             message.error(t("imageWorkbench.clipboardEmpty"));
         }
@@ -802,7 +813,7 @@ export default function ImagePage() {
                                 >
                                     {references.map((item, index) => (
                                         <div key={item.id} className="group relative size-20 shrink-0 overflow-hidden rounded-md border border-stone-200 dark:border-stone-800">
-                                            <img src={previewUrlFor(item.storageKey) || item.dataUrl} alt={item.name} className="size-full object-cover" />
+                                            <ImageThumb src={previewUrlFor(item.storageKey) || item.dataUrl} alt={item.name} className="size-full object-cover" />
                                             <span className="absolute left-1 top-1 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-medium text-white">{imageReferenceLabel(index)}</span>
                                             <ReferenceOrderButtons index={index} total={references.length} onMove={(offset) => setReferences((value) => moveListItem(value, index, offset))} />
                                             <button
@@ -961,6 +972,30 @@ function GenerationSettings({ config, model, updateConfig, openConfigDialog, ima
     );
 }
 
+/** 「取不到图」的显式降级：不渲染 1×1 空白骗人，直接给出可读原因。 */
+function UnavailableImage({ reason, className }: { reason: string; className: string }) {
+    const { t } = useTranslation();
+    return (
+        <div className={`flex flex-col items-center justify-center gap-1.5 bg-stone-100 px-3 text-center text-stone-500 dark:bg-stone-900 dark:text-stone-400 ${className}`}>
+            <ImageOff className="size-6" />
+            <span className="text-sm font-medium">{t("imageWorkbench.imageUnavailable")}</span>
+            <span className="text-sm">{reason}</span>
+        </div>
+    );
+}
+
+/** 列表里的小缩略图：没有可用原图/缩略图时给图标占位，不再渲染 `src=""` 的破图。 */
+function ImageThumb({ src, alt, className }: { src?: string; alt: string; className: string }) {
+    if (!src) {
+        return (
+            <span className={`flex items-center justify-center bg-stone-100 text-stone-400 dark:bg-stone-900 dark:text-stone-500 ${className}`}>
+                <ImageOff className="size-3.5" />
+            </span>
+        );
+    }
+    return <img src={src} alt={alt} className={className} />;
+}
+
 function ResultImageCard({
     image,
     index,
@@ -976,9 +1011,29 @@ function ResultImageCard({
 }) {
     const { t } = useTranslation();
     useSyncExternalStore(subscribeImagePreviews, getImagePreviewRevision);
+    // 加载失败、或渲染出来的就是 1×1 空壳 → 一律降级，绝不装作有图。
+    const [broken, setBroken] = useState(false);
+    const thumbnail = previewUrlFor(image.storageKey) || image.dataUrl;
+    const fullSrc = image.dataUrl || thumbnail;
+    const unavailable = broken || !thumbnail;
+    const unavailableReason = image.storageKey ? t("imageWorkbench.imageUnavailableLocal") : t("imageWorkbench.imageUnavailableRemote");
     return (
         <div className="overflow-hidden rounded-lg border border-stone-200 bg-background dark:border-stone-800">
-            <Image src={previewUrlFor(image.storageKey) || image.dataUrl} preview={{ src: image.dataUrl }} alt={t("imageWorkbench.resultAlt", { count: index + 1 })} className="aspect-square object-cover" />
+            {unavailable ? (
+                <UnavailableImage reason={unavailableReason} className="aspect-square w-full" />
+            ) : (
+                <Image
+                    src={thumbnail}
+                    preview={{ src: fullSrc }}
+                    alt={t("imageWorkbench.resultAlt", { count: index + 1 })}
+                    className="aspect-square object-cover"
+                    onError={() => setBroken(true)}
+                    onLoad={(event) => {
+                        const target = event.currentTarget;
+                        if (target.naturalWidth <= 1 || target.naturalHeight <= 1) setBroken(true);
+                    }}
+                />
+            )}
             <div className="space-y-2 border-t border-stone-200 px-3 py-2.5 dark:border-stone-800">
                 <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-stone-500 dark:text-stone-400">
                     <span>
@@ -989,23 +1044,23 @@ function ResultImageCard({
                 </div>
                 <div className="grid min-w-0 grid-cols-3 gap-2">
                     <Tooltip title={t("common.addToAssets")}>
-                        <Button className={RESULT_ACTION_BUTTON_CLASS} size="small" icon={<FolderPlus className="size-3.5" />} onClick={() => void onSaveAsset(image, index)}>
+                        <Button className={RESULT_ACTION_BUTTON_CLASS} size="small" disabled={unavailable} icon={<FolderPlus className="size-3.5" />} onClick={() => void onSaveAsset(image, index)}>
                             {t("common.addToAssets")}
                         </Button>
                     </Tooltip>
                     <Tooltip title={t("imageWorkbench.addReference")}>
-                        <Button className={RESULT_ACTION_BUTTON_CLASS} size="small" icon={<PenLine className="size-3.5" />} onClick={() => void onEdit(image, index)}>
+                        <Button className={RESULT_ACTION_BUTTON_CLASS} size="small" disabled={unavailable} icon={<PenLine className="size-3.5" />} onClick={() => void onEdit(image, index)}>
                             {t("imageWorkbench.addReference")}
                         </Button>
                     </Tooltip>
                     <Tooltip title={t("common.download")}>
-                        <Button className={RESULT_ACTION_BUTTON_CLASS} size="small" icon={<Download className="size-3.5" />} onClick={() => onDownload(image, index)}>
+                        <Button className={RESULT_ACTION_BUTTON_CLASS} size="small" disabled={unavailable} icon={<Download className="size-3.5" />} onClick={() => onDownload(image, index)}>
                             {t("common.download")}
                         </Button>
                     </Tooltip>
                 </div>
                 {/* 生产动线只给「归档」（可逆）；彻底删除只在「我的资产」页。归档只认网关产物原始地址。 */}
-                <ArtifactActions targets={[{ url: image.artifactUrl || image.dataUrl }]} />
+                {unavailable ? null : <ArtifactActions targets={[{ url: image.artifactUrl || image.dataUrl }]} />}
             </div>
         </div>
     );
@@ -1210,7 +1265,7 @@ function SnapshotPanel({ prompt, config, references, seed, modelLabel }: { promp
             {references.length ? (
                 <div className="hover-scrollbar flex gap-2 overflow-x-auto">
                     {references.map((item) => (
-                        <img key={item.id} src={previewUrlFor(item.storageKey) || item.dataUrl} alt={item.name} className="size-14 shrink-0 rounded-md border border-stone-200 object-cover dark:border-stone-800" />
+                        <ImageThumb key={item.id} src={previewUrlFor(item.storageKey) || item.dataUrl} alt={item.name} className="size-14 shrink-0 rounded-md border border-stone-200 object-cover dark:border-stone-800" />
                     ))}
                 </div>
             ) : null}
@@ -1288,7 +1343,7 @@ function TaskCard({ task, jobs, now, active, onSelect }: { task: Task; jobs: Rec
                 {thumbnails.length ? (
                     <div className="mt-2 flex gap-1 overflow-hidden">
                         {thumbnails.map((image) => (
-                            <img key={image.id} src={previewUrlFor(image.storageKey) || image.dataUrl} alt="" className="size-8 shrink-0 rounded-md object-cover" />
+                            <ImageThumb key={image.id} src={previewUrlFor(image.storageKey) || image.dataUrl} alt="" className="size-8 shrink-0 rounded-md object-cover" />
                         ))}
                     </div>
                 ) : null}
@@ -1401,7 +1456,7 @@ function LogCard({ log, selected, active, onSelectedChange, onClick }: { log: Ge
                         {thumbnails.length ? (
                             <div className="mt-2 flex gap-1 overflow-hidden">
                                 {thumbnails.map((image) => (
-                                    <img key={image.id} src={previewUrlFor(image.storageKey) || image.dataUrl} alt="" className="size-8 shrink-0 rounded-md object-cover" />
+                                    <ImageThumb key={image.id} src={previewUrlFor(image.storageKey) || image.dataUrl} alt="" className="size-8 shrink-0 rounded-md object-cover" />
                                 ))}
                             </div>
                         ) : null}

@@ -216,7 +216,13 @@ async function downloadMissingFiles<T>(config: WebdavSyncConfig, domain: DomainK
         const blob = await downloadWebdavFile(config, remoteFile.path);
         if (!blob) return;
         const typedBlob = blob.type ? blob : blob.slice(0, blob.size, remoteFile.mimeType);
-        await (remoteFile.storageKey.startsWith("image:") ? setImageBlob(remoteFile.storageKey, typedBlob) : setMediaBlob(remoteFile.storageKey, typedBlob));
+        try {
+            await (remoteFile.storageKey.startsWith("image:") ? setImageBlob(remoteFile.storageKey, typedBlob) : setMediaBlob(remoteFile.storageKey, typedBlob));
+        } catch (error) {
+            // 远端这一份本身就是空壳/损坏：跳过它 —— 既不让它顶掉本地原图，也不让整轮同步失败。
+            console.warn(`[sync] 跳过不可用的远端媒体 ${remoteFile.storageKey}`, error);
+            return;
+        }
         downloaded += 1;
         emitProgress(onProgress, { domain, label: domainLabel(domain), stage: "下载媒体", current: downloaded, total: tasks.length, status: "active" });
     });

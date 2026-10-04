@@ -62,8 +62,14 @@ const assetStorage: PersistStorage<AssetStore> = {
                     };
                 }
                 if (!asset.data.dataUrl.startsWith("data:image/")) return asset;
-                const image = await uploadImage(asset.data.dataUrl);
-                return { ...asset, coverUrl: asset.coverUrl.startsWith("data:image/") ? image.url : asset.coverUrl, data: { ...asset.data, dataUrl: image.url, storageKey: image.storageKey, bytes: image.bytes, mimeType: image.mimeType } };
+                try {
+                    const image = await uploadImage(asset.data.dataUrl);
+                    return { ...asset, coverUrl: asset.coverUrl.startsWith("data:image/") ? image.url : asset.coverUrl, data: { ...asset.data, dataUrl: image.url, storageKey: image.storageKey, bytes: image.bytes, mimeType: image.mimeType } };
+                } catch (error) {
+                    // 内联 dataURL 是空壳/损坏：保持资产原样，别让整库反序列化失败。
+                    console.warn(`[assets] 跳过不可用的内联图片 ${asset.id}`, error);
+                    return asset;
+                }
             }),
         );
         return parsed;

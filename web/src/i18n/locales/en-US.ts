@@ -27,6 +27,7 @@ export default {
         durationMinutes: "{{minutes}}m {{seconds}}s",
         durationSeconds: "{{seconds}}s",
         imageReadFailed: "Failed to read image",
+        imageEmpty: "The image is empty or damaged",
     },
     settingsPanels: {
         common: { auto: "Auto", low: "Low", medium: "Medium", high: "High", xhigh: "Extra high" },
@@ -254,6 +255,10 @@ export default {
         submitFailed: "Submit failed: {{message}}",
         jobFailed: "Generation failed: {{message}}",
         referenceUploadFailed: "Failed to upload reference image: {{name}}",
+        referenceReadFailed: "Failed to read reference image: {{message}}",
+        imageUnavailable: "Image unavailable",
+        imageUnavailableLocal: "The original image in the local library is damaged or missing",
+        imageUnavailableRemote: "The generated image URL is missing",
     },
     videoWorkbench: {
         title: "Video Studio",
