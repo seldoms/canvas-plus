@@ -2,6 +2,8 @@
 
 ## Unreleased
 
++ [修复] **`HEAD` 请求改为真正只发头：不再读文件、不再触发按需生成**：上一轮为修「`HEAD /api/health` 落 SPA 兜底返回 200 text/html」把 HEAD 按 GET 派发，但产物/静态响应仍是 `createReadStream(...).pipe(res)` —— Node 只是不把 body 写进 socket，**照样把整份文件读干**（对抗验证实测：HEAD 一个 512MB 产物 159ms、真读满 268435456 字节），且 `HEAD ...?variant=thumb` 会**真的跑 ffmpeg** 并落缩略图。现在 HEAD 的状态码/content-type/content-length/content-encoding 与 GET 一致，但不建流、不读文件；缩略图按需生成对 HEAD 一律跳过（只发已缓存缩略图，未缓存回退原图头）。真机复测：HEAD 512MB 由 264–279ms / RSS +43MB 降到 **24ms / RSS +4MB / body 0 字节**。
++ [修复] **自动重试的 `kind` 改为按阶段确定性推导**：上一轮把 kind 改成「沿用原 job 的 kind」，对抗验证发现两处问题 —— 原 job 的 kind 本就是 `undefined` 时（正是生产那 2 条 lip-sync 重试）仍得 `undefined`（不自愈），且 jobId 若指向别的 family 会得到 `"video"` 配图模板这种**比 undefined 更错**的 kind。现新增唯一来源 `STAGE_KIND`（keyframe/assembly/audio/**design/casting/lipsync** 全覆盖），正常入队与自动重试同源；原 job 的 kind 只作最后兜底且不能推翻阶段推导。
 + [修复] **分镜「逐镜编辑」与「镜头重排」不再 404**：前端 `updateShot` 一直用 `PATCH /api/projects/:id/shots/:shotId`，而后端该路径只注册了 POST（路由器按方法匹配，不命中即 404）→ 分镜工作区的保存单镜、上移/下移镜头必然失败。现按同文件既有写法把处理函数提为具名 handler，`PATCH` 与 `POST` 共用同一个处理器，行为不变。
 + [修复] **堵住「已存 API Key 被静默转发到其它地址」的通道**：`POST /api/llm/providers` 的 upsert 在 `apiKey` 为空时保留原 key、同时允许改 `baseUrl`，而调用上游时会用该 key 发 `Bearer` —— 等于任何能调这个接口的人都能把服务端已存的密钥带走。现在**已存 key 的渠道换地址时必须同时提供新 key**，否则 400 并给出中文原因；不改地址（含只差尾部斜杠）时语义完全不变。
 + [修复] **取消「已出队但尚未提交」的任务现在真会中断**：`/api/jobs/:id/cancel` 里的 `job.status === "running"` 恒假（`jobs.cancel` 已就地改成 `canceled`，且 `jobs.get` 返回的是同一对象引用），唯一兜底是 `promptId`，而它要等提交之后才写入 → 取消后任务仍会在 GPU 上跑完。现改为在取消前把 status 取成值再判断。

@@ -10,7 +10,8 @@ import { createPipeline } from "../src/pipeline.js";
  * 重启收敛 / 自动重试 kind / 落盘原子性（audit #72 · #73 · #81）的验收：
  *   - #72：beginAssemble 只写 assembly.status="assembling"、从不改 stage.status，
  *          重启后必须由 reconcileRunning 收敛成明确终态，否则成片永久锁死；
- *   - #73：单镜自动重试的 job.kind 必须沿用原 job 的取值（design/casting/lipsync 曾被写成 undefined）；
+ *   - #73：单镜自动重试的 job.kind 必须由**阶段**推导（原 job 缺失 / kind=undefined / jobId 被复用成别的
+ *          family 都不能带偏），且与正常入队共用同一处来源；
  *   - #81：run.json / 阶段产物必须 tmp + rename 原子写，写窗口内被杀不能留下截断 JSON。
  */
 
@@ -245,6 +246,89 @@ test("自动重试沿用原 job 的 kind：casting 遗留候选（当前阶段�
     assert.equal(retry.kind, source.kind, "重试 job 的 kind 必须等于原 job 的 kind，不能是 undefined");
     assert.equal(retry.kind, "image");
     assert.equal(retry.meta.stageId, "casting");
+});
+
+// ——— #73 追修：kind 必须由**阶段**推导，不能从可能被污染的 jobs 映射倒推 ———
+
+/** 取某阶段新追加的候选对应 job（排除原 job）。 */
+const retryJobOf = (jobs, stageId, sourceId) => [...jobs.store.values()].find((job) => job.meta.stageId === stageId && job.id !== sourceId);
+
+test("重试 kind 由阶段推导：原 job kind=undefined（生产 lip-sync 那两条）也必须得到 video", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    const { pipeline, jobs } = build(env);
+    const run = pipeline.create({ novel: "夜色下的渡轮。" });
+    pipeline.setStageInput(run.id, "assembly", { output: CLIPS });
+    pipeline.setStageInput(run.id, "audio", { output: AUDIO });
+    await pipeline.runStage(run.id, "lipsync");
+
+    const source = [...jobs.store.values()].find((job) => job.meta.stageId === "lipsync");
+    assert.equal(source.kind, "video", "正常入队 kind=video");
+    // 复现生产现场：落盘后原 job 的 kind 丢了（kind=undefined / null），这条链不能再当事实源。
+    jobs.get(source.id).kind = undefined;
+    jobs.finish(source.id, "error", { error: "GPU 挂了" });
+
+    const retry = retryJobOf(jobs, "lipsync", source.id);
+    assert.ok(retry, "失败应触发自动重试");
+    assert.equal(retry.kind, "video", "原 job 没有 kind 时，kind 必须由 lipsync 阶段推导为 video");
+});
+
+test("重试 kind 由阶段推导：原 job 记录已不存在（重启后只剩 run.json 里的 jobId）也必须得到 video", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    const jobs = fakeJobQueue();
+    const { pipeline } = build(env, { jobs });
+    const run = pipeline.create({ novel: "很久以前" });
+    // 直接摆一条 lip-sync 失败条目：候选的 jobId 在队列里查不到（job 记录已不在），只能靠阶段推导 kind。
+    patchRunJson(env, run.id, (saved) => {
+        saved.stages.lipsync.status = "error";
+        saved.stages.lipsync.output = {
+            clips: [
+                {
+                    id: "sh1-clip-lipsync",
+                    shotId: "sh1",
+                    status: "error",
+                    jobId: "job-already-gone",
+                    template: "video_lipsync",
+                    artifactUrl: null,
+                    candidates: [{ jobId: "job-already-gone", status: "error", template: "video_lipsync", params: { INPUT_VIDEO: CLIP.artifactUrl } }],
+                },
+            ],
+        };
+    });
+
+    pipeline.projectJob({
+        id: "job-already-gone",
+        status: "error",
+        kind: undefined,
+        template: "video_lipsync",
+        params: { INPUT_VIDEO: CLIP.artifactUrl },
+        meta: { runId: run.id, stageId: "lipsync", itemId: "sh1-clip-lipsync" },
+    });
+
+    const retry = [...jobs.store.values()].find((job) => job.meta.stageId === "lipsync");
+    assert.ok(retry, "失败应触发自动重试");
+    assert.equal(retry.kind, "video", "原 job 缺失时，kind 必须由 lipsync 阶段推导为 video，不能是 undefined");
+});
+
+test("重试 kind 由阶段推导：jobId 指向别的 family 的 job（image 阶段配到 video job）也不能被带偏", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    const { pipeline, jobs } = build(env);
+    const run = pipeline.create({ novel: "很久以前" });
+    await pipeline.runStage(run.id, "design");
+
+    const source = [...jobs.store.values()].find((job) => job.meta.stageId === "design");
+    assert.equal(source.kind, "image", "正常入队 kind=image");
+    // 复现「jobId 被复用/污染」：同一个 jobId 现在解析到一条 video family 的 job。
+    jobs.get(source.id).kind = "video";
+    jobs.finish(source.id, "error", { error: "GPU 挂了" });
+
+    const retry = retryJobOf(jobs, "design", source.id);
+    assert.ok(retry, "失败应触发自动重试");
+    assert.equal(retry.kind, "image", "design 是出图阶段，绝不能被 job 映射带成 video");
+    assert.equal(retry.template, source.template, "沿用同一模板");
+    assert.equal(retry.kind, "image", "kind 必须与模板 family 一致（video kind 配图模板会把任务交给错误的队列）");
 });
 
 // ——— #81 saveRun / saveOutput 原子写 ———

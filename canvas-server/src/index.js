@@ -38,7 +38,7 @@ import { createModelRegistry } from "./model-registry.js";
 // 产物归档 / 彻底删除内核（索引落 data/artifacts-index.json，从 jobs.outputs[] 懒构建）。
 import { createArtifacts } from "./artifacts.js";
 // 产物**真缩略图**：列表/卡片用的小图（按需 ffmpeg 生成 + 落盘缓存），复用平台已有的外部 ffmpeg，不引新依赖。
-import { createThumbnails, isThumbnailable, normalizeThumbWidth } from "./thumbnails.js";
+import { createThumbnails, isFresh, isThumbnailable, normalizeThumbWidth } from "./thumbnails.js";
 import { scanTemplateDir } from "./tool-adapter.js";
 
 // 启动耗时探针：把「进程起来到监听端口」拆成各阶段计时，直接回答「这 100 秒花在哪」。
@@ -786,10 +786,18 @@ router.get("/api/artifacts/:jobId/:filename", async (req, res, { params, url }) 
     const file = dir && safeJoin(dir, params.filename);
     if (!file) return sendError(res, 400, "非法路径");
     if (url.searchParams.get("variant") === "thumb" && isThumbnailable(params.filename)) {
-        const thumb = await thumbnails
-            .generate({ jobId: params.jobId, filename: params.filename, sourcePath: file, width: normalizeThumbWidth(url.searchParams.get("w")) })
-            .catch(() => null);
-        if (thumb?.path) return serveFile(req, res, thumb.path);
+        const width = normalizeThumbWidth(url.searchParams.get("w"));
+        // ⚠️ 有意为之的 HEAD 例外：HEAD 必须安全幂等，**不得触发按需生成**（未鉴权的 HEAD 就能让 ffmpeg 白跑、
+        // 往磁盘落缩略图）。已缓存的缩略图照常发头；未缓存时与「没有缩略图」一致，回退原图头 —— 只有 GET 才生成。
+        if (req.method === "HEAD") {
+            const cached = thumbnails.pathFor(params.jobId, params.filename, width);
+            if (cached && isFresh(cached, file)) return serveFile(req, res, cached);
+        } else {
+            const thumb = await thumbnails
+                .generate({ jobId: params.jobId, filename: params.filename, sourcePath: file, width })
+                .catch(() => null);
+            if (thumb?.path) return serveFile(req, res, thumb.path);
+        }
     }
     serveFile(req, res, file, { download: req.url.includes("download=1") });
 });

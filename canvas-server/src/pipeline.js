@@ -30,8 +30,16 @@ import { listReferenceCapableTemplates, resolveToolForShot, scanTemplateDir } fr
 /** 生成型阶段：只构造生成任务参数并交给任务队列，不等真实产物。 */
 const GENERATIVE_STAGES = new Set(["keyframe", "assembly"]);
 
-/** 生成型阶段 → 可用模板 family：关键帧出图、片段出视频、配音出音频。 */
-const STAGE_TEMPLATE_FAMILY = Object.freeze({ keyframe: "image", assembly: "video", audio: "audio" });
+/**
+ * 阶段 → 入队 `job.kind`（= 模板 family）的**唯一来源**：正常入队与自动重试共用同一处取值，
+ * 覆盖所有会（或曾经会）入队的阶段：design 出图、keyframe 出图、assembly/lipsync 出视频、audio 出音频、
+ * casting 的遗留脸产物是图。自动重试不再从 `jobs` 映射倒推 kind（那条链可被污染：原 job 缺失 /
+ * kind=undefined / jobId 被复用成别的 family），映射只当最后兜底。
+ */
+const STAGE_KIND = Object.freeze({ keyframe: "image", assembly: "video", audio: "audio", design: "image", casting: "image", lipsync: "video" });
+
+/** 生成型阶段 → 可用模板 family：关键帧出图、片段出视频、配音出音频。仅用于 beginRegenerate 的门禁口径。 */
+const STAGE_TEMPLATE_FAMILY = Object.freeze({ keyframe: STAGE_KIND.keyframe, assembly: STAGE_KIND.assembly, audio: STAGE_KIND.audio });
 
 /** 需要绑定音色的声音类型（对白 / 旁白）——与 audio.js 的 DIALOGUE_TYPES 同语义。 */
 const DIALOGUE_TYPES = new Set(["dialogue", "narration"]);
@@ -1800,7 +1808,7 @@ ${JSON.stringify(partials, null, 2)}
             params.SEED = stableSeed(projectId, item.id, 0);
             params.OUTPUT_PREFIX = outputPrefixFor(run.id, item.id);
         }
-        return { kind: "image", template: pipelineConfig.imageTemplate, ready: true, params };
+        return { kind: STAGE_KIND.design, template: pipelineConfig.imageTemplate, ready: true, params };
     }
 
     /**
@@ -2433,7 +2441,7 @@ ${JSON.stringify(partials, null, 2)}
             const promptWarning = untranslatedWarning(renderedPrompt.raw);
             const warningReason = [warning?.reason, sizeWarning?.reason, promptWarning?.reason].filter(Boolean).join("；");
             return {
-                kind: "image",
+                kind: STAGE_KIND.keyframe,
                 template: decision.template,
                 ready: item.role !== "end" || Boolean(start?.artifactUrl),
                 params,
@@ -2503,7 +2511,7 @@ ${JSON.stringify(partials, null, 2)}
         const sizeWarning = videoDims.warning ? { reason: videoDims.warning } : null;
         const warningReason = [sizeWarning?.reason, promptWarning?.reason, ...dialogueWarnings].filter(Boolean).join("；");
         return {
-            kind: "video",
+            kind: STAGE_KIND.assembly,
             template: videoTemplate,
             // 图生视频必须有起始帧；没拿到就保持 queued + jobId:null，等关键帧产物就绪后由回写代理入队（契约见 05 SKILL.md）。
             ready: Boolean(start?.artifactUrl),
@@ -2612,10 +2620,10 @@ ${JSON.stringify(partials, null, 2)}
         if (qcRetry && def.id === "keyframe" && params.SEED !== undefined && Number.isFinite(Number(params.SEED))) {
             params.SEED = (Number(params.SEED) + 104729) % 2147483647;
         }
-        // kind 取**原 job 入队时的取值**（design=image、lipsync=video、keyframe=image…），
-        // 不在这里另造「阶段 → family」映射：STAGE_TEMPLATE_FAMILY 只登记 keyframe/assembly/audio，
-        // 直接查它会让 design / casting / lipsync 的自动重试写成 kind:undefined（生产已出现 kind=null 的 job）。
-        const plan = { kind: jobs?.get?.(latest.jobId)?.kind || STAGE_TEMPLATE_FAMILY[def.id], template: latest.template, params, ready: true };
+        // kind 由**阶段**确定性推导（与各阶段正常入队共用 STAGE_KIND 这一处来源），不查 jobs 映射：
+        // 那条链可被污染（原 job 缺失 / kind=undefined / jobId 被复用成别的 family），一旦照抄就会把重试
+        // 交给错误的资源类别与队列（视频 kind 配图模板）。原 job 的 kind 只作最后兜底，绝不推翻阶段推导。
+        const plan = { kind: STAGE_KIND[def.id] || jobs?.get?.(latest.jobId)?.kind, template: latest.template, params, ready: true };
         if (!enqueueAttempt(run, def, item, plan)) return false;
         // 只在自动生成的候选上打标，作为下次「已重试几次」的唯一依据；旧候选一律保留。
         item.candidates.at(-1).autoRetry = true;
@@ -2805,7 +2813,7 @@ ${JSON.stringify(partials, null, 2)}
                 SEED: stableSeed(run.id, cue.shotId, profile.version),
                 OUTPUT_PREFIX: outputPrefixFor(run.id, cue.id),
             };
-            enqueueAttempt(run, def, item, { kind: "audio", template, params, ready: true });
+            enqueueAttempt(run, def, item, { kind: STAGE_KIND.audio, template, params, ready: true });
             if (item.candidates.length) syncItem(item);
             items.push(item);
         }
@@ -2897,7 +2905,7 @@ ${JSON.stringify(partials, null, 2)}
                 OUTPUT_PREFIX: `${outputPrefixFor(run.id, item.id)}-${attemptTag}`,
                 RECOVER_BY_PREFIX: true,
             };
-            enqueueAttempt(run, def, item, { kind: "video", template, params, ready: true });
+            enqueueAttempt(run, def, item, { kind: STAGE_KIND.lipsync, template, params, ready: true });
             if (item.candidates.length) syncItem(item);
             items.push(item);
         }

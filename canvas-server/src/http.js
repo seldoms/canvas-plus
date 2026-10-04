@@ -114,6 +114,10 @@ export function serveFile(req, res, filePath, { download = false } = {}) {
         sendError(res, 404, "文件不存在");
         return;
     }
+    // HEAD 与 GET 同路由匹配（见 createRouter），但**绝不能**沿用「流式发体」的写法：
+    // Node 对 HEAD 只是不把 body 写进 socket，`createReadStream().pipe(res)` 照样把整份文件读干
+    // （实测 HEAD 一个 512MB 产物要 159ms、进程真读满 268435456 字节）。HEAD 必须安全幂等。
+    const headOnly = req.method === "HEAD";
     // ── 缓存策略：**HTML 必须 no-cache**，其余（带 hash 的产物 / 按 job 分目录的产物）可 immutable。
     // 之前一律 immutable 是个真 bug：重建后浏览器继续用**旧 index.html**，它引用的是**已被删除的旧资源**，
     // 页面直接废掉/卡住（实测一个已删除的 /assets/*.js 会被 SPA 兜底返回 HTML）。
@@ -135,14 +139,23 @@ export function serveFile(req, res, filePath, { download = false } = {}) {
     const compressible = COMPRESSIBLE_EXT.has(extname(filePath).toLowerCase()) && info.size > 1024;
     if (!rangeHeader && acceptsGzip && compressible) {
         try {
-            const body = gzipCached(filePath, info);
-            if (body.length < info.size) {
+            // HEAD 只查 gzip 缓存：命中时头与 GET 逐字一致（编码 + gzipped 长度）；未命中也不压缩 ——
+            // 为了拿 gzipped 长度去压整份文件，正是「HEAD 照样读干文件」本身。
+            const body = headOnly ? gzipCache.get(`${filePath}|${info.mtimeMs}|${info.size}`) : gzipCached(filePath, info);
+            if (body && body.length < info.size) {
                 headers["content-encoding"] = "gzip";
                 headers["content-length"] = body.length;
                 headers["vary"] = "accept-encoding";
                 res.writeHead(200, headers);
-                res.end(body);
+                if (headOnly) res.end();
+                else res.end(body);
                 return;
+            }
+            // 冷缓存下的 HEAD：拿不到 gzipped 长度，按 statSync 长度声明 content-encoding（不读文件）；
+            // 缓存里有条目但没压小（GET 会按原文发）时不加这个头，与 GET 保持一致。
+            if (headOnly && !body) {
+                headers["content-encoding"] = "gzip";
+                headers["vary"] = "accept-encoding";
             }
         } catch {
             // 压缩失败就按原文发送，绝不让它变成 500
@@ -160,10 +173,13 @@ export function serveFile(req, res, filePath, { download = false } = {}) {
             return;
         }
         res.writeHead(206, { ...headers, "content-length": end - start + 1, "content-range": `bytes ${start}-${end}/${info.size}` });
+        // HEAD 的 206 只发头，不发体、不读文件（GET 一字不变）。
+        if (headOnly) return res.end();
         createReadStream(filePath, { start, end }).pipe(res);
         return;
     }
     res.writeHead(200, headers);
+    if (headOnly) return res.end();
     createReadStream(filePath).pipe(res);
 }
 

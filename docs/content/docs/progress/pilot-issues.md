@@ -1102,3 +1102,22 @@ image_files 共 22 条：
 | 79 | 🟡 契约 | 死导出与契约漂移：`contracts.js` 的 `STAGE_STATUS/JOB_STATUS/CANDIDATE_STATUS/REVIEW_NOTE_*`、`files.js listFiles`、`http.js corsPreflight`、`providers/llm.js createLlmProvider` 等零引用；`CANDIDATE_STATUS.FAILED = "failed"` 而实现写的是 `"error"` | `contracts.js:36-44`、`jobs.js:7`、`pipeline.js:1155-1187` |
 | 80 | 🟡 双实现 | `pipeline.bindJobs()` 已是生产死代码：生产走 `index.js:206-212 wireJobProjection()` + `:224-242 replayHistoricalJobs()`，`bindJobs` 只被测试调用（30+ 处）→ 测试与线上不同源，且再被调用会二次订阅 | `pipeline.js:3103-3113`、`index.js:206-242` |
 | 81 | 🟡 数据安全 | `saveRun` / `saveOutput` **非原子写**（直接 `writeFileSync`），而同模块其它落盘都用 tmp + rename；`readJsonFile` 解析失败只 warn 并返回 null → 截断的 run.json 会让该 run 从 `pipeline.list()` **静默消失**（文件还在，接口报「流水线不存在」） | `pipeline.js:343-362`、`:423-436` vs `projects.js:209`、`artifacts.js:112` |
+
+**对抗验证与收口（2026-10-05 深夜）**
+
+对修复提交 `12c3191` 做了一轮独立对抗验证（只读、真起服务、双上游监听、与父提交 `032b553` 逐项对照）。结论：**#74 / #81 / #70 的「外带链」/ #72 / 无夹带且无测试弱化 —— 均未能证伪**；**成功证伪 2 条**，均已收口：
+
+| 被证伪项 | 一手证据 | 收口 |
+| --- | --- | --- |
+| **#75 的 HEAD→GET 让 HEAD 不再安全幂等** | `HEAD` 512MB 产物 = **159ms**、真读满 `268435456` 字节（最小复现 `read whole file: true`）；`HEAD ...?variant=thumb` 从「404 且不生成」变成「200 且真跑 ffmpeg」，`data/thumbnails/<jobId>` 由 `[]` 变 `["jobprobe"]` | `serveFile` 对 HEAD 只发头（不建流、不读文件）；缩略图按需生成对 HEAD 一律跳过，只发已缓存件、未缓存回退原图头。复测：HEAD 512MB **264–279ms / RSS +43MB → 24ms / RSS +4MB / body 0 字节** |
+| **#73 的 kind 来源换成 jobs 映射后不确定** | 原 job kind=`undefined`（正是生产那 2 条 lip-sync 重试）→ 仍 `undefined`（**不自愈**）；jobId 指向别的 family → 得到 `"video"` 配图模板（**比 undefined 更错**） | 新增唯一来源 `STAGE_KIND`（含 design/casting/lipsync），正常入队与自动重试同源；job 映射只作最后兜底、不能推翻阶段推导 |
+
+**对抗验证未能否证的部分（可信任）**：#70 的密钥外带链**不可达**（守卫可被「非空白假 key」绕过，但效果是把旧 key **覆盖成垃圾**，实测 `SECRET_LEAKED_TO_B: false`，攻击者拿不到密钥）；`data/llm-providers.json` **没有第二条写入路径**（只有 `persistProviders` 的两个调用点）；#81 的 `.tmp` **不会**被任何 `readdirSync`/`list()`/产物扫描当成 run 或阶段产物；#72 的收敛**只**在启动路径调用（`index.js:1394`），不会误判正在进行的合成，且保留旧成片 `url`；#74 无第二个同类实例（另两处 `jobs.cancel` 调用点语义正确）；测试**未被弱化**（旧 src+旧 test 5/5、旧 src+新 test 4 fail、新 src+旧 test 5/5）。
+
+**仍未收口的次级项（已评估，建议后续处理）**：
+1. #70 守卫可被「非空白假 key」绕过 —— 影响是**静默销毁**该渠道已存凭据（拿不到密钥）；且传空串会保留旧 key，等于 key 永远无法清空。低危；彻底解决需引入「显式清空 / 显式换 key」语义。
+2. #70 加固后的 400 在唯一前端调用点被吞掉：`web/src/pages/pipeline/use-pipeline-run.ts:170` 的 `.catch(() => [])` → 用户改地址被拒时**完全无提示**。属前端改动，需要能跑 `tsc` 的环境。
+3. #81 只覆盖 `run.json` / 阶段产物；`writeProgress`（`pipeline.js:377`）与 `saveChunkPartial`（`:402`）仍是裸 `writeFileSync` —— 截断只导致降级（进度读不到 / 该块重跑），不会让 run 消失。
+4. 冷缓存 `HEAD` 打可压缩文件时会声明 `content-encoding: gzip` 而 `content-length` 取自 `statSync`（与随后 GET 的压缩长度不一致）—— 这是「HEAD 不得读文件」优先于「头与 GET 逐字一致」的有意取舍，代码注释已写明。
+
+**测试基线**：`node --test test/*.test.mjs` → **884/884 pass / 0 fail**（860 基线 → +16 修复回归 → +8 收口回归）。
