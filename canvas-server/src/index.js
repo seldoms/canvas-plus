@@ -1339,6 +1339,11 @@ async function serveWebApp(req, res) {
         return true;
     }
     const indexFile = safeJoin(webDist, "index.html");
+    // ⚠️ **看起来像静态资源的路径缺失时，必须 404，不能回退 index.html**：
+    // 否则一个已被删除的 /assets/index-xxxx.js 会拿到 200 + text/html（浏览器把 HTML 当 JS 执行 → 白屏/卡死），
+    // 而且错误被完全掩盖（实测踩到过）。只有"不像是资源"的路径才交给 React Router。
+    const looksLikeAsset = /\.[A-Za-z0-9]{2,5}$/.test(pathname) || pathname.startsWith("/assets/");
+    if (looksLikeAsset) return false;
     if (indexFile && existsSync(indexFile)) {
         serveFile(req, res, indexFile);
         return true;

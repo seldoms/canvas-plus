@@ -114,12 +114,17 @@ export function serveFile(req, res, filePath, { download = false } = {}) {
         sendError(res, 404, "文件不存在");
         return;
     }
+    // ── 缓存策略：**HTML 必须 no-cache**，其余（带 hash 的产物 / 按 job 分目录的产物）可 immutable。
+    // 之前一律 immutable 是个真 bug：重建后浏览器继续用**旧 index.html**，它引用的是**已被删除的旧资源**，
+    // 页面直接废掉/卡住（实测一个已删除的 /assets/*.js 会被 SPA 兜底返回 HTML）。
+    const isHtml = extname(filePath).toLowerCase() === ".html";
     const headers = {
         "content-type": guessContentType(filePath),
         "content-length": info.size,
         "accept-ranges": "bytes",
-        "cache-control": "public, max-age=31536000, immutable",
+        "cache-control": isHtml ? "no-cache" : "public, max-age=31536000, immutable",
     };
+    if (isHtml) headers.etag = `W/"${info.size.toString(16)}-${Math.round(info.mtimeMs).toString(16)}"`;
     if (download) headers["content-disposition"] = `attachment; filename="${encodeURIComponent(filePath.split(/[\\/]/).pop())}"`;
     applyCors(res);
 
