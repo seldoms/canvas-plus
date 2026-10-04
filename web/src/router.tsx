@@ -14,6 +14,7 @@ import ProjectsPage from "@/pages/projects";
 import ProjectOverviewPage from "@/pages/projects/project";
 import ProjectAssetsWorkspacePage from "@/pages/projects/assets";
 import ProjectCanvasWorkspacePage from "@/pages/projects/canvas";
+import ProjectCastingWorkspacePage from "@/pages/projects/casting";
 import ProjectKeyframesWorkspacePage from "@/pages/projects/keyframes";
 import ProjectPlanWorkspacePage from "@/pages/projects/plan";
 import ProjectStoryboardWorkspacePage from "@/pages/projects/storyboard";
@@ -37,6 +38,7 @@ export const router = createBrowserRouter([
             { path: "/projects/:projectId/plan", element: <ProjectPlanWorkspacePage /> },
             { path: "/projects/:projectId/storyboard", element: <ProjectStoryboardWorkspacePage /> },
             { path: "/projects/:projectId/assets", element: <ProjectAssetsWorkspacePage /> },
+            { path: "/projects/:projectId/casting", element: <ProjectCastingWorkspacePage /> },
             { path: "/projects/:projectId/keyframes", element: <ProjectKeyframesWorkspacePage /> },
             { path: "/projects/:projectId/video", element: <ProjectVideoWorkspacePage /> },
             { path: "/projects/:projectId/canvas", element: <ProjectCanvasWorkspacePage /> },

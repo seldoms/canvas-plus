@@ -1,4 +1,4 @@
-import { BookOpen, Clapperboard, Images, LayoutList, Maximize2, Sparkles } from "lucide-react";
+import { BookOpen, Clapperboard, Images, LayoutList, Maximize2, Sparkles, UserRound } from "lucide-react";
 import type { ComponentType, SVGProps } from "react";
 
 /**
@@ -7,7 +7,7 @@ import type { ComponentType, SVGProps } from "react";
  * `stage` 是该工作区在流水线里产出的阶段；`requires` 是进入该工作区前必须先 `done` 的上游阶段。
  * 门禁取服务端 `/api/pipeline/runs/:id/gates`（无 run 时取项目 `/gates`）；服务端不可用时保持未知，不能由本地摘要放行。
  */
-export type WorkspaceKey = "plan" | "storyboard" | "assets" | "keyframes" | "video" | "canvas";
+export type WorkspaceKey = "plan" | "storyboard" | "assets" | "casting" | "keyframes" | "video" | "canvas";
 
 export type WorkspaceDef = {
     key: WorkspaceKey;
@@ -24,7 +24,9 @@ export const WORKSPACES: WorkspaceDef[] = [
     { key: "plan", stage: "script", requires: [], editable: false, icon: BookOpen },
     { key: "storyboard", stage: "storyboard", requires: ["script"], editable: true, icon: LayoutList },
     { key: "assets", stage: "design", requires: ["storyboard"], editable: true, icon: Images },
-    { key: "keyframes", stage: "keyframe", requires: ["design"], editable: false, icon: Sparkles },
+    // 角色定妆（casting）：服化道后、关键帧前；锁脸锁声音，未确认即拦住下游。
+    { key: "casting", stage: "casting", requires: ["design"], editable: true, icon: UserRound },
+    { key: "keyframes", stage: "keyframe", requires: ["design", "casting"], editable: false, icon: Sparkles },
     { key: "video", stage: "assembly", requires: ["keyframe"], editable: false, icon: Clapperboard },
     { key: "canvas", stage: null, requires: [], editable: false, icon: Maximize2 },
 ];
