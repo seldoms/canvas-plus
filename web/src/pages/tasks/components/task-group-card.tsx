@@ -6,6 +6,7 @@ import { useTranslation } from "react-i18next";
 import { resolveGatewayUrl } from "@/services/api/gateway";
 import type { TaskJob, TaskJobStatus } from "@/services/api/tasks";
 import { ArtifactActions } from "@/components/artifact-actions";
+import { formatTaskTime } from "@/lib/task-time";
 import { cn } from "@/lib/utils";
 
 import { isActiveStatus, jobDurationMs, groupProgress, type TaskGroup, type TaskGroupStatus } from "../task-utils";
@@ -51,7 +52,7 @@ function groupTitle(group: TaskGroup, runLabel: string, t: (key: string, options
         const stage = t(`tasks.stage.${group.stageId || "other"}`, { defaultValue: t("tasks.stage.other") });
         return `${runLabel} · ${stage}`;
     }
-    return t("tasks.workbenchGroup", { time: group.windowStart ? new Date(group.windowStart).toLocaleString() : "", count: group.total });
+    return t("tasks.workbenchGroup", { time: formatTaskTime(group.windowStart), count: group.total });
 }
 
 export function TaskGroupCard({ group, runLabel, now, onCancelQueued, onCancelJob, onOpenPipeline, onPreviewVideo }: TaskGroupCardProps) {

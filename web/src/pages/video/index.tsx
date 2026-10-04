@@ -8,6 +8,7 @@ import { useTranslation } from "react-i18next";
 
 import { AssetPickerModal, type InsertAssetPayload } from "@/components/canvas/asset-picker-modal";
 import { ModelPicker } from "@/components/model-picker";
+import { formatTaskTime } from "@/lib/task-time";
 import { PromptSelectDialog } from "@/components/prompts/prompt-select-dialog";
 import { VideoSettingsPanel, normalizeVideoResolutionValue, normalizeVideoSizeValue, videoModeLabel, videoSizeLabel } from "@/components/video-settings-panel";
 import { canvasThemes } from "@/lib/canvas-theme";
@@ -685,7 +686,7 @@ async function normalizeLog(log: Partial<GenerationLog>): Promise<GenerationLog>
         createdAt: log.createdAt || Date.now(),
         title: log.title || log.model || i18n.t("workbench.untitled"),
         prompt: log.prompt || "",
-        time: log.time || new Date().toLocaleString(i18n.resolvedLanguage, { hour12: false }),
+        time: log.time || formatTaskTime(new Date()),
         model: log.model || config.videoModel || "",
         config,
         references,
@@ -755,7 +756,7 @@ function buildLog({ prompt, model, config, references, durationMs, status, task,
         createdAt: Date.now(),
         title: prompt.slice(0, 12) || i18n.t("workbench.untitled"),
         prompt,
-        time: new Date().toLocaleString(i18n.resolvedLanguage, { hour12: false }),
+        time: formatTaskTime(new Date()),
         model,
         config: logConfig,
         references,
