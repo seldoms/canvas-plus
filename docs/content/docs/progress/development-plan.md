@@ -1184,3 +1184,41 @@ const provenance = {
 - **部署只走 git**：本地提交 → 推裸仓库 → 远程 `git pull /root/repos/canvas-plus.git canvas-plus`（公网 remote 会因 host key 校验失败）→ `systemctl restart canvas-server`。**不要用 `scripts/sync-remote.sh`**：它是 `rsync -a --delete`，会把服务器上未提交的成果**删掉**。
 - 重启前先确认无 running/queued 任务（重启会把在跑任务判失败）。
 
+## 11.10 平台定位与页面职责（待产品负责人拍板，2026-10-05 登记）
+
+> 产品负责人本轮要求：**停下来先想清楚定位**（它决定不同页面放什么功能）、**现阶段与未来的程度**，并捋清 **画布 / 工作流 / 生图工作台 / 生视频工作台** 四者关系，以及**本地模型能力边界与何时该走外部 API**。
+> 完整分析见新文档 **`platform-positioning.md`**（草稿 v1，未拍板）。本节只登记结论清单，避免两处写重。
+
+**一句话定位（建议稿）**：本地化的 AI 短剧**前期生产 + 交付打包**平台——把原文做成**能被专业剪辑接手的一集素材包**；图像/视频/音频必须本地，**文本与提示词改写可走云端**（现状已在走），精剪永远交剪映/达芬奇。现阶段只锁一件事：**B 包（剪辑资料包）能出**。
+
+**十条已登记矛盾（C1–C10，详情见 `platform-positioning.md` §3）**
+
+| # | 一句话 |
+| --- | --- |
+| C1 | 🔴 定位与实现冲突：PRD 写"全内网/数据不出本机"，但**文本链路实际走云端 DeepSeek**（`config.llm.defaultModel='deepseek::deepseek-v4-pro'`，`index.js:88` 兜底注入，路由到 `api.deepseek.com`） |
+| C2 | 四页职责无权威定义：只有项目页有定位；**生视频工作台连一段职责描述都没有**；画布与两个工作台功能重叠 |
+| C3 | "工作流"一词**五种所指**（契约 DAG / 跑批 run / ComfyUI 模板 / 画布节点图 / registry.json 阶段编排），且 `DP:575` 的"四类注册表"与 `registry.js`（Tool/Provider/Device 三张 Map）**不符** |
+| C4 | 文档大面积过期于代码：`PF §8` 已列 9 条；模板数 6 份文档写 11/16，实际 **19**；段数有"五/六/七段"三种说法 |
+| C5 | 两套 M1–M5 里程碑同名不同义（`p0a-project-kernel-plan.md:380` vs 本文件 §11.8.5） |
+| C6 | BR（`production-boundary-and-roadmap.md`）仍是**草稿 v1**，§7 六条拍板（A–F）没有登记结果 |
+| C7 | 🔴 **画布与项目在数据模型上没有关联**：`CanvasProject` 无 `projectId`、`Project.canvasIds` 无写入方、canvas-agent 传的 "projectId" 其实是画布 id、画布资产与服务端 `AssetRef` 双轨、画布产物**不进 `Artifact/AssetRef`**（`/assets`、`/tasks` 看不到）→ **"在画布上产出资料包"在数据层就是断的** |
+| C8 | 外部 API 三种形态并存无口径：网关 RunningHub（默认关/未验证）、前端浏览器直连第三方渠道、`canvas-proxy` 旁路 |
+| C9 | 契约与实现三方不一致：`domain-contract.md:211` 冻结 6 个阶段 ID，`registry.json` 实为 **7 段**（含 casting/audio），`gates.js` 又没有 casting/audio；前端兜底 `design.requires` 与 registry 冲突 |
+| C10 | 三条并行生成提交链：画布直连（无队列/不可恢复/不进资产）、工作台服务端队列、流水线阶段入队 |
+
+**九条待拍板（P1–P9，含建议与代价，见 `platform-positioning.md` §6）**
+
+| # | 议题 | 建议 |
+| --- | --- | --- |
+| P1 | 定位句与"文本是否可上云"（C1） | 承认文本可上云并改写 PRD 叙事；图像/视频/音频严守本地（若改全本地：文本慢数倍 + 争 16GB 显存） |
+| P2 | 四页唯一职责表 | 照 §5.1 收敛：项目=主线事实、画布/工作台=可丢弃的编辑与试验表面、流水线=跑批控制台 |
+| P3 | "工作流"统一叫法 | UI 与文档统一为 **阶段 / 跑批 / 模板 / 画布**（纯文案、成本最低、收益最高） |
+| P4 | 本期目标锁定 **B 包能出** | 认同；给 `edit-export` 接 HTTP + UI + Agent 工具（现在只有 CLI） |
+| P5 | 是否补 **Agent 的流水线工具** | 建议补 3 个（看状态/跑阶段/导出包），否则"Agent 产出资料包"无从谈起 |
+| P6 | 外部 API 口径（C8） | RunningHub 不投入；浏览器直连渠道只保留在工作台，项目/流水线一律走网关 |
+| P7 | BR 草稿 A–F 正式拍板或归档（C6） | 逐条给结论，或把 BR 降级为"参考"并在文首标注 |
+| P8 | 文档过期清理（C4/C5/C9） | 以 `PF §8` 为清单；段数统一"七段"、模板统一"19"；补齐 casting/audio 到契约与 `gates.js` |
+| P9 | **画布是否接入服务端事实链**（C7/C10） | 若要让"Agent/用户在画布上也能出包" → **必须接**：① 画布产物登记进 `Artifact/AssetRef` ② 加 `projectId` 并让 `canvasIds` 有写入方 ③ 画布生成改走服务端队列。这是**本期最大的工作量分叉** |
+
+**拍板前不要做的事**：不要在"画布能不能出包"这个问题上继续写代码——P9 没定之前，画布侧的任何资料包入口都建不起来（C7 挡着）。
+

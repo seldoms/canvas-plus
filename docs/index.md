@@ -76,6 +76,14 @@ so they do not render in the docs site. Read them directly from the repository.
 - `docs/content/docs/progress/h3-i2v-ui-evidence.md` — first-hand capture of a real UI-enqueued
   H3 i2v job's full `params.PROMPT` (job id, template, sizes, frame count, side-by-side with the
   old compiler's output), closing pilot-issue #66's evidence gap.
+- `docs/content/docs/progress/platform-positioning.md` — **platform positioning and page
+  responsibilities (draft v1, awaiting owner sign-off)**: one-sentence positioning, the three
+  maturity tiers (this phase = ship the edit-ready package), the single responsibility of each
+  page (project workspace / canvas / image workbench / video workbench / pipeline / assets), the
+  five different things the word "workflow" currently means in this repo, the local-vs-cloud
+  fact that **text already runs on cloud DeepSeek while image/video/audio stay local**, the local
+  capability table, and ten registered contradictions (C1–C10) with nine decisions (P1–P9) for
+  the owner. Read this before deciding what belongs on which page.
 
 ## Notes
 

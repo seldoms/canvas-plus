@@ -39,6 +39,7 @@
 | ⚠️ **「标准资料包」还缺三处**：① 剪辑资料包 `exportDeliveryPackage` **只有 CLI、无 HTTP/UI**；② canvas-agent **33 个工具里没有流水线工具**（Agent 驱动不了七段、拿不到包）；③ **无报告渲染层**（前端只显示原始 JSON、不读 `stage.warnings`） | `development-plan.md` §11.9.4 |
 | ⚠️ **两个必读坑**：① `project.script` 若是 markdown 文本则 `episodes=0`、分镜跑不起来，且重跑剧本阶段会**覆盖 `project.script`**（`projects.js:407`）；② 视频任务历史 5 连 error 全是 `缺少参数：INPUT_IMAGE`（缺首帧） | `development-plan.md` §11.9.5 |
 | ⚠️ **部署纪律（本轮修正）**：远程曾有 11 个提交未推裸仓库（裸仓库 HEAD 停在 `666f0bb`，等于没备份），现已推齐；**部署只走 git**（`git pull /root/repos/canvas-plus.git canvas-plus` + 重启），**不要用 `sync-remote.sh`**（`rsync --delete` 会删掉服务器上未提交的成果）；重启前确认无在跑任务 | `development-plan.md` §11.9.6 |
+| 🧭 **平台定位与页面职责已登记、待拍板**：新文档 **`docs/content/docs/progress/platform-positioning.md`**（草稿 v1）——一句话定位、三层程度、四页唯一职责、"工作流"五种所指、本地能力表、**十条矛盾 C1–C10 + 九条待拍板 P1–P9**。其中两条最硬：**C1 文本链路已走云端 DeepSeek（与 PRD"数据不出本机"冲突）**；**C7 画布与项目在数据模型上无关联 → 画布产物不进 Artifact/AssetRef，"在画布上产出资料包"在数据层就是断的**。摘要见 `development-plan.md` **§11.10** | `platform-positioning.md`；`development-plan.md` §11.10 |
 
 **2026-10-05 独立审查结论（先读这段，再往下看历史表格）**
 
