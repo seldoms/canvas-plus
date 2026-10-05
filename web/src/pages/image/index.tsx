@@ -1,4 +1,4 @@
-import { ArrowLeft, ArrowRight, BookOpen, ClipboardPaste, Download, FolderPlus, History, ImagePlus, PenLine, SlidersHorizontal, Sparkles, Trash2, Upload, XCircle } from "lucide-react";
+import { ArrowLeft, ArrowRight, BookOpen, ClipboardPaste, Download, FolderPlus, History, ImagePlus, ListPlus, PenLine, SlidersHorizontal, Sparkles, Trash2, Upload, XCircle } from "lucide-react";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { App, Button, Drawer, Empty, Image, Input, Modal, Progress, Tag, Tooltip, Typography } from "antd";
 import localforage from "localforage";
@@ -9,6 +9,7 @@ import { ImageSettingsPanel } from "@/components/image-settings-panel";
 import { ArtifactActions, type ArtifactTarget } from "@/components/artifact-actions";
 import { ModelPicker } from "@/components/model-picker";
 import { PromptSelectDialog } from "@/components/prompts/prompt-select-dialog";
+import { SlotCandidateDialog } from "./slot-candidate-dialog";
 import { AssetPickerModal, type InsertAssetPayload } from "@/components/canvas/asset-picker-modal";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { formatTaskTime } from "@/lib/task-time";
@@ -115,6 +116,13 @@ function jobOutputToImage(job: ImageJob, output: ImageJobOutput): GeneratedImage
     };
 }
 
+/** 历史记录图片反查已完成的后端 Job（条目 id 形如 `<jobId>-<文件名>`）；仅 done 且有产物地址才可加入项目候选。 */
+function candidateJobIdFor(image: GeneratedImage, jobs: Record<string, ImageJob>): string | null {
+    if (!image.artifactUrl) return null;
+    const jobId = jobIdsForItemIds([image.id], jobs)[0];
+    return jobId && jobs[jobId]?.status === "done" ? jobId : null;
+}
+
 /** 队列里一条任务的缩略图（从后端 job 产物取，最多 4 张）；生图专有，交给共享队列面板渲染。 */
 function imageTaskThumbnails(task: WorkbenchTask, jobs: Record<string, WorkbenchJob>): WorkbenchThumb[] {
     return task.jobIds
@@ -215,6 +223,8 @@ export default function ImagePage() {
     // 左栏「任务队列」里当前点开的那条记录（任务或已落库记录），中/右区据此展示该次的参数快照与结果。
     const [selectedId, setSelectedId] = useState<string | null>(null);
     const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+    // 「加入项目候选…」对话框当前携带的后端 jobId（M3）；null = 关闭。
+    const [candidateJobId, setCandidateJobId] = useState<string | null>(null);
     const [isReferenceDragActive, setIsReferenceDragActive] = useState(false);
     const [autoRunToken, setAutoRunToken] = useState(0);
     // 生图模型的官方规格清单（后端 /api/providers 下发，前端不硬编码）——「选模型 → 再选规格」。
@@ -893,6 +903,7 @@ export default function ImagePage() {
                                     onEdit={addResultToReferences}
                                     onDownload={downloadImage}
                                     onSaveAsset={saveResultToAssets}
+                                    onAddCandidate={setCandidateJobId}
                                 />
                             </div>
                         ) : detailLog ? (
@@ -911,7 +922,7 @@ export default function ImagePage() {
                                     <Image.PreviewGroup>
                                         <div className="grid gap-4 sm:grid-cols-2 2xl:grid-cols-3">
                                             {detailLog.images.map((image, index) => (
-                                                <ResultImageCard key={image.id} image={image} index={index} onEdit={addResultToReferences} onDownload={downloadImage} onSaveAsset={saveResultToAssets} />
+                                                <ResultImageCard key={image.id} image={image} index={index} candidateJobId={candidateJobIdFor(image, jobs)} onEdit={addResultToReferences} onDownload={downloadImage} onSaveAsset={saveResultToAssets} onAddCandidate={setCandidateJobId} />
                                             ))}
                                         </div>
                                     </Image.PreviewGroup>
@@ -958,6 +969,7 @@ export default function ImagePage() {
                 </div>
             </Drawer>
             <PromptSelectDialog open={promptDialogOpen} onOpenChange={setPromptDialogOpen} onSelect={setPrompt} />
+            <SlotCandidateDialog open={candidateJobId !== null} jobId={candidateJobId} onClose={() => setCandidateJobId(null)} />
             <AssetPickerModal open={assetPickerOpen} defaultTab="my-assets" onInsert={(payload) => void insertPickedAsset(payload)} onClose={() => setAssetPickerOpen(false)} />
             <Modal title={t("workbench.deleteLogs")} open={deleteConfirmOpen} onCancel={() => setDeleteConfirmOpen(false)} onOk={deleteSelectedLogs} okText={t("common.delete")} okButtonProps={{ danger: true }} cancelText={t("common.cancel")}>
                 {t("workbench.deleteLogsConfirm", { count: selectedLogIds.length })}
@@ -1000,17 +1012,22 @@ function ResultImageCard({
     image,
     index,
     archiveTargets,
+    candidateJobId,
     onEdit,
     onDownload,
     onSaveAsset,
+    onAddCandidate,
 }: {
     image: GeneratedImage;
     index: number;
     /** 归档目标：**由父级从该次任务的产物（job.outputs）现算**（规范 §2.5）；缺省时退回记录里存的产物地址。 */
     archiveTargets?: ArtifactTarget[];
+    /** 可加入项目候选的后端 jobId（仅 done 且有产物的结果由父级传入）；空则禁用该动作。 */
+    candidateJobId?: string | null;
     onEdit: (image: GeneratedImage, index: number) => void;
     onDownload: (image: GeneratedImage, index: number) => void;
     onSaveAsset: (image: GeneratedImage, index: number) => void;
+    onAddCandidate: (jobId: string) => void;
 }) {
     const { t } = useTranslation();
     useSyncExternalStore(subscribeImagePreviews, getImagePreviewRevision);
@@ -1045,7 +1062,7 @@ function ResultImageCard({
                     <span>{formatBytes(image.bytes)}</span>
                     <span>{formatDuration(image.durationMs)}</span>
                 </div>
-                <div className="grid min-w-0 grid-cols-3 gap-2">
+                <div className="grid min-w-0 grid-cols-2 gap-2">
                     <Tooltip title={t("common.addToAssets")}>
                         <Button className={RESULT_ACTION_BUTTON_CLASS} size="small" disabled={unavailable} icon={<FolderPlus className="size-3.5" />} onClick={() => void onSaveAsset(image, index)}>
                             {t("common.addToAssets")}
@@ -1059,6 +1076,11 @@ function ResultImageCard({
                     <Tooltip title={t("common.download")}>
                         <Button className={RESULT_ACTION_BUTTON_CLASS} size="small" disabled={unavailable} icon={<Download className="size-3.5" />} onClick={() => onDownload(image, index)}>
                             {t("common.download")}
+                        </Button>
+                    </Tooltip>
+                    <Tooltip title={t("imageWorkbench.addCandidateTitle")}>
+                        <Button className={RESULT_ACTION_BUTTON_CLASS} size="small" disabled={unavailable || !candidateJobId} icon={<ListPlus className="size-3.5" />} onClick={() => candidateJobId && onAddCandidate(candidateJobId)}>
+                            {t("imageWorkbench.addCandidate")}
                         </Button>
                     </Tooltip>
                 </div>
@@ -1081,6 +1103,7 @@ function TaskGroup({
     onEdit,
     onDownload,
     onSaveAsset,
+    onAddCandidate,
 }: {
     task: Task;
     jobs: ImageJob[];
@@ -1091,6 +1114,7 @@ function TaskGroup({
     onEdit: (image: GeneratedImage, index: number) => void;
     onDownload: (image: GeneratedImage, index: number) => void;
     onSaveAsset: (image: GeneratedImage, index: number) => void;
+    onAddCandidate: (jobId: string) => void;
 }) {
     const { t } = useTranslation();
     const jobById = new Map(jobs.map((job) => [job.id, job] as const));
@@ -1114,7 +1138,7 @@ function TaskGroup({
             return job.outputs
                 .filter((output) => !output.type || output.type === "image")
                 .map((output, outputIndex) => (
-                    <ResultImageCard key={`${id}-${output.filename || outputIndex}`} image={jobOutputToImage(job, output)} index={jobIndex} archiveTargets={archiveTargetsFromJobs([job])} onEdit={onEdit} onDownload={onDownload} onSaveAsset={onSaveAsset} />
+                    <ResultImageCard key={`${id}-${output.filename || outputIndex}`} image={jobOutputToImage(job, output)} index={jobIndex} archiveTargets={archiveTargetsFromJobs([job])} candidateJobId={job.id} onEdit={onEdit} onDownload={onDownload} onSaveAsset={onSaveAsset} onAddCandidate={onAddCandidate} />
                 ));
         }
         if (job?.status === "canceled") {

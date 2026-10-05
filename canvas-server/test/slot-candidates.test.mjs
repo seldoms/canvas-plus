@@ -193,6 +193,48 @@ test("采用候选：设 selected；候选不存在 → 404 CANDIDATE_NOT_FOUND"
     assert.equal(again.slot.selected, "image-c1", "重复采用幂等");
 });
 
+// ——— 撤销采用（M3）：select jobId=null 清空 selected ———
+
+test("撤销采用：jobId=null 清空 selected；重复清空幂等；candidates 不动；非空 jobId 校验不回归", (t) => {
+    const { projects } = makeEnv(t);
+    const project = projects.create({ title: "撤销" });
+    const { shotId } = seedShot(projects, project.id);
+    const slotId = `slot_${shotId}_key`;
+    const jobs = fakeJobs({
+        "image-c1": doneJob("image-c1", { source: "canvas", projectId: project.id }),
+        "image-c2": doneJob("image-c2", { source: "canvas", projectId: project.id }),
+    });
+    const slotCandidates = createSlotCandidates({ jobs, episodes: projects.episodes });
+
+    slotCandidates.appendCandidate({ projectId: project.id, shotId, slotId, jobId: "image-c1" });
+    slotCandidates.appendCandidate({ projectId: project.id, shotId, slotId, jobId: "image-c2" });
+    slotCandidates.selectCandidate({ projectId: project.id, shotId, slotId, jobId: "image-c1" });
+
+    const cleared = slotCandidates.selectCandidate({ projectId: project.id, shotId, slotId, jobId: null });
+    assert.equal(cleared.slot.selected, null, "jobId=null 清空 selected");
+    assert.deepEqual(
+        cleared.slot.candidates.map((candidate) => candidate.jobId),
+        ["image-c1", "image-c2"],
+        "清空不动 candidates",
+    );
+
+    const again = slotCandidates.selectCandidate({ projectId: project.id, shotId, slotId, jobId: null });
+    assert.equal(again.slot.selected, null, "重复清空幂等");
+    assert.equal(again.slot.candidates.length, 2, "重复清空 candidates 仍不动");
+
+    // 落盘也已是 null（重读集详情确认写盘生效）。
+    const stored = projects.episodes.get(project.id, projects.get(project.id).episodes[0].id);
+    assert.equal(stored.shots[0].generationSlots[0].selected, null);
+
+    // 撤销后可再采用（采用/撤销可重复）。
+    const readopted = slotCandidates.selectCandidate({ projectId: project.id, shotId, slotId, jobId: "image-c2" });
+    assert.equal(readopted.slot.selected, "image-c2", "撤销后可再采用");
+
+    // 非空 jobId 原有校验不回归：未知候选 404 CANDIDATE_NOT_FOUND；空串仍 400。
+    assert.throws(() => slotCandidates.selectCandidate({ projectId: project.id, shotId, slotId, jobId: "image-nope" }), (error) => error.status === 404 && error.code === "CANDIDATE_NOT_FOUND");
+    assert.throws(() => slotCandidates.selectCandidate({ projectId: project.id, shotId, slotId, jobId: "" }), (error) => error.status === 400);
+});
+
 // ——— 自动投影（M2-D6）：无 runId 的画布终态 Job 追加候选、selected 不动 ———
 
 test("自动投影：done 且无 runId 的画布 Job 追加候选、不动 selected；有 runId / 非 done / 缺归属不投影", (t) => {

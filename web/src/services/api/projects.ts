@@ -367,8 +367,8 @@ export async function appendSlotCandidate(projectId: string, shotId: string, slo
     return unwrapSlot(data);
 }
 
-/** POST .../slots/:slotId/select { jobId }：采用候选（设 slot.selected）。 */
-export async function selectSlotCandidate(projectId: string, shotId: string, slotId: string, jobId: string) {
+/** POST .../slots/:slotId/select { jobId }：采用候选（设 slot.selected）；jobId 传 null 撤销采用（清空 selected）。 */
+export async function selectSlotCandidate(projectId: string, shotId: string, slotId: string, jobId: string | null) {
     const data = await projectRequest<unknown>({
         method: "post",
         url: `/api/projects/${encodeURIComponent(projectId)}/shots/${encodeURIComponent(shotId)}/slots/${encodeURIComponent(slotId)}/select`,

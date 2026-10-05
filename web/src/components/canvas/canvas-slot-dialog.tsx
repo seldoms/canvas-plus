@@ -1,26 +1,20 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { App, Button, Empty, Image, Modal, Select, Spin, Tag } from "antd";
+import { useState } from "react";
+import { App, Button, Empty, Image, Modal, Tag } from "antd";
 import { FolderInput, Sparkles } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { resolveGatewayUrl } from "@/services/api/gateway";
-import { getEpisode, listEpisodes, selectSlotCandidate, type EpisodeDetail, type GenerationSlotView } from "@/services/api/projects";
-import { generateSlotCandidateImage, importNodeImageCandidate, nodeGenerationPrompt, type SlotGeneratedImage, type SlotTarget } from "@/lib/canvas/canvas-project-slots";
+import { selectSlotCandidate } from "@/services/api/projects";
+import { ProjectSlotCascadeSelects, useProjectSlotCascade } from "@/components/project-slot-cascade";
+import { generateSlotCandidateImage, importNodeImageCandidate, nodeGenerationPrompt, type SlotGeneratedImage } from "@/lib/canvas/canvas-project-slots";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
-import type { Episode, Scene, Shot } from "@/types/domain";
 import type { CanvasNodeData } from "@/types/canvas";
 
-type ShotRow = { scene: Scene; shot: Shot };
-
-/** 槽位 id 规则（与服务端 pipeline.js generationSlotsFor 一致）：slot_<shotId>_<role>，本轮只有关键帧 key。 */
-export function keyframeSlotId(shotId: string) {
-    return `slot_${shotId}_key`;
-}
-
 /**
- * 槽位选择对话框（M2-D8）：项目（已绑定固定）→ 集 → 镜头 → 关键帧槽位，级联展示；
- * 候选列表带缩略图 / 状态 / 采用；「生成新候选」走服务端队列，「把当前图片加入候选」走 artifacts/import 登记。
+ * 槽位选择对话框（M2-D8）：级联选择核心复用 project-slot-cascade（项目已绑定固定）；
+ * 画布特有动作留在这里——候选列表带缩略图 / 状态 / 采用 / 撤销采用，
+ * 「生成新候选」走服务端队列，「把当前图片加入候选」走 artifacts/import 登记。
  */
 export function CanvasSlotDialog({
     open,
@@ -41,71 +35,9 @@ export function CanvasSlotDialog({
     const { message } = App.useApp();
     const { t } = useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
-    const [episodes, setEpisodes] = useState<Episode[] | null>(null);
-    const [episodeId, setEpisodeId] = useState<string>("");
-    const [detail, setDetail] = useState<EpisodeDetail | null>(null);
-    const [shotId, setShotId] = useState<string>("");
-    const [slotOverride, setSlotOverride] = useState<GenerationSlotView | null>(null);
+    const cascade = useProjectSlotCascade({ active: open, projectId });
     const [busy, setBusy] = useState<"generate" | "import" | "select" | null>(null);
-
-    const shotRows = useMemo<ShotRow[]>(() => (detail?.scenes || []).flatMap((scene) => (scene.shots || []).map((shot) => ({ scene, shot }))), [detail]);
-    const currentRow = shotRows.find((row) => row.shot.id === shotId) || null;
-    const slotId = shotId ? keyframeSlotId(shotId) : "";
-    const slot = useMemo<GenerationSlotView | null>(() => {
-        if (slotOverride && slotOverride.id === slotId) return slotOverride;
-        const raw = currentRow?.shot.generationSlots?.find((item) => item.id === slotId || item.role === "key");
-        if (!raw) return null;
-        return { id: raw.id || slotId, shotId: raw.shotId, role: raw.role, selected: raw.selected ?? null, candidates: raw.candidates || [] };
-    }, [currentRow, slotId, slotOverride]);
-    const target = useMemo<SlotTarget | null>(() => (currentRow && episodeId ? { projectId, episodeId, sceneId: currentRow.scene.id, shotId, slotId } : null), [currentRow, episodeId, projectId, shotId, slotId]);
-
-    const loadDetail = useCallback(
-        async (nextEpisodeId: string) => {
-            const next = await getEpisode(projectId, nextEpisodeId);
-            setDetail(next);
-            const rows = (next?.scenes || []).flatMap((scene) => scene.shots || []);
-            setShotId((current) => (rows.some((shot) => shot.id === current) ? current : rows[0]?.id || ""));
-        },
-        [projectId],
-    );
-
-    useEffect(() => {
-        if (!open) return;
-        setEpisodes(null);
-        setDetail(null);
-        setShotId("");
-        setSlotOverride(null);
-        let alive = true;
-        listEpisodes(projectId)
-            .then(async (list) => {
-                if (!alive) return;
-                setEpisodes(list);
-                const first = list[0]?.id || "";
-                setEpisodeId(first);
-                if (first) await loadDetail(first);
-            })
-            .catch((error) => {
-                if (!alive) return;
-                setEpisodes([]);
-                message.error(error instanceof Error ? error.message : String(error));
-            });
-        return () => {
-            alive = false;
-        };
-    }, [open, projectId, loadDetail, message]);
-
-    useEffect(() => {
-        setSlotOverride(null);
-    }, [slotId]);
-
-    const refresh = useCallback(async () => {
-        if (!episodeId) return;
-        try {
-            await loadDetail(episodeId);
-        } catch {
-            /* 刷新失败只影响候选列表时效，不打扰操作结果 */
-        }
-    }, [episodeId, loadDetail]);
+    const { slot, slotId, target } = cascade;
 
     const run = async (kind: "generate" | "import" | "select", action: () => Promise<void>) => {
         setBusy(kind);
@@ -124,7 +56,7 @@ export function CanvasSlotDialog({
             const image = await generateSlotCandidateImage(node, target);
             onGenerated(image, node);
             message.success(t("canvas.slotDialog.generateSuccess"));
-            await refresh();
+            await cascade.refresh();
         });
     };
 
@@ -133,15 +65,16 @@ export function CanvasSlotDialog({
         void run("import", async () => {
             await importNodeImageCandidate(node, target);
             message.success(t("canvas.slotDialog.importSuccess"));
-            await refresh();
+            await cascade.refresh();
         });
     };
 
-    const handleSelect = (jobId: string) => {
+    /** 采用 / 撤销采用（M3：jobId 传 null 清空 selected）。 */
+    const handleSelect = (jobId: string | null) => {
         if (!target) return;
         void run("select", async () => {
             const next = await selectSlotCandidate(target.projectId, target.shotId, target.slotId, jobId);
-            setSlotOverride(next);
+            cascade.setSlot(next);
         });
     };
 
@@ -152,44 +85,14 @@ export function CanvasSlotDialog({
     return (
         <Modal title={t("canvas.slotDialog.title")} open={open} onCancel={onClose} footer={null} centered width={640}>
             <div className="space-y-4 pt-2">
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-                    <label className="block">
-                        <span className="mb-1 block text-xs opacity-60">{t("canvas.slotDialog.project")}</span>
-                        <div className="truncate rounded-md border border-stone-200 px-3 py-1.5 text-sm dark:border-stone-700">{projectTitle || projectId}</div>
-                    </label>
-                    <label className="block">
-                        <span className="mb-1 block text-xs opacity-60">{t("canvas.slotDialog.episode")}</span>
-                        <Select
-                            className="w-full"
-                            value={episodeId || undefined}
-                            loading={episodes === null}
-                            placeholder={t("canvas.slotDialog.episode")}
-                            options={(episodes || []).map((episode) => ({ value: episode.id, label: `${episode.index}. ${episode.title || episode.id}` }))}
-                            onChange={(value) => {
-                                setEpisodeId(value);
-                                void loadDetail(value);
-                            }}
-                        />
-                    </label>
-                    <label className="block">
-                        <span className="mb-1 block text-xs opacity-60">{t("canvas.slotDialog.shot")}</span>
-                        <Select
-                            className="w-full"
-                            value={shotId || undefined}
-                            placeholder={t("canvas.slotDialog.shot")}
-                            notFoundContent={detail ? t("canvas.slotDialog.noShots") : <Spin size="small" />}
-                            options={shotRows.map((row) => ({ value: row.shot.id, label: `${t("canvas.slotDialog.shot")} ${row.shot.index}（${row.shot.id}）` }))}
-                            onChange={setShotId}
-                        />
-                    </label>
-                </div>
+                <ProjectSlotCascadeSelects cascade={cascade} projectTitle={projectTitle} />
 
                 <div>
                     <div className="mb-2 flex items-center justify-between gap-2">
                         <span className="text-sm font-medium">{t("canvas.slotDialog.candidates")}</span>
                         <Tag className="m-0">{slotId || t("canvas.slotDialog.keySlot")}</Tag>
                     </div>
-                    {!shotId ? (
+                    {!cascade.shotId ? (
                         <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("canvas.slotDialog.noShots")} />
                     ) : candidates.length ? (
                         <div className="thin-scrollbar grid max-h-72 grid-cols-2 gap-3 overflow-y-auto sm:grid-cols-3">
@@ -210,7 +113,12 @@ export function CanvasSlotDialog({
                                                 {candidate.status ? <Tag className="m-0 shrink-0">{candidate.status}</Tag> : null}
                                             </div>
                                             {selected ? (
-                                                <div className="text-center text-xs font-medium">{t("canvas.slotDialog.adopted")}</div>
+                                                <div className="flex items-center justify-between gap-1 text-xs">
+                                                    <span className="font-medium">{t("canvas.slotDialog.adopted")}</span>
+                                                    <Button size="small" type="text" loading={busy === "select"} onClick={() => handleSelect(null)}>
+                                                        {t("canvas.slotDialog.revoke")}
+                                                    </Button>
+                                                </div>
                                             ) : (
                                                 <Button size="small" block loading={busy === "select"} onClick={() => handleSelect(candidate.jobId)}>
                                                     {t("canvas.slotDialog.adopt")}

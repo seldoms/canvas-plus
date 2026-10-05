@@ -52,7 +52,7 @@ export function createSlotCandidates({ jobs, episodes } = {}) {
         return { slot };
     }
 
-    /** 采用候选：设 slot.selected = jobId；候选不存在 → 404 CANDIDATE_NOT_FOUND（存储层抛出）。 */
+    /** 采用候选：设 slot.selected = jobId；jobId 传 null 撤销采用（清空 selected，candidates 不动）；候选不存在 → 404 CANDIDATE_NOT_FOUND（存储层抛出）。 */
     function selectCandidate({ projectId, shotId, slotId, jobId } = {}) {
         const { slot } = episodes.selectSlotCandidate(projectId, shotId, slotId, jobId);
         return { slot };
