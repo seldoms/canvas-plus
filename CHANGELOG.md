@@ -2,6 +2,8 @@
 
 ## Unreleased
 
++ [文档] **H3 续接 POC 跑通（限定验证范围，不宣称无限续接）**：「父段尾帧 → 子段 I2VA first_frame」机制在 147 实测成立——1 条 4 段主链（T2VA + 3×I2VA）+ 1 条中间段分叉链全部生成成功，原链产物分叉后 md5 不变；中断（POST /interrupt）后同 seed/同尾帧重跑即恢复，恢复语义 = 驱动侧按 (chainId, segmentIndex) 跳过已完成段。画面接缝 4/4 合格（SSIM 0.929~0.952、无冻结帧）；**音频接缝 4/4 出现 17~26dB 段首响度塌陷，M3.5 拼接层必须做音频接缝后处理**。另登记：跑批每段前需 RAM preflight（低内存使单段 90s→698s）；产物定位只能信 history.outputs。报告与工具链元数据见 `research/win147-comfyui/h3-continuation-poc.md` 与 `h3-continuation-poc/`。
+
 + [新增] **工作台与项目互通（M3）**：生图工作台结果卡片（含历史记录中有已完成 Job 的卡片）新增「加入项目候选…」——经共用级联选择器（项目→集→镜头→关键帧槽位，从画布槽位对话框抽取核心、画布/工作台两个壳复用，无复制粘贴）把已完成 Job 直接追加为槽位候选（复用 M2 候选端点，不建第二套 Job/Artifact 状态机）；采用支持撤销——`POST .../slots/:slotId/select { jobId: null }` 清空 `slot.selected`（幂等、不动候选数组），画布槽位对话框候选列表同步提供「撤销采用」。视频工作台本轮不接（clip 槽位属 M3.5 范围）。
 
 + [新增] **画布接入 Project 事实链（M2，按 D14 倾向的 B 档中度接入）**：画布可显式「绑定」服务端项目（`CanvasProject.serverProjectId` + `Project.canvasIds` 双向登记，新增 `POST/DELETE /api/projects/:id/canvas-refs` 幂等 attach/detach）；绑定画布的图片节点新增「加入项目候选…」槽位对话框（项目→集→镜头→关键帧槽位）——「生成新候选」走 M1 统一提交链（`/api/generate/image`，`source="canvas"`、归属与幂等键齐全），产物节点直接存 artifact URL，刷新浏览器与重启网关后仍显示同一 Artifact；「把当前图片加入候选」经新增的 `POST /api/artifacts/import`（合成已完成 import Job 登记字节，复用 artifacts 懒索引，同 idempotencyKey 重放返回同一产物）入档并自动成为候选。服务端新增槽位候选通路：终态 done 且 meta 带 projectId/shotId/slotId 的非 run Job 自动追加候选（**不动 selected**）；`POST .../slots/:slotId/candidates|select` 提供显式追加/采用（404 JOB_NOT_FOUND/CANDIDATE_NOT_FOUND、409 PROJECT_MISMATCH）；run 侧 keyframe 投影改为合并语义，不再冲掉画布来源候选及其 selected。未绑定画布的生成链路保持浏览器直连、一行未动。顺带修正 `CanvasAgentSnapshot` 语义错误：新增 `canvasId` 装画布 id，`projectId` 归还服务端项目 id（web 与 canvas-agent 消费方同步）。

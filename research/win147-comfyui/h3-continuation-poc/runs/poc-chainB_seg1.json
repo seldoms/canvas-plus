@@ -1,0 +1,22 @@
+{
+  "continuationChainId": "poc-chainB",
+  "segmentIndex": 1,
+  "parentArtifactId": "poc-chainA/seg1#7bd568e3-0e1d-434d-bee6-6cc01454bc1e",
+  "seed": 920002,
+  "output_prefix": "h3poc/chainB_seg1",
+  "prompt": "integrated_multimodal_description: [Shot 1] A woman in her late twenties with long dark-brown hair tied in a low ponytail, wearing a loose white linen shirt over a light-blue sundress, barefoot on a sunny beach. Bright midday sunlight, clear blue sky, gentle waves, live-action naturalistic look, vertical 9:16 framing, single continuous shot, no cuts. Still bent over the sand, she picks up the seashell and raises it to her ear, listening to it with a curious smile, eyes widening slightly. Static medium shot.\n\noverall_soundscape: ocean waves rolling in steadily, soft wind, distant seagulls, footsteps on wet sand. non_diegetic_music: N/A.",
+  "width": 480,
+  "height": 832,
+  "length": 73,
+  "steps": 6,
+  "chainId": "poc-chainB",
+  "first_frame": "h3poc_chainA_seg1_tail.png",
+  "prompt_id": "b3e20f6e-99e5-4e6a-ba16-65b3461de8d5",
+  "submitted_at": "2026-10-06T06:49:38+0800",
+  "artifact": {
+    "file": "chainB_seg1_00001-audio.mp4",
+    "local_copy": "/tmp/h3-poc/videos/chainB_seg1.mp4",
+    "has_audio": true
+  },
+  "elapsed_s": 90.1
+}

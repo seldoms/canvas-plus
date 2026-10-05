@@ -1,0 +1,18 @@
+{
+  "label": "A2-A3",
+  "parent": "chainA_seg2.mp4",
+  "child": "chainA_seg3.mp4",
+  "parent_duration_s": 3.042,
+  "child_duration_s": 3.042,
+  "boundary_psnr_db": "32.899529",
+  "boundary_ssim": "0.945364",
+  "freeze_events": [],
+  "scdet_max_score": null,
+  "scdet_scores_near_cut": [],
+  "parent_has_audio": true,
+  "child_has_audio": true,
+  "parent_tail_rms_db": -34.31676,
+  "child_head_rms_db": -91.969629,
+  "seam_integrated_lufs": "-31.9",
+  "seam_true_peak_dbfs": "-17.8"
+}

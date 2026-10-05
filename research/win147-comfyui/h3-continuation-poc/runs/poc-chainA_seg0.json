@@ -1,0 +1,25 @@
+{
+  "continuationChainId": "poc-chainA",
+  "segmentIndex": 0,
+  "parentArtifactId": null,
+  "seed": 910001,
+  "output_prefix": "h3poc/chainA_seg0",
+  "prompt": "integrated_multimodal_description: [Shot 1] A woman in her late twenties with long dark-brown hair tied in a low ponytail, wearing a loose white linen shirt over a light-blue sundress, barefoot on a sunny beach. Bright midday sunlight, clear blue sky, gentle waves, live-action naturalistic look, vertical 9:16 framing, single continuous shot, no cuts. She walks at a relaxed pace along the waterline toward the camera, medium full shot, waves washing over her feet, her hair and shirt moving in the sea breeze. The camera holds a static medium shot as she approaches.\n\noverall_soundscape: ocean waves rolling in steadily, soft wind, distant seagulls, footsteps on wet sand. non_diegetic_music: N/A.",
+  "width": 480,
+  "height": 832,
+  "length": 73,
+  "steps": 6,
+  "chainId": "poc-chainA",
+  "prompt_id": "e6786985-8523-4cfd-81b1-70348233f770",
+  "submitted_at": "2026-10-06T06:23:10+0800",
+  "artifact": {
+    "file": "chainA_seg0_00001-audio.mp4",
+    "local_copy": "/tmp/h3-poc/videos/chainA_seg0.mp4",
+    "md5": "15f3f315760d6e5ff4f4eae93c5d11d0",
+    "frames": 73,
+    "duration_s": 3.041667,
+    "resolution": "480x832",
+    "has_audio": true
+  },
+  "elapsed_s": 96.8
+}
