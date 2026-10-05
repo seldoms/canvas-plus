@@ -1201,3 +1201,32 @@ image_files 共 22 条：
 2. **要素自动补全（含光照）** —— 从 `scene.time` + 内景外景 + 风格锚点推导光线/时间要素，凑不齐**显式标缺，不编**
 3. **一级块按目标语言输出** —— 只吃英文的模型，风格锚点/画幅/文字子句全给英文，消除中英混写
 4. **事实锁扩围** —— 画幅之外，把**时间 / 光照 / 画面文字可见性**也标成「不可改写事实」并加反向校验，被反写则整稿弃用
+
+---
+
+## 第八轮（平台定位与页面职责倒查 · 2026-10-05）
+
+> **跑法（全一手）**：三路只读审计（页面职责与"工作流"所指 / 本地模型能力 / 既有决策与文档冲突）+ 代码核对 +
+> live 网关核对（`/api/health`、`/api/providers`、`/api/backends`、`/api/llm/providers`、`/api/jobs`）。
+> **触发**：产品负责人「停下来先想清楚平台定位，它决定不同页面放什么功能」，并要求捋清 画布 / 工作流 / 生图工作台 / 生视频工作台。
+> **本轮已拍板**：**D13** 数据边界（素材不出本机、文本可用云端）｜**D14** 画布接入服务端事实链（深度待外部评审）。
+> 完整分析见 `platform-positioning.md`（含给外部评审的附录 A）；决策登记见 `development-plan.md` §7 D13/D14 与 §11.10。
+
+| # | 阶段 | 现象 | 一手证据 | 严重度 | 影响面 | 状态 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 96 | 门禁 | **`gates.js` 的阶段集合缺 `casting` / `audio`**：项目级门禁面板仍是 `plan/script/storyboard/design/keyframe/assembly/post`，而 `skills/registry.json` 是**七段**（含 casting/audio）、前端 `workspaces.ts` 已用 `casting` → 三处阶段集合不一致（`domain-contract.md` §3.9 已冻结七段口径） | `gates.js:18-26` vs `skills/registry.json:3-72` vs `web/src/pages/projects/workspaces.ts:24-31`；本轮已把契约口径改为七段（commit `fbc5298`） | 严重 | 后端门禁 / 前端工作区 | 待讨论 |
+| 97 | 流水线 | **前端兜底阶段依赖与 registry 冲突**：`use-pipeline-run.ts` 写 `design.requires=["storyboard"]`，registry 是 `["script"]` → registry 不可达时前端按错依赖禁用按钮 | `web/src/pages/use-pipeline-run.ts:38-46` vs `skills/registry.json:24-27` | 一般 | 前端 | 待讨论 |
+| 98 | 画布 | **画布与项目在数据模型上完全没有关联**：`CanvasProject` **无 `projectId`**；`Project.canvasIds` **只被读、无写入方**；canvas-agent 传的 `projectId` 实为**画布 id**；画布产物**不进 `Artifact/AssetRef`**（`/assets`、`/tasks` 看不到）；画布"资产"读浏览器本地 store，与服务端 `AssetRef` **双轨** → **"在画布上产出资料包"在数据层就是断的** | `use-canvas-store.ts:10-22`、`projects.ts:39`、`canvas-agent-ops.ts:18-24`、`canvas-side-panel.tsx:19` vs `assets.tsx:16` | 严重 | 前端 / 后端 / 数据模型 | **已拍板 D14：要接**；集成深度 A/B/C 待外部评审（`platform-positioning.md` §5.5） |
+| 99 | 画布 | **三条并行的生成提交链**：画布=浏览器直连（无队列、刷新即丢、不进资产）；工作台=服务端串行队列（有进度、可恢复、可归档）；流水线=阶段入队（有回写、有门禁）→ 同一件事三种语义，"历史/进度/产物"取决于从哪个页面发起 | `pages/canvas/project.tsx:2025`、`image-jobs.ts:90`、`video-jobs.ts:43`、`pipeline.js` | 严重 | 前端 / 后端 | 待讨论（D14 选 B 时一并收敛） |
+| 100 | 剧本 | **`project.script` 形态与覆盖风险**：① 若是**人写的 markdown 文本**，`normalizeScript` 得到空结构 → `episodes = 0`，**分镜根本跑不起来**（「喜宴之外」`prj_01M45S6PMAPT56CABAKZAZJC3T` 实测：`script` 为 5751 字 markdown、`episodes=0`、`runs=0`）；② **`applyScriptProjection` 会直接覆盖 `project.script`** → 在有内容的项目上重跑剧本阶段会冲掉人写的剧本 | `projects.js:101-111`、`projects.js:401-409`；远程实测 `GET /api/projects/prj_01M45S6PMAPT56CABAKZAZJC3T` | 严重 | 后端 / 数据 | 待讨论（本轮已写进 `development-plan.md` §11.9.5 提示） |
+| 101 | 观测 | **`stage.warnings` 混着对象与字符串**：既有条目是 `{...}` 对象，本轮新增的契约告警是字符串 → 前端（目前不读该字段）一旦要展示就得先兼容两种形状 | `run-muv6y60o-uesqy` 的 `storyboard.warnings`：8 条对象 + 2 条字符串 | 改进 | 后端 / 前端 | 待讨论 |
+
+### 本轮定性
+
+**病根不是"功能少"，而是"同一个概念在不同层有多套定义"**：阶段集合（gate/registry/前端三份）、"工作流"一词（五种所指）、生成提交链（三条）、画布事实（浏览器与服务端双轨）。
+**因此本轮把口径统一放在"改功能"之前**：`domain-contract.md` §3.9 已按 registry 重写为七段口径，`prd.md` 数据边界已按 D13 修正，术语统一为 **阶段 / 跑批 / 模板 / 画布**。
+
+### 不在本轮处理（等拍板）
+
+- P2 四页唯一职责表、P4 本期验收是否只锁"B 包能出"、P5 是否补 Agent 流水线工具、P6 外部 API 口径、P7 BR 草稿 A–F 的正式结论 —— 见 `platform-positioning.md` §6。
+- **D14 定档前不写画布侧代码**（会被 #98 挡着，属无效工）。
