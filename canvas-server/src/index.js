@@ -29,7 +29,8 @@ import { forwardToLlm, chat as llmChat, externalProviders } from "./providers/ll
 // 提示词策略层的语言适配出口（DeepSeek）：流水线入队前用它把「仅英文有官方依据」的模型提示词英文化。
 import { llmCall as promptLlmCall } from "./llm-client.js";
 import { createPromptApi } from "./prompt-api.js";
-import { createImageEnqueue, filterJobs } from "./workbench-jobs.js";
+import { compileWorkbenchPrompt, createImageEnqueue, filterJobs } from "./workbench-jobs.js";
+import { sanitizePrompt } from "./prompt-sanitize.js";
 import { createLocalRunner } from "./generate.js";
 import { probeRunningHub, listRunningHubModels, runRunningHubJob } from "./providers/runninghub.js";
 import { createProbeCache } from "./probe-cache.js";
@@ -328,7 +329,32 @@ async function submitGeneration(kind, body) {
         const meta = { ...(body.meta && typeof body.meta === "object" ? body.meta : {}) };
         if (adapted.sizeAdjust) meta.sizeAdjust = adapted.sizeAdjust;
         if (adapted.durationAdjust) meta.durationAdjust = adapted.durationAdjust;
-        return local.submit({ ...body, params: adapted.params, meta, kind });
+        // 画布/API 直连路径此前**完全不做提示词编译**（只有生图工作台 /api/images/enqueue 与影视流水线做），
+        // 于是「按所选模型重写 + 英文化 + negativeClause 的『不要 X 改写进正向』」全部缺失：
+        // 实测「不要出现任何文字、字幕、logo」原样进了正向提示词，模型反而在招牌上画出一堆伪字。
+        // 这里补齐**同一条编译链**（prompt-compiler.js 的逐模型编译器：qwen-image-2.1 / krea2 / flux，generic 兜底）。
+        const params = { ...adapted.params };
+        if (typeof params.PROMPT === "string") params.PROMPT = sanitizePrompt(params.PROMPT);
+        const warnings = [];
+        if (kind === "image" && params.PROMPT) {
+            const slotImages = [];
+            if (params.INPUT_IMAGE) slotImages.push({ url: String(params.INPUT_IMAGE), kind: "input_image" });
+            for (let i = 1; i <= 9; i += 1) {
+                const url = params[`REF_IMAGE_${i}`];
+                if (url) slotImages.push({ url: String(url), kind: "reference" });
+            }
+            const compiled = await compileWorkbenchPrompt({
+                template,
+                prompt: params.PROMPT,
+                slotImages,
+                llmCall: promptLlmCall,
+                onWarning: (reason) => warnings.push(String(reason)),
+            });
+            params.PROMPT = compiled.prompt || params.PROMPT;
+            warnings.push(...(compiled.warnings || []));
+        }
+        if (warnings.length) meta.promptWarning = [...new Set(warnings)].join("；");
+        return local.submit({ ...body, params, meta, kind });
     }
 
     if (backend !== "runninghub") throw new Error(`未知生成后端：${backend}`);

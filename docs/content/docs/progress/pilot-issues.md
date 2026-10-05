@@ -1161,3 +1161,43 @@ image_files 共 22 条：
 - `canvas-server/README.md:363-364`（「超模型档位上限 → 吸附到最大合法档」）与 `docs/content/docs/progress/platform-flow.md:332`（`24×秒+3`）仍是旧口径。
 - **档位吸附（把 3s 抬到 5s）本轮不做**：证据表明模型接受任意网格帧，且它解决不了 Σ 超标（16 镜×5s = 80s 依然 ≠ 30s 骨架）。若产品坚持「镜头只能 5/10/15」，应作为**项目级可选开关、默认关**。
 - Ref2VA 的 `detailed_description` 官方要求 350–500 英文词，改写被截断时由 `llm-client` 抛错兜住 → 安全回落中文同步稿 + warning；真实成功率待跑一镜视频时观察。
+
+
+---
+
+## 第七轮（提示词策略层倒查 · 同一镜头 9 模板编译对比｜2026-10-05）
+
+> **跑法（全一手）**：真实页面动线（CDP 真点，私有 tab）+ 同一镜头对 9 个模板**逐个真编译**（`POST /api/prompt/compile`，走真实 DeepSeek 调用）+ 翻历史真实 job 取证。
+> **基线**：run `run-murvf1vq-aqyqm`（项目 `prj_01M3ZZ2MJVQ2TJBRY1K3B0HBXF`），样本镜头 `sh17`。
+> **本轮触发**：产品负责人「把规则交给一个统一的提示词出口，用户只管提内容要求」——倒查官方提示词要求后发现实现把「按官方规范改写」窄化成了「翻译」。
+
+| # | 阶段 | 现象 | 一手证据 | 严重度 | 影响面 | 状态 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 82 | 04 关键帧 | **一半模型没有模型适配**：Z-Image / Boogu / Wan-Animate 走通用兜底编译器，**不从结构化事实编译**，产出只剩一句画面文字子句 | 同镜头真编译：`img_qwen21_t2i` **3273 字符** / `video_h3_i2v` **1068 字符**，而 `img_zimage_artistic` **88** / `img_boogu_outfit_edit` **88** / `video_wan_animate` **88** 字符。88 字符全文 = `on-screen text rendered verbatim: ticket text "末班车" at … in 黄底黑字…`（人物/动作/场景/景别/运镜/光线**全部缺失**）。根因：`compileGenericPrompt` 只吃 `legacyBody/basePrompt`（分镜手写稿），无结构化事实入口。落盘 `/root/cp_bench/compile_one_shot.json` | 严重 | 技能与提示词 | 待讨论 |
+| 83 | 04 关键帧 | **官方 PE 改写器自造生产事实（光照/时间）** | 风格锚点明写「暖色路灯与冷调夜色的对比」，PE 稿却输出 `shot outdoors … in **flat, overcast daylight**`（夜景 → 阴天平光日光）。同 `compile_one_shot.json` | 严重 | 技能与提示词 | 待讨论 |
+| 84 | 04 关键帧 | **官方 PE 改写器把「必须逐字渲染的画面文字」写成不可读** | 同稿：`its horizontal plate carrying two lines of Chinese characters **too small and too out of focus to read**`，而本镜 `textOverlays` 要求渲染「末班车」。`aspectRatioConflict` 同类护栏目前**只覆盖画幅**，未覆盖时间/光照/文字可见性 | 严重 | 技能与提示词 | 待讨论 |
+| 85 | 04 关键帧 | **编辑模板用的是文生图的改写器**（官方 PE-I2I 从未被调用） | `prompt-compiler.js:1425` / `:1504` 调 `rewritePrompt` 只传 `{ promptsDir }`，**缺 `peTask`/`qwenEdit`/`task`** → `prompt-rewriter.js:203-207` 变体选择器恒返回 `pe_t2i`。后果：编辑稿按 T2I 规则**强制英文**（官方 PE-I2I 明文要求「用户指令中文 → 描述中文」），且官方编辑规范（属性解耦/只改点名属性/身份为不变量/`<image1>` 多图标签）**一条都没喂** | 严重 | 后端 / 技能与提示词 | 待讨论 |
+| 86 | 跨阶段 | **改写触发条件被窄化成「翻译」**：`translate_to === 'en'` 才进改写分支 → 官方双语模型（Boogu/Z-Image/Wan）的改写器永远不可达 | `prompt-compiler.js:1447`；19 模板逐个干跑：`img_boogu_outfit_edit` / `video_wan_animate` / `img_zimage_artistic` 的 `rewriterId` 有映射但 `meta.llm = null`（未触发）。入库 5 套官方改写器资产，实际只有 Qwen-2.1 PE 真正在跑 | 严重 | 后端 | 待讨论 |
+| 87 | 04 关键帧 | **一级块中文 + 二级块英文 = 中英混写**（对只吃英文的 Krea2 / FLUX.1） | `img_krea2_artistic` 真编译 364 字符：`写实电影感…；画幅：9:16（竖屏构图，严格保持，不得改成横屏）；on-screen text rendered verbatim: …；Medium close-up static shot. …`。一级块由 `aspectRatioClauseCn`/`overlayClauseCn` 产出中文 | 一般 | 技能与提示词 | 待讨论 |
+| 88 | 04 关键帧 | **光照要素声明白纸黑字、编译器不产出** | `model-prompt-rules.json` 的 `prompt_tier_policy.tier_two` 明确含 `lighting`；`prompt-compiler.js` 全文无「从 shot/scene 取光线事实」的代码（grep `lighting/光线` 仅命中 H3 的 I2VA 固定保真句与注释）。`cameraSpec` 有 `lens/aperture/focus` 但无光线字段，`scene.time`/内外景未被消费 | 一般 | 技能与提示词 | 待讨论 |
+| 89 | 04 关键帧 | **UI 缺「换个模型再出一张」，候选也不能切换 selected**（PRD §3.3 明确要求） | i18n `projects.*.candidates.regenerate`（zh-CN.ts:952）与 `selectPending`「切换待后端接口」（:953）**存在**，`grep` 全前端**零引用**；`components/keyframe-board.tsx` 候选区只有「归档」。**后果：产品负责人无法在界面上切换模型对比** | 严重 | 前端 | 待讨论 |
+| 90 | 04 关键帧 | **门禁死锁**：老 run 无 `casting` 阶段 → `keyframe`/`audio` 永远不可运行 | `GET /api/pipeline/runs/run-murvf1vq-aqyqm/gates` → `keyframe.ready=false, reason="请先完成 casting（流水线里没有这个阶段）"`；而 `GET /api/pipeline/stages` **有** casting。页面「运行「关键帧」」按钮因此不可用，老项目永久卡死 | 阻断 | 后端 | 待讨论 |
+| 91 | 04 关键帧 | **门禁文案把内部 bug 甩给用户** | 页面原文：「服务端门禁：请先完成 casting（流水线里没有这个阶段）」 | 一般 | 前端 / 后端 | 待讨论 |
+| 92 | 04 关键帧 | **模板不校验输入图**：`img_qwen21_edit` 无底图仍被选中 → 大面积失败 | 真实 run 候选里成片失败，页面逐镜显示「失败 模板 img_qwen21_edit 缺少参数：INPUT_IMAGE」（镜头 2/3/4/5/6/7/9/10/11/12/13/14/15/16 均有） | 严重 | 后端 | 待讨论 |
+| 93 | 04 关键帧 | 候选区噪音：每镜 8~10 条「已取消」 | 页面「镜头候选 17 镜 · 107 张」，逐镜统计里「已取消」条数远超成功条数 | 一般 | 前端 | 待讨论 |
+| 94 | 04 关键帧 | 模板名文案缺分隔符 | `components/keyframe-board.tsx:126-127` 渲染为「模板img_qwen21_edit」（`模板` 与值之间无空格） | 改进 | 前端 | 待讨论 |
+| 95 | 首屏 | 旧 `index.html` 缓存引用已删 bundle → **首屏白屏** | CDP 实测浏览器加载 `/assets/index-CF1j-wzH.js` → **404**（当前 `dist` 引用 `index-BL7CfG5.js`），`body.innerText.length = 0`，`Page.reload{ignoreCache:true}` 后恢复。`curl` 响应头已有 `cache-control: no-cache`。**是否仅 CDP 环境复现待验** | 一般 | 前端 / 网关 | 待验证 |
+
+### 本轮定性（与 #85/#86 同源）
+
+**病根是把「官方改写器」当成一个整体，没有按官方自己的任务分工与用途去分派。**
+官方资产其实有两类用途——**翻译**与**扩写/增强**；任务也分两类——**文生图**与**编辑**。
+现行实现把「改写」等同「翻译」（`translate_to==='en'`）、把「Qwen PE」等同「一套」（不分 PE-T2I/PE-I2I），
+于是双语模型整类跳过、编辑链路的官方规范从未生效。
+
+### 产品负责人已拍板的改造方向（2026-10-05）
+
+1. **所有模型统一从结构化事实编译** —— 通用兜底也吃 `shot/scene/characters/style/slots`，不再把命交给「分镜有没有手写那句」
+2. **要素自动补全（含光照）** —— 从 `scene.time` + 内景外景 + 风格锚点推导光线/时间要素，凑不齐**显式标缺，不编**
+3. **一级块按目标语言输出** —— 只吃英文的模型，风格锚点/画幅/文字子句全给英文，消除中英混写
+4. **事实锁扩围** —— 画幅之外，把**时间 / 光照 / 画面文字可见性**也标成「不可改写事实」并加反向校验，被反写则整稿弃用
