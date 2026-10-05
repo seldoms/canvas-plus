@@ -212,18 +212,27 @@
 
 > 本表冻结「阶段 ID」：门禁、流水线 registry、前端工作区三处**共用同一套命名**，实现逐字对齐，不得改名、不得引入同义别名。
 > 落点：服务端门禁 `canvas-server/src/gates.js` 的 `GATE_STAGES`、流水线 `skills/registry.json` 的 run 阶段、前端 `web/src/pages/projects/workspaces.ts` 的 `stage` 字段。
+>
+> **口径（2026-10-05 统一）**：run 阶段共 **7 段** —— `script → storyboard → design → casting → keyframe → audio → assembly`（`assembly` 与 `audio` 并行：`audio.requires` 不含 keyframe，`assembly.requires` 不含 audio）。`plan` 是**项目级**、`post` 是**交付阶段**，二者都**不是** run 的 stages。此前"五段/六段"的说法一律作废。
 
 | 阶段 ID | 名称 | 归属 | 上游依赖 requires | 说明 |
 | --- | --- | --- | --- | --- |
 | `plan` | 规划 | 项目级（非 run 阶段） | — | 阶段 0 规划产物 `Project.plan`；不是流水线 run 的一段 |
-| `script` | 剧本 | run 阶段（01） | `plan` | 小说 → 剧本（`skills/01-novel-to-script`），可产出可选 `planSuggestion` |
+| `script` | 剧本 | run 阶段（01） | — | 小说 → 剧本（`skills/01-novel-to-script`），可产出可选 `planSuggestion` |
 | `storyboard` | 分镜 | run 阶段（02） | `script` | 剧本 → 分镜表 |
 | `design` | 资产（服化道） | run 阶段（03） | `script` | 角色 / 场景 / 道具造型；**取代旧名 `assets`** |
-| `keyframe` | 关键帧 | run 阶段（04） | `storyboard`、`design` | 生成型阶段：出关键帧图像 |
-| `assembly` | 片段生成 | run 阶段（05） | `keyframe` | 生成型阶段：片段 → 成片；**取代旧名 `video`** |
-| `post` | 后期 | 交付阶段 | `assembly` | 成片交付 / 后期（音字等）；非 01~05 五段式 run 阶段的默认组成 |
+| `casting` | 角色定妆 | run 阶段（03b） | `script`、`design` | 只做两件事：定脸（复用 design 的正脸特写/三视图）+ 定声音（平台音色库命名音色）；产身份卡；**未确认不得进下游** |
+| `keyframe` | 关键帧 | run 阶段（04） | `storyboard`、`design`、`casting` | 生成型阶段：出关键帧图像 |
+| `audio` | 配音 | run 阶段（06） | `storyboard`、`design`、`casting` | 逐条对白 Cue 出音（TTS）；与 keyframe 并行，**不阻塞 assembly** |
+| `assembly` | 片段合成拼接 | run 阶段（05） | `keyframe` | 生成型阶段：片段 → 成片；**取代旧名 `video`** |
+| `post` | 后期 | 交付阶段（非 run 阶段） | `assembly` | 成片交付 / 后期（音字等）；不在 `skills/registry.json` 的 stages 里 |
 
 **旧名作废**：`assets`（→ `design`）、`video`（→ `assembly`）不再作为阶段 ID 使用；门禁匹配、前端 `stage` 字段、`ReviewNote.stage` 均以本表为准。
+
+> ⚠️ **代码侧仍有三处与本表不一致（已登记，待修；见 `platform-positioning.md` C9）**：
+> ① `gates.js:GATE_STAGES` 仍是 `plan/script/storyboard/design/keyframe/assembly/post` —— **缺 `casting` 与 `audio`**；
+> ② 前端兜底 `use-pipeline-run.ts` 写 `design.requires=["storyboard"]`，与 registry 的 `["script"]` 冲突；
+> ③ 前端 `workspaces.ts` 已用 `casting`，与 `gates.js` 的阶段集合对不上。
 
 **Tool**（一次可执行能力）
 

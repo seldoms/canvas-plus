@@ -18,6 +18,8 @@
 | 技能（`skills/`）与提示词模板的**内容取向** | 本文件「内容创作规范」 |
 | 文档 / CHANGELOG / todo / pending-test | 本文件「文档规范」 |
 | **产品边界**（哪些自己做、哪些交剪映/达芬奇等外部工具） | `docs/content/docs/progress/production-boundary-and-roadmap.md` |
+| **平台定位、页面职责、数据边界、画布是否接入服务端事实链** | `docs/content/docs/progress/platform-positioning.md`（含 D13/D14 决策与待拍板清单） |
+| **术语与口径**（阶段/跑批/模板/画布 的区分；段数=七段；模板=19；素材不出本机而文本可上云） | `docs/content/docs/progress/platform-positioning.md` §2.3 + `domain-contract.md` §3.9 |
 | 已登记问题与拍板记录 | `docs/content/docs/progress/pilot-issues.md` |
 | **给子 agent 派活与验收** | `docs/content/docs/progress/subagent-acceptance-checklist.md` |
 | 借鉴外部先进经验 | `docs/content/docs/progress/spec-kit-adoption-plan.md` |
