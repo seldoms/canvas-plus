@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -157,6 +157,22 @@ test("HTTP 集成：/api/projects/:id 下的集/场/镜、资产与门禁路由"
     const root = mkdtempSync(join(tmpdir(), "canvas-episodes-http-"));
     const skillsDir = join(root, "skills");
     mkdirSync(skillsDir, { recursive: true });
+    // M0：项目门禁的 run 阶段由 registry 注入（gates.js 不再内置）；冻结七段镜像 skills/registry.json。
+    writeFileSync(
+        join(skillsDir, "registry.json"),
+        JSON.stringify({
+            version: 1,
+            stages: [
+                { id: "script", title: "剧本", skill: "01-script", requires: [], produces: "script" },
+                { id: "storyboard", title: "分镜", skill: "02-storyboard", requires: ["script"], produces: "storyboard" },
+                { id: "design", title: "服化道", skill: "03-design", requires: ["script"], produces: "design" },
+                { id: "casting", title: "角色定妆", skill: "03b-casting", requires: ["script", "design"], produces: "casting" },
+                { id: "keyframe", title: "关键帧", skill: "04-keyframes", requires: ["storyboard", "design", "casting"], produces: "keyframes" },
+                { id: "audio", title: "配音", skill: "06-audio", requires: ["storyboard", "design", "casting"], produces: "audio" },
+                { id: "assembly", title: "片段合成", skill: "05-clip-assembly", requires: ["keyframe"], produces: "clips" },
+            ],
+        }),
+    );
     t.after(() => {
         delete process.env.CANVAS_SERVER_DATA_DIR;
         delete process.env.CANVAS_SERVER_SKILLS_DIR;
@@ -194,8 +210,11 @@ test("HTTP 集成：/api/projects/:id 下的集/场/镜、资产与门禁路由"
         assert.equal(asset.bindingId, "char_1");
 
         const gates = await jget(`/api/projects/${project.id}/gates`);
-        assert.equal(gates.gates.length, 7);
-        assert.ok(gates.gates.some((gate) => gate.stageId === "keyframe"));
+        assert.deepEqual(
+            gates.gates.map((gate) => gate.stageId),
+            ["plan", "script", "storyboard", "design", "casting", "keyframe", "audio", "assembly", "post"],
+            "门禁输出 = plan + registry 七段 + post（M0 registry 派生）",
+        );
 
         const ctx = await jget(`/api/projects/${project.id}/context?include=refs`);
         assert.deepEqual(Object.keys(ctx).sort(), ["assetRefs", "canvasIds", "episodes", "gates", "project", "runIds"]);

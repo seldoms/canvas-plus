@@ -31,8 +31,8 @@ export type DeliverableId = string;
  * 状态机（见契约 §5）
  * ------------------------------------------------------------------ */
 
-/** Stage：pending | running | partial | done | error | canceled（终态 done/error/canceled；partial 非终态） */
-export type StageStatus = "pending" | "running" | "partial" | "done" | "error" | "canceled";
+/** Stage：pending | running | partial | done | error | canceled | blocked（blocked = 被门禁挡住、尚未运行；2026-10-06 追加，见契约 §5.1 末尾登记） */
+export type StageStatus = "pending" | "running" | "partial" | "done" | "error" | "canceled" | "blocked";
 
 /** Job：queued | running | done | error | canceled */
 export type JobStatus = "queued" | "running" | "done" | "error" | "canceled";

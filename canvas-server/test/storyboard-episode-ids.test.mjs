@@ -7,6 +7,7 @@ import { test } from "node:test";
 import { normalizeShotEpisodeIds } from "../src/production-contracts.js";
 import { createPipeline } from "../src/pipeline.js";
 import { createProjects } from "../src/projects.js";
+import { loadRegistry } from "../src/skills.js";
 
 /**
  * 「集」成为可分区事实键（development-plan §3.1）：
@@ -177,7 +178,8 @@ function setup(t) {
     const env = makeEnv();
     t.after(() => rmSync(env.root, { recursive: true, force: true }));
     // 项目存储与流水线共用同一 dataDir —— 与 index.js 接线一致（projects.createProjects({ dataDir: config.dataDir })）。
-    const projects = createProjects({ dataDir: env.config.dataDir });
+    // M0：门禁阶段由调用方注入（与本测试 registry 同源），gates.js 不再内置阶段数组。
+    const projects = createProjects({ dataDir: env.config.dataDir, stages: loadRegistry(env.skillsDir).stages });
     return { env, projects, pipeline: build(env, projects) };
 }
 

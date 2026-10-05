@@ -182,7 +182,11 @@ function requireArray(value, name) {
     return value;
 }
 
-export function createProjects({ dataDir } = {}) {
+/**
+ * `stages`：run 阶段定义（`skills/registry.json` 的 stages，由路由层注入），仅用于 gates/context 的门禁派生；
+ * 缺省时门禁输出只剩 plan / post 两项（gates.js 不再手写阶段数组，见 M0 / pilot-issues #96）。
+ */
+export function createProjects({ dataDir, stages } = {}) {
     const projectsDir = ensureDir(join(dataDir, "projects"));
     const archiveDir = ensureDir(join(dataDir, "projects-archive"));
 
@@ -467,14 +471,14 @@ export function createProjects({ dataDir } = {}) {
             canvasIds: project.canvasIds || [],
         };
         if (!includeRefs) return base;
-        return { ...base, assetRefs: project.assetRefs || [], gates: deriveGates({ project, episodes: gateEpisodes(id, project) }) };
+        return { ...base, assetRefs: project.assetRefs || [], gates: deriveGates({ project, episodes: gateEpisodes(id, project), stages }) };
     }
 
     /** 阶段门禁：据 Project + 各集详情纯推导（不落盘）；项目不存在返回 null。 */
     function gates(id) {
         const project = get(id);
         if (!project) return null;
-        return deriveGates({ project, episodes: gateEpisodes(id, project) });
+        return deriveGates({ project, episodes: gateEpisodes(id, project), stages });
     }
 
     // 集/场/镜与源版本由独立存储模块实现；这里只做转发，保持「一个实体一个模块」。

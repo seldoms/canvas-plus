@@ -234,7 +234,7 @@
 **阶段 ID 权威命名（冻结，唯一权威）**
 
 > 本表冻结「阶段 ID」：门禁、流水线 registry、前端工作区三处**共用同一套命名**，实现逐字对齐，不得改名、不得引入同义别名。
-> 落点：服务端门禁 `canvas-server/src/gates.js` 的 `GATE_STAGES`、流水线 `skills/registry.json` 的 run 阶段、前端 `web/src/pages/projects/workspaces.ts` 的 `stage` 字段。
+> 落点：流水线 `skills/registry.json` 的 run 阶段（**唯一来源**）、服务端门禁 `canvas-server/src/gates.js`（`deriveGates` 由调用方注入 registry stages 派生）、前端 `web/src/pages/projects/workspaces.ts` 的 `stage` 字段。
 >
 > **口径（2026-10-05 统一）**：run 阶段共 **7 段** —— `script → storyboard → design → casting → keyframe → audio → assembly`（`assembly` 与 `audio` 并行：`audio.requires` 不含 keyframe，`assembly.requires` 不含 audio）。`plan` 是**项目级**、`post` 是**交付阶段**，二者都**不是** run 的 stages。此前"五段/六段"的说法一律作废。
 
@@ -252,10 +252,10 @@
 
 **旧名作废**：`assets`（→ `design`）、`video`（→ `assembly`）不再作为阶段 ID 使用；门禁匹配、前端 `stage` 字段、`ReviewNote.stage` 均以本表为准。
 
-> ⚠️ **代码侧仍有三处与本表不一致（已登记，待修；见 `platform-positioning.md` C9）**：
-> ① `gates.js:GATE_STAGES` 仍是 `plan/script/storyboard/design/keyframe/assembly/post` —— **缺 `casting` 与 `audio`**；
-> ② 前端兜底 `use-pipeline-run.ts` 写 `design.requires=["storyboard"]`，与 registry 的 `["script"]` 冲突；
-> ③ 前端 `workspaces.ts` 已用 `casting`，与 `gates.js` 的阶段集合对不上。
+> ✅ **代码侧对齐登记（2026-10-06，M0 已修，pilot-issues #96/#97）**：
+> ① `gates.js` 的 `GATE_STAGES` 已删除，run 七阶段的 id / requires 改由调用方从 `skills/registry.json` 注入派生（`plan`/`post` 仍为非 run 阶段，分守输出首/末项）；
+> ② 前端 `use-pipeline-run.ts` 的 `FALLBACK_STAGES` 兜底数组已删除，网关不可达时保持 unknown、不放行；
+> ③ 前端 `workspaces.ts` 的 `requires` 已逐字对齐 registry（受 `canvas-server/test/stage-alignment.test.mjs` 静态断言约束）。
 
 **Tool**（一次可执行能力）
 
@@ -345,6 +345,12 @@
 
 **终态判定**：`done` | `error` | `canceled` 为终态；**`partial` 非终态**（表示部分成功、待续跑）。
 旧行为「入队即 `done`」作废（development-plan §4.1、§6 陷阱 5）。
+
+**2026-10-06 追加（只增不改）**：值集追加 `blocked` —— 语义 = 「被门禁挡住、尚未运行」。出处：`pipeline.js` 的
+`enforceCastingGate`（角色定妆未确认时把 keyframe / audio 置 `blocked`，并写 `blockedReason` / `blockedBy="casting"` /
+逐角色缺失清单；全部确认后精确解除、回落 `pending`）。`blocked` 不是执行失败（那是 `error`），不属于终态；
+门禁解除后回到 `pending`，再由显式启动进入 `running`。机器可读枚举同步：`canvas-server/src/contracts.js`
+的 `STAGE_STATUS.BLOCKED`、`web/src/types/domain.ts` 的 `StageStatus`。
 
 ### 5.2 Job（任务，语义不变）
 

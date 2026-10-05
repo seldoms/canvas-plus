@@ -6,6 +6,7 @@ import { test } from "node:test";
 
 import { createPipeline } from "../src/pipeline.js";
 import { createProjects } from "../src/projects.js";
+import { loadRegistry } from "../src/skills.js";
 
 /**
  * #48 关键帧投影回归：keyframe 阶段的 frames[] 必须幂等投影进 Project 侧
@@ -153,7 +154,10 @@ const gateById = (gates) => Object.fromEntries(gates.map((gate) => [gate.stageId
 function setup(t) {
     const env = makeEnv();
     t.after(() => rmSync(env.root, { recursive: true, force: true }));
-    const projects = createProjects({ dataDir: env.config.dataDir });
+    // M0：门禁阶段由调用方注入；本测试 registry 只到 keyframe，补一个 assembly 定义（requires=keyframe），
+    // 与测试断言的 assembly 门禁对齐（gates.js 不再内置阶段数组）。
+    const stages = [...loadRegistry(env.skillsDir).stages, { id: "assembly", title: "片段合成", requires: ["keyframe"] }];
+    const projects = createProjects({ dataDir: env.config.dataDir, stages });
     const jobs = fakeJobs();
     const pipeline = createPipeline({
         config: env.config,

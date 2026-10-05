@@ -2,6 +2,8 @@
 
 ## Unreleased
 
++ [修复] **阶段集合三处对齐 registry（M0）**：`gates.js` 删除手写的 `GATE_STAGES`，项目门禁的 run 七阶段（script→storyboard→design→casting→keyframe→audio→assembly）改由调用方从 `skills/registry.json` 注入派生，门禁输出补齐此前缺失的 casting / audio 两段（plan/post 仍为非 run 阶段，分守输出首/末项）；前端流水线页删除旧 `FALLBACK_STAGES` 兜底数组，网关不可达时保持 unknown、不再用本地数组放行；项目工作区 `requires` 逐字对齐 registry（修掉 design 误挂 storyboard 等冲突）。新增 `stage-alignment.test.mjs` 契约测试静态锁死三处一致；`STAGE_STATUS` 与前端 `StageStatus` 追加 `blocked`（被门禁挡住、尚未运行，与 casting 门禁实现对齐）。
+
 + [文档] 开发蓝图升级为 v3：冻结 Shot/Take/Candidate/Approval 关系、H3 continuation chain 与 Skill/Compiler/Provider 分层，新增 M3.5/M3.6 与 M6 真实闭环验收，并同步续接字段、分叉恢复、接缝 QC 和 Provider 能力门槛。
 
 + [文档] 新增外部方案与短剧 Skill 调研：确认 H3 Motion Context 是可恢复的 latent 续接节点而非真正无限长生成，优先验证 MIT 原生 latent-tail Continuation，并登记 H3 chain 数据字段、接缝质量门禁、Agent/短剧 Skill 借鉴方向与许可证边界。

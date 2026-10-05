@@ -90,7 +90,7 @@ const llm = {
 const uploads = ensureDir(safeJoin(config.dataDir, "uploads"));
 
 // Project 服务端内核：data/projects/<id>/ 落盘，路由见下方 /api/projects 系列。
-const projects = createProjects({ dataDir: config.dataDir });
+const projects = createProjects({ dataDir: config.dataDir, stages: loadRegistry(config.skillsDir).stages || [] });
 
 // P0-f 制作圣经与确认锁：实体落 data/projects/<id>/bibles/（独立于 projects.js 内核，仅复用其 ULID）。
 const bibles = createBibleStore({ dataDir: config.dataDir, ulid: projects.ulid });
@@ -1032,6 +1032,8 @@ router.post("/api/projects", async (req, res) => {
 /**
  * 门禁推导（P0-f 接线）：与 projects.gates 同样的项目+集视图，但把**该项目的圣经实体**一并喂给 deriveGates，
  * 使「存在但未 approved/locked」的圣经能阻断对应阶段；项目无该实体时行为与旧版逐字相同（向后兼容）。
+ * M0：run 阶段集合由 `skills/registry.json` 注入（单一来源，pilot-issues #96）；registry 读失败按空处理，
+ * 输出只剩 plan / post 两项，绝不因门禁读盘失败而 500。
  */
 function projectGates(id) {
     const project = projects.get(id);
@@ -1044,7 +1046,13 @@ function projectGates(id) {
     } catch {
         bibleRows = []; // 项目刚建、bibles 目录尚未生成时按空处理，绝不因门禁读盘失败而 500。
     }
-    return deriveGates({ project, episodes, bibles: bibleRows });
+    let stages = [];
+    try {
+        stages = loadRegistry(config.skillsDir).stages || [];
+    } catch {
+        stages = [];
+    }
+    return deriveGates({ project, episodes, bibles: bibleRows, stages });
 }
 
 router.get("/api/projects/:id/context", (req, res, { params, url }) => {

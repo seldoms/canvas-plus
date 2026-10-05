@@ -443,7 +443,7 @@
 - 证据：`pipeline.js:234-242/1428`、`gateway.ts:296-311`、#5。
 
 **C7｜改进｜前端硬编码清单与后端真实清单并存 → #17**
-- `FALLBACK_STAGES`（`use-pipeline-run.ts:43-49`）与后端 `registry.stages` 并存，后端加阶段前端看不到。
+- ~~`FALLBACK_STAGES`（`use-pipeline-run.ts:43-49`）与后端 `registry.stages` 并存，后端加阶段前端看不到。~~ ✅ 已修（2026-10-06，M0）：兜底数组删除，阶段清单只认 `/api/pipeline/stages`，不可达保持 unknown 不放行。
 - `BUILTIN_GATEWAY_SCRIPTS`（`gateway.ts:361-369`）硬编码模板→脚本映射。
 - `gatewayDefaultModels` 偏爱列表（qwen / `img_krea2_artistic` / `video_h3_i2v`）硬编码（`gateway.ts:424-438`）。
 - `domain.ts` ↔ `contracts.js` ↔ `domain-contract.md` **三处手抄同一枚举**（StageStatus/JobStatus/AssetRole…），无生成、无校验。

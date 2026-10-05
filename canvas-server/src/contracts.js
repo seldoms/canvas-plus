@@ -16,7 +16,11 @@ export const ID_PREFIX = Object.freeze({
     slot: "slot_",
 });
 
-/** Stage 状态机：pending | running | partial | done | error | canceled（终态 done/error/canceled；partial 非终态）。 */
+/**
+ * Stage 状态机：pending | running | partial | done | error | canceled | blocked
+ * （终态 done/error/canceled；partial 非终态；blocked = 被门禁挡住、尚未运行，2026-10-06 追加，
+ * 出处 pipeline.js enforceCastingGate，见契约 §5.1 末尾登记）。
+ */
 export const STAGE_STATUS = Object.freeze({
     PENDING: "pending",
     RUNNING: "running",
@@ -24,6 +28,7 @@ export const STAGE_STATUS = Object.freeze({
     DONE: "done",
     ERROR: "error",
     CANCELED: "canceled",
+    BLOCKED: "blocked",
 });
 
 /** Job 状态机：queued | running | done | error | canceled（语义不变）。 */

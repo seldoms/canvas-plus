@@ -41,14 +41,6 @@ export type PipelineStageView = {
     generating: boolean;
 };
 
-const FALLBACK_STAGES: Array<{ id: string; requires: string[] }> = [
-    { id: "script", requires: [] },
-    { id: "storyboard", requires: ["script"] },
-    { id: "design", requires: ["storyboard"] },
-    { id: "keyframe", requires: ["design"] },
-    { id: "assembly", requires: ["keyframe"] },
-];
-
 const POLL_INTERVAL_MS = 5000;
 /** 阶段进度轮询：打的是轻量 progress.json（几十字节），不是内嵌整本小说、可达数 MB 的 run.json。 */
 const PROGRESS_POLL_MS = 3000;
@@ -151,13 +143,20 @@ export function usePipelineRun() {
     // 探测到与配置不同的可用地址时回写配置，产物 URL 等其它消费方也一并修正。
     useEffect(() => {
         let alive = true;
+        // 阶段定义唯一来源是服务端 registry（M0：本地兜底数组已删）；拉不到就保持空，不臆造阶段放行。
+        // stageIds 给下方「自动绑定默认模型」用：stages 是 state，这条链路等不到重渲染。
+        let stageIds: string[] = [];
         void probeGatewayBaseUrl().then((base) => {
             if (!alive) return;
             setGwBase(base);
             const store = useConfigStore.getState();
             if (base && base !== store.config.gatewayUrl) store.updateConfig("gatewayUrl", base);
             void fetchGatewayStages(base)
-                .then(setStages)
+                .then((list) => {
+                    if (!alive) return;
+                    stageIds = list.map((stage) => stage.id);
+                    setStages(list);
+                })
                 .catch(() => setStages([]));
             // ComfyUI 模板清单（含 family）：候选条换模型下拉只从中过滤本阶段同族模板，不另建一套清单
             void fetchGatewayProviders(base)
@@ -177,7 +176,7 @@ export function usePipelineRun() {
                         const preferred = models.find((name) => /qwen3\.8/i.test(name)) || models.find((name) => /qwen/i.test(name)) || models[0];
                         if (!preferred) return;
                         setStageModels((current) => {
-                            const missing = FALLBACK_STAGES.map((s) => s.id).filter((id) => !current[id]);
+                            const missing = stageIds.filter((id) => !current[id]);
                             if (!missing.length) return current;
                             const next = { ...current };
                             for (const id of missing) next[id] = preferred;
@@ -363,14 +362,10 @@ export function usePipelineRun() {
         return () => window.removeEventListener("beforeunload", warn);
     }, [runningStage]);
 
-    const stageList = useMemo<GatewayStageInfo[]>(() => {
-        if (stages.length) return stages;
-        return FALLBACK_STAGES.map((item) => ({ id: item.id, title: i18n.t(`pipeline.stages.${item.id}`), skill: item.id, requires: [...item.requires], produces: [] }));
-    }, [stages]);
-
+    // 阶段清单只认服务端 registry：/api/pipeline/stages 不可达时保持空（unknown、不放行，#59 语义）。
     const views = useMemo<PipelineStageView[]>(
         () =>
-            stageList.map((meta) => {
+            stages.map((meta) => {
                 const stage = run?.stages?.[meta.id] ?? null;
                 const jobIds = [...collectJobIds(stage?.output)];
                 const stageJobs = jobIds.map((id) => jobs[id]).filter((job): job is GatewayJob => Boolean(job));
@@ -384,7 +379,7 @@ export function usePipelineRun() {
                     generating: jobIds.some((id) => isPending(jobs[id])),
                 };
             }),
-        [jobs, run, stageList],
+        [jobs, run, stages],
     );
 
     /**

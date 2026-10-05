@@ -17,6 +17,13 @@ import { deriveGates } from "../src/gates.js";
 
 const gateById = (gates) => Object.fromEntries(gates.map((gate) => [gate.stageId, gate]));
 
+// M0：gates.js 不再手写阶段数组，门禁派生需注入 stages（形状同 registry.json 的 stages）；
+// 本套件只关心 bible 映射到的 plan / script / design / post，注入最小两段即可。
+const STAGES = [
+    { id: "script", title: "剧本", requires: [] },
+    { id: "design", title: "服化道", requires: ["script"] },
+];
+
 function setup() {
     const root = mkdtempSync(join(tmpdir(), "canvas-bible-wiring-"));
     const projects = createProjects({ dataDir: root });
@@ -25,7 +32,7 @@ function setup() {
     return { root, projects, store, project };
 }
 
-const gatesFor = (projects, store, project) => deriveGates({ project: projects.get(project.id), episodes: [], bibles: store.list(project.id) });
+const gatesFor = (projects, store, project) => deriveGates({ project: projects.get(project.id), episodes: [], bibles: store.list(project.id), stages: STAGES });
 
 test("接线①：存在未批准的 SeriesBible → script 阶段被阻且 reason 可读", (t) => {
     const { root, projects, store, project } = setup();
@@ -75,8 +82,8 @@ test("接线③：项目无该圣经实体 → 不阻断，门禁与旧版逐字
     t.after(() => rmSync(root, { recursive: true, force: true }));
 
     const view = projects.get(project.id);
-    const legacy = deriveGates({ project: view, episodes: [] }); // 旧调用签名
-    const withEmpty = deriveGates({ project: view, episodes: [], bibles: [] });
+    const legacy = deriveGates({ project: view, episodes: [], stages: STAGES }); // 不传 bibles（P0-f 前的调用形态）
+    const withEmpty = deriveGates({ project: view, episodes: [], bibles: [], stages: STAGES });
     const withRealList = gatesFor(projects, store, project); // store.list 返回 []
 
     assert.deepEqual(withEmpty, legacy, "传空 bibles 与旧签名逐字相同");

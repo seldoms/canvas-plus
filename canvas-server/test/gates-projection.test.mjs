@@ -6,6 +6,7 @@ import { test } from "node:test";
 
 import { createPipeline } from "../src/pipeline.js";
 import { createProjects } from "../src/projects.js";
+import { loadRegistry } from "../src/skills.js";
 
 /**
  * 门禁投影缺口回归：① 脚本 episodes/scenes → Project.episodes（storyboard done）② 服化道产物 → AssetRef（design done）。
@@ -114,7 +115,8 @@ function setup(t) {
         rmSync(env.root, { recursive: true, force: true });
         rmSync(projectsRoot, { recursive: true, force: true });
     });
-    const projects = createProjects({ dataDir: projectsRoot });
+    // M0：门禁阶段由调用方注入（与本测试的 registry 同源），gates.js 不再内置阶段数组。
+    const projects = createProjects({ dataDir: projectsRoot, stages: loadRegistry(env.skillsDir).stages });
     return { env, projects };
 }
 
