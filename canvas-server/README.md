@@ -178,9 +178,10 @@ body：`{ template, family, shot, scene?, characters?, style?, slots?, overlays?
 | GET | `/api/pipeline/runs` | → `{ runs: Run[] }` |
 | GET | `/api/pipeline/runs/:id` | → `{ run: Run }`。**响应内嵌整本小说，222 万字的书有 6.4MB，不要拿它轮询进度** |
 | GET | `/api/pipeline/runs/:id/progress` | → `{ progress: Progress \| null, inflight }`。轻量（几十字节），**轮询进度只用这个** |
-| POST | `/api/pipeline/runs/:id/steps/:stage/run` | 运行单步，body 可选 `{ model?, provider?, resume? }` → **`202 { run, inflight }`** |
+| GET | `/api/pipeline/runs/:id/log` | → `{ log: LogEntry[] }`，追加式审计日志的尾部（`?limit=`，默认 200 / 上限 2000）；写的是 `runs/<id>/log.jsonl` |
+| POST | `/api/pipeline/runs/:id/steps/:stage/run` | 运行单步，body 可选 `{ model?, provider?, resume?, actor? }` → **`202 { run, inflight }`** |
 | POST | `/api/pipeline/runs/:id/steps/:stage/cancel` | 取消正在执行的阶段 → `{ canceled, stage, ranMs }`；没有在执行的任务返回 **409** |
-| POST | `/api/pipeline/runs/:id/steps/:stage/input` | 人工修订该步产物 → `{ run }` |
+| POST | `/api/pipeline/runs/:id/steps/:stage/input` | 人工修订该步产物，body `{ output, actor? }` → `{ run }`；产物未过契约校验返回 **400** |
 | POST | `/api/pipeline/runs/:id/steps/casting/confirm` | 逐角色确认角色定妆：body `{ characterId, face?, voice?, speaker?, language?, design?, speed?, previewArtifactId? }` → `{ run, character, readiness }`；确认齐后自动解除 `keyframe`/`audio` 的 `casting` 阻断 |
 | GET | `/api/tts/voices` | 平台音色库（命名音色 + 语种枚举，来自 147 `TDQwen3TTSCustomVoice` 只读探测）→ `{ template, voices: string[], speakers, languages, defaultSpeaker, defaultLanguage, source }`；前端选项唯一来源 |
 | POST | `/api/tts/preview` | 试听：body `{ speaker, design?, language?, speed?, text? }` → `{ url, artifactId, jobId, speaker, language, text, ms }`；复用 147 提交/轮询/产物登记链路，音色/语种非法 400，147 忙/失败回可读 502 |
@@ -193,6 +194,16 @@ body：`{ template, family, shot, scene?, characters?, style?, slots?, overlays?
 实测 222 万字 / 163 块 / 83 分钟 ≈ 30.5s/块）。
 
 `Progress` = `{ runId, stage, phase: "map"\|"reduce"\|"single"\|"done"\|"failed", done?, total?, label?, reused?, resumed?, avgMsPerChunk?, etaMs?, error?, startedAt?, finishedAt?, updatedAt? }`
+
+`LogEntry` = `{ at, actor, op: "run.create"\|"stage.begin"\|"stage.output"\|"stage.edit"\|"stage.error"\|"assemble.done", stage?, hash?, ok?, message? }`
+—— 追加式审计（`runs/<id>/log.jsonl`，一行一条，永不重写）。`hash` 是产物内容指纹（sha256 前 16 位）：
+阶段本身没有 revision，用它回答「这一步写进去的到底是哪一版产物」。`actor` 由调用方传（网页端 `web`、Agent 自带名字），缺省 `local`。
+
+**阶段产物契约校验（P0-g 结构 + 引用完整性）**：每次产物写入前跑 `stage-artifact-check.js`（纯函数）：
+引用断裂（分镜 `sceneId` 不在剧本、关键帧 `shotId` 不在分镜、片段 `keyframeId` 不存在、配音 `shotId` 不在分镜、分集 `sceneIds` 不在剧本）、
+id 重复、帧角色非法、配音时间倒挂判 **error → 阶段 `error`、产物不落盘、下游拿不到 done**；
+可选增强字段缺失、artifact/job 为空、`keyframeId=null`、上游集合缺失一律放过或只写 `stage.warnings`（避免误拦）。
+人工修订走同一道门（不合法 400）；成片已落盘时只记 warning，**不因结构问题作废已合成的成片**。
 
 阶段 id 固定为：`script`（小说→剧本）、`storyboard`（分镜拆解）、`design`（服化道）、`casting`（角色定妆）、`keyframe`（关键帧）、`audio`（配音）、`assembly`（片段合成拼接）。
 
@@ -305,6 +316,8 @@ body：`{ template, family, shot, scene?, characters?, style?, slots?, overlays?
 | `src/providers/comfy.js` | `createComfyClient(config)`, `probeComfy(config)`, `listComfyCapabilities(config)`, `listTemplates(workflowsDir)` | 见下 |
 | `src/probe-cache.js` | `createProbeCache({ ttlMs, timeoutMs, now })` | 外部依赖探测缓存（#68）：`define(name, { baseUrl, probe, pending })` / `get(name)`（同步读快照，未就绪给 pending、过期 stale-while-revalidate）/ `warmAll()` / `refreshAll()`。并发、短超时、永不阻塞调用方 |
 | `src/skills.js` | `loadSkills(skillsDir)`, `loadRegistry(skillsDir)`, `readSkill(skillsDir, id)` | 见下 |
+| `src/stage-artifact-check.js` | `checkStageArtifact(stageId, output, upstream)`, `formatArtifactErrors(errors)` | 阶段产物契约校验（P0-g 结构 + 引用完整性）：纯函数、零 IO，返回 `{ ok, errors, warnings }`，每条 `{ code, path, message }` |
+| `src/run-log.js` | `appendRunLog(runsDir, runId, entry)`, `readRunLog(runsDir, runId, limit)`, `runLogPath(runsDir, runId)`, `RUN_LOG_FILE` | 追加式审计日志（`runs/<id>/log.jsonl`）：只追加不重写；写入失败只 warn 不抛 |
 | `src/pipeline.js` | `createPipeline({ config, skillsDir, jobs, comfy, llm, llmCall, runJob })` | 见下 |
 | `src/model-registry.js` | `createModelRegistry({ dataDir })`（含 `textModels()`）, `computeAvailable()`, `textModelIds()`, `asModelIdList()`, `categoryForTemplate()`, `runtimeForProvider()`, `buildTemplateScript()`, `buildGroups()`, `composeAlias()`, `fallbackBaseTask()`, `DEFAULT_ALIASES`, `DEFAULT_BASE_TASK` | 模型注册表存储内核：CRUD + `sync`（含存量幂等回填、渠道 `meta.baseUrl`/`meta.models` 刷新）+ `available` + 分组聚合；**文本模型清单的唯一读源**（`textModelIds` → `渠道名::模型名`）；分类/runtime 映射与默认 base/task 别名表（契约 v1） |
 
@@ -409,10 +422,11 @@ createPipeline({ config, skillsDir, jobs, comfy, llm, llmCall, runJob }) => {
   executeStage(begun, runOptions?): Promise<Run>,       // 异步：真正跑 LLM 与入队，落终态与进度
   runStage(runId, stageId, runOptions?): Promise<Run>,  // = executeStage(beginStage(...))，同步等完（测试用）
   stageProgress(runId): Progress | null,                // 只读 progress.json，不碰数 MB 的 run.json
+  runLog(runId, limit?): LogEntry[],                    // 只读 runs/<id>/log.jsonl 尾部（默认 200 / 上限 2000）
   reconcileRunning(): string[],                         // 启动收敛遗留 running 阶段，返回被收敛的 runId
   setStageInput(runId, stageId, patch): Run,
 }
-// runOptions = { model?, provider?, signal?, resume? }
+// runOptions = { model?, provider?, signal?, resume?, actor? }
 ```
 
 HTTP 路由走 `beginStage` + 不 await 的 `executeStage`（立刻 202）；`runStage` 保留给测试与内部同步调用。
@@ -420,6 +434,9 @@ HTTP 路由走 `beginStage` + 不 await 的 `executeStage`（立刻 202）；`ru
 执行必须在响应后继续（否则长任务会把连接拖断）。
 
 每个阶段由 `skills/<skill>/SKILL.md` 定义提示词与输出 JSON 契约；阶段间产物以 JSON 传递，落盘在 `data/runs/<runId>/<stage>.json`。
+产物落盘前统一过 `src/stage-artifact-check.js`（结构 + 引用完整性）：error 级问题 → 阶段 `error`、产物不落盘、下游拿不到 `done`；
+warning 级问题 → 写进 `stage.warnings`（可选增强字段缺失、未出图/未产出、上游集合缺失都只提示，不误拦）。
+每次写入都会向 `data/runs/<runId>/log.jsonl` **追加**一条审计记录（谁、何时、哪个阶段、产物指纹、成功与否），可用 `GET /api/pipeline/runs/:id/log` 读取。
 
 文本型阶段统一走 `askJson`：要求严格 JSON → 解析失败带原文重试一次（`temperature: 0`）→ 再失败抛错并把模型原文挂在 `error.raw`（`runStage` 会截前 4000 字写进 `stage.error`，同时把 `stage.output` 置 `null`）。
 生成型阶段（`keyframe` / `assembly`）由编排器**回填** `template` / `jobId` / `artifactUrl` / `status`，**不采信模型编造的这些字段**；尺寸等默认值来自 `config.pipeline.image*` / `video*`，模板要求的全部 token 必须覆盖到（有契约回归测试用真实模板锁住）。

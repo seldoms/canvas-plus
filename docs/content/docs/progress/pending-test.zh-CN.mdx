@@ -186,3 +186,5 @@ Canvas Agent 配置权限
 - **自动重试的任务保留资源类别**：某镜自动重试后，`GET /api/jobs?kind=video` 仍应能列出该 lip-sync 重试任务（此前因 `kind` 为 null 而查不到）。
 - **`run.json` 改为原子写**：在阶段收尾时杀掉服务，重启后该 run 仍应出现在 `GET /api/pipeline/runs` 里（此前截断的 JSON 会让它从列表里静默消失）。
 - **部署脚本**：`scripts/remote-deploy.sh` 生成的关键帧候选数已由 2 改为 4，走它部署不会再打回「单镜一次出 ≥4 张」这条产品约束。
+- **阶段产物契约校验会真的拦住坏产物**：故意让某一阶段产出引用断裂的产物（例如把分镜 `shots[0].sceneId` 改成剧本里不存在的 `sc9`，或让片段 `keyframeId` 指向不存在的帧），该阶段应变成 `error` 而不是 `done`，`stage.error` 要写清「产物未通过契约校验」、问题位置（如 `shots[0].sceneId`）与原因；`data/runs/<id>/<stage>.json` **不应落盘**，下游阶段应被挡住（原因指向上游未完成）。反向确认不误拦：正常的七段产物、尚未出图的关键帧（`artifactUrl` 为空）、`keyframeId=null`、上游集合缺失都应照常 `done` 或只出现 `stage.warnings`。人工「修订产物」提交引用断裂的 JSON 应返回 400 且不覆盖磁盘上已有产物；成片合成阶段即使产物有问题也只写 warning，**不得作废已经合成好的成片**。
+- **审计日志可读、可追责**：创建 run、开始/完成/失败某阶段、人工修订产物、成片合成都会往 `data/runs/<id>/log.jsonl` 追加一行（一行一个 JSON，永不重写）。`GET /api/pipeline/runs/:id/log?limit=20` 应返回尾部若干条，字段含 `at` / `actor`（网页端为 `web`，缺省 `local`）/ `op` / `stage` / `hash`（产物指纹）/ `ok` / `message`；同一阶段重跑两次，`hash` 应能区分两版产物；未知 runId 返回空数组而不是报错。日志写入失败（例如目录不可写）只能告警，**不得让阶段失败**。

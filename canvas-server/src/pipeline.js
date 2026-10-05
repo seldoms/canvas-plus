@@ -12,6 +12,10 @@ import { durationsForTemplate, durationMetaForTemplate, frameCountForDuration, s
 import { artifactUrl, ensureDir, safeJoin } from "./files.js";
 import { listTemplates } from "./providers/comfy.js";
 import { buildShotBinding, missingRefsReport, resolveSelectedArtifacts, stableSeed } from "./reference-lock.js";
+// 运行审计日志（追加式 log.jsonl）：谁、何时、对哪个阶段做了什么、产物指纹是什么。
+import { appendRunLog, readRunLog } from "./run-log.js";
+// 阶段产物契约校验（P0-g）：结构 + 引用完整性，纯函数。
+import { checkStageArtifact, formatArtifactErrors } from "./stage-artifact-check.js";
 // 分辨率/画幅：片段 / 关键帧 / 成片尺寸一律经 sizeForRatio 从「模型官方规格登记表」取（不再实时按比例推导）。
 import { sizeForRatio } from "./sizes.js";
 // 平台音色库（唯一事实源）：命名音色 + 语种枚举 + 音色适配（原 pipeline 内的 qwen3Language/qwen3Speaker 已搬到这里）。
@@ -581,7 +585,7 @@ export function createPipeline({ config, skillsDir, jobs, comfy, llm, llmCall, r
         };
     }
 
-    function create({ novel, title, options } = {}) {
+    function create({ novel, title, options, actor } = {}) {
         const text = String(novel ?? "").trim();
         if (!text) throw new Error("缺少小说正文 novel");
         const id = `run-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
@@ -608,6 +612,11 @@ export function createPipeline({ config, skillsDir, jobs, comfy, llm, llmCall, r
         const saved = saveRun(run);
         // 服务端幂等把 run 追加进项目 runIds（未注入/未绑项目时为空操作）：修掉「从流水线页建的 run 不进 runIds」的缺口。
         if (projectId) attachRunToProject(projectId, saved.id);
+        appendRunLog(runsDir, saved.id, {
+            op: "run.create",
+            actor: actorOf({ actor }),
+            message: `创建流水线「${saved.title}」${projectId ? `（项目 ${projectId}）` : ""}`,
+        });
         return saved;
     }
 
@@ -618,6 +627,9 @@ export function createPipeline({ config, skillsDir, jobs, comfy, llm, llmCall, r
         const stage = requireStage(run, def);
         const body = patch && typeof patch === "object" ? patch : {};
         if (body.output !== undefined) {
+            // 人工改产物同样要过契约校验：引用断裂的产物放进流水线，下游只会更晚炸。
+            const artifactCheck = checkStageArtifact(def.id, body.output, stageUpstreamOf(run));
+            if (!artifactCheck.ok) throw gateError(formatArtifactErrors(artifactCheck.errors), 400);
             stage.output = body.output;
             stage.status = "done";
             stage.error = undefined;
@@ -625,6 +637,14 @@ export function createPipeline({ config, skillsDir, jobs, comfy, llm, llmCall, r
             // 人工修订 casting 产物（含确认）后立即重算 casting 门禁：确认齐 → 解除 keyframe/audio 的阻断。
             if (def.id === "casting") enforceCastingGate(run);
             saveOutput(run.id, def.id, body.output);
+            appendRunLog(runsDir, run.id, {
+                op: "stage.edit",
+                actor: actorOf(body),
+                stage: def.id,
+                hash: outputHash(body.output),
+                ok: true,
+                message: `人工修订 ${def.title} 产物`,
+            });
         } else {
             stage.inputs = { ...stage.inputs, ...body };
         }
@@ -2291,6 +2311,28 @@ ${JSON.stringify(partials, null, 2)}
         return createHash("sha256").update(JSON.stringify(facts)).digest("hex");
     }
 
+    /** 产物内容指纹：阶段本身没有 revision，日志里用它对账"这一版产物到底是哪一版"。 */
+    function outputHash(value) {
+        try {
+            return createHash("sha256").update(JSON.stringify(value)).digest("hex").slice(0, 16);
+        } catch {
+            return null;
+        }
+    }
+
+    /** 审计日志的 actor：HTTP 层可带 actor，缺省记 local（本工具是单机自用，不假装有账号体系）。 */
+    const actorOf = (source) => String(source?.actor ?? "local").trim() || "local";
+
+    /** 上游产物按阶段 id 暴露给产物契约校验（只给真正产出的那几段）。 */
+    function stageUpstreamOf(run) {
+        const upstream = {};
+        for (const def of registry.stages) {
+            const output = run.stages?.[def.id]?.output;
+            if (output !== undefined && output !== null) upstream[def.id] = output;
+        }
+        return upstream;
+    }
+
     /**
      * 提示词快照版本：编译器产物语义变化时（例如 H3 追加 [untranslated] 标记并开始消费结构化 rewrite）
      * 必须 +1。否则旧 run 已落盘的快照会因 template 与事实指纹都没变而永远命中，新编译器刷新不出来。
@@ -3205,12 +3247,14 @@ ${JSON.stringify(partials, null, 2)}
             clearProgress(runId);
         }
         saveRun(run);
+        appendRunLog(runsDir, run.id, { op: "stage.begin", actor: actorOf(runOptions), stage: def.id, message: `开始 ${def.title}` });
         return { run, def, stage, provider };
     }
 
     /** 异步部分：真正跑 LLM 与入队，并把终态与进度落盘。 */
     async function executeStage(begun, runOptions = {}) {
         const { run, def, stage, provider } = begun;
+        const actor = actorOf(runOptions);
         const estSecondsPerChunk = Number(pipelineConfig.estSecondsPerChunk) > 0 ? Number(pipelineConfig.estSecondsPerChunk) : 31;
         try {
             // 生成型阶段重排前的产物，用于继承旧候选（重跑只追加候选，不清空旧 jobId/artifactUrl）。
@@ -3271,6 +3315,12 @@ ${JSON.stringify(partials, null, 2)}
                 // D1：Σ段时长必须等于骨架，缺一段显式报出（写进 stage.warnings 与 stage.skeleton）。
                 validateSkeleton(run, stage);
             }
+            // P0-g 产物契约校验（结构 + 引用完整性）：未过即抛 → 阶段置 error、产物不落盘，
+            // 不让坏产物继续流向下游并污染 Project 事实（development-plan.md §4.1「契约校验通过才 done」）。
+            // 放在 storyboard 归一之后，避免拿归一前的 episodeId 产生噪声告警。
+            const artifactCheck = checkStageArtifact(def.id, stage.output, stageUpstreamOf(run));
+            if (!artifactCheck.ok) throw gateError(formatArtifactErrors(artifactCheck.errors), 409);
+            for (const problem of artifactCheck.warnings) appendStageWarning(stage, `${problem.code}：${problem.message}`);
             // 剧本阶段产出即回填 01 的设定建议，并把剧本事实（script + episodes/scenes）投影进 Project（都幂等；未绑项目时为空操作）。
             if (def.id === "script") {
                 backfillPlanSuggestion(run, stage.output);
@@ -3279,7 +3329,17 @@ ${JSON.stringify(partials, null, 2)}
             }
             // 服化道阶段产出即把角色/场景登记为项目 AssetRef（幂等；未接线时为旧行为），供 design 门禁判 done。
             if (def.id === "design") registerDesignAssets(run, stage);
-            if (stage.output !== undefined && stage.output !== null) saveOutput(run.id, def.id, stage.output);
+            if (stage.output !== undefined && stage.output !== null) {
+                saveOutput(run.id, def.id, stage.output);
+                appendRunLog(runsDir, run.id, {
+                    op: "stage.output",
+                    actor,
+                    stage: def.id,
+                    hash: outputHash(stage.output),
+                    ok: stage.status !== "error",
+                    message: `${def.title}产物已落盘（${stage.status}）`,
+                });
+            }
             // 成功也保留一条进度：只有真正 done 才写 phase:"done"，生成型阶段等 Job 终态时写 running，
             // 否则前端会误判「跑完了」而停止轮询一个还在生成的任务。
             writeProgress(run.id, { ...(readProgress(run.id) || {}), runId: run.id, stage: def.id, phase: stage.status === "done" ? "done" : "running", finishedAt: stage.finishedAt });
@@ -3289,6 +3349,7 @@ ${JSON.stringify(partials, null, 2)}
             stage.finishedAt = nowIso();
             // 失败/取消时保留进度：前端才能显示「跑到第几块停的」，用户也才知道 resume 能省下多少
             writeProgress(run.id, { ...(readProgress(run.id) || {}), runId: run.id, stage: def.id, phase: "failed", error: stage.error });
+            appendRunLog(runsDir, run.id, { op: "stage.error", actor, stage: def.id, ok: false, message: stage.error });
         }
         return saveRun(run);
     }
@@ -3543,6 +3604,18 @@ ${JSON.stringify(partials, null, 2)}
         }
         recomputeStage(stage, run);
         if (stage.output !== undefined && stage.output !== null) saveOutput(run.id, def.id, stage.output);
+        // 成片已经落盘，不因结构问题作废（那会把用户等出来的几分钟 ffmpeg 白扔）；有问题记 warn 供排查。
+        const filmCheck = checkStageArtifact("assembly", stage.output, stageUpstreamOf(run));
+        for (const problem of filmCheck.warnings) appendStageWarning(stage, `${problem.code}：${problem.message}`);
+        if (!filmCheck.ok) appendStageWarning(stage, `成片已产出，但产物契约有 ${filmCheck.errors.length} 处问题：${filmCheck.errors.map((item) => item.code).join("、")}`);
+        appendRunLog(runsDir, run.id, {
+            op: "assemble.done",
+            actor: actorOf(options),
+            stage: def.id,
+            hash: outputHash(stage.output),
+            ok: assembly.status === "done",
+            message: assembly.status === "done" ? `成片已生成：${assembly.url || ""}` : String(assembly.error || "成片合成失败"),
+        });
         writeProgress(run.id, { runId: run.id, stage: def.id, phase: assembly.status === "done" ? "done" : "failed", label: assembly.status === "done" ? "成片已生成" : assembly.error, finishedAt: assembly.finishedAt });
         return saveRun(run);
     }
@@ -3556,6 +3629,9 @@ ${JSON.stringify(partials, null, 2)}
 
     /** 轻量进度：只读 progress.json（几十字节），不返回内嵌整本小说的 run.json（可达数 MB）。 */
     const stageProgress = (runId) => readProgress(runId);
+
+    /** 审计日志读取（追加式 log.jsonl 的尾部）：前端与 Agent 用它回答"这一步是谁、什么时候、改了哪一版"。 */
+    const runLog = (runId, limit) => readRunLog(runsDir, String(runId), limit);
 
     /** 分镜阶段的骨架对齐结果（D1）；未跑过分镜返回 null。 */
     const skeletonOf = (runId) => get(runId)?.stages?.storyboard?.skeleton || null;
@@ -3596,5 +3672,5 @@ ${JSON.stringify(partials, null, 2)}
         return fixed;
     }
 
-    return { stages, list, get, create, estimate: estimateFor, runStage, beginStage, executeStage, stageProgress, reconcileRunning, setStageInput, projectJob, bindJobs, cancelStage, beginAssemble, executeAssemble, assembleStage, beginRegenerate, executeRegenerate, stageGate, stageGates, patchStageShot, durationPolicy, skeletonOf, castingReadinessOf, enforceCastingGate, confirmCasting };
+    return { stages, list, get, create, estimate: estimateFor, runStage, beginStage, executeStage, stageProgress, runLog, reconcileRunning, setStageInput, projectJob, bindJobs, cancelStage, beginAssemble, executeAssemble, assembleStage, beginRegenerate, executeRegenerate, stageGate, stageGates, patchStageShot, durationPolicy, skeletonOf, castingReadinessOf, enforceCastingGate, confirmCasting };
 }

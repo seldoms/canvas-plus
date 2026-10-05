@@ -868,6 +868,14 @@ router.get("/api/pipeline/runs/:id/progress", (req, res, { params }) => {
 });
 
 /**
+ * 审计日志（追加式 `runs/<id>/log.jsonl` 的尾部）：回答「这一步是谁、什么时候、写了哪一版产物」。
+ * 与 run.json 分开存放，读取不必拖着内嵌整本小说的 run.json（同 progress 的理由）。
+ */
+router.get("/api/pipeline/runs/:id/log", (req, res, { params, url }) => {
+    sendJson(res, 200, { log: pipeline.runLog(params.id, url.searchParams.get("limit")) });
+});
+
+/**
  * 运行单步。**立刻返回 202**，工作在后台跑。
  * 此前是 `await pipeline.runStage(...)` 的阻塞式 POST：一个 163 块 / 83 分钟的阶段用一个 HTTP
  * 请求扛，隧道、反向代理、浏览器都会在几分钟内掐断连接，前端 await 抛错后按钮复位、页面
