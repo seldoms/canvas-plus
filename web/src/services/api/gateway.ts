@@ -198,7 +198,34 @@ export type GatewayPipelineRun = {
     stages: Record<string, GatewayRunStage>;
 };
 
-export type GatewayGenerateBody = { template: string; params: Record<string, unknown>; name?: string };
+/** Job 归属元数据（domain-contract §3.10）：全部可选，有值才写；服务端原样透传并补 source/toolId。 */
+export type GatewayJobMeta = {
+    runId?: string;
+    stageId?: string;
+    itemId?: string;
+    projectId?: string;
+    episodeId?: string;
+    sceneId?: string;
+    shotId?: string;
+    slotId?: string;
+    toolId?: string;
+    workflowRunId?: string;
+    /** 幂等键：一次业务意图一个 key；同 key 重放返回原 Job，不重复入队。 */
+    idempotencyKey?: string;
+    [key: string]: unknown;
+};
+
+export type GatewayGenerateBody = {
+    template: string;
+    params: Record<string, unknown>;
+    name?: string;
+    /** 提交来源（project|canvas|workbench|api），缺省服务端按 "api" 记账。 */
+    source?: string;
+    /** 归属与幂等元数据（§3.10/§6.2 登记项），服务端透传进 job.meta。 */
+    meta?: GatewayJobMeta;
+    /** 调用方标识（预留，§6.2 画布接入登记项），本轮服务端不消费。 */
+    origin?: string;
+};
 export type GatewayStageInputPatch = { inputs?: Record<string, unknown>; output?: unknown };
 
 /** 网关地址以配置里的「本地网关地址」为准，显式传参时优先。 */

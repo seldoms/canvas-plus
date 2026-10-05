@@ -20,6 +20,7 @@ import { existsSync } from "node:fs";
 import { safeJoin } from "./files.js";
 import { extractTokens } from "./providers/comfy.js";
 import { compilerFor, compilePromptForTemplate, compilePromptForTemplateAsync, stripUntranslatedMarker } from "./prompt-compiler.js";
+import { createGenerationIntent, submitGenerationIntent } from "./generation-intent.js";
 import { readJson, sendError, sendJson } from "./http.js";
 
 /** 单次提交最多几张（与前端 generationCount 的 1..10 对齐）。 */
@@ -139,11 +140,13 @@ export function filterJobs(list, { kind, status, limit, since } = {}) {
 
 /**
  * 装配生图入队入口。
- * @param {{ config: object, jobs: object, runJob: Function, registry?: object, llmCall?: Function, compileTimeoutMs?: number }} deps
+ * @param {{ config: object, jobs: object, runJob: Function, registry?: object, llmCall?: Function,
+ *           getProject?: Function, compileTimeoutMs?: number }} deps
  *   jobs/runJob 必须来自 index.js 的**同一**本地 GPU 队列与执行体（复用 comfy 提交链路）。
  *   llmCall 为 llm-client 的 string 版出口（DeepSeek）；缺失时保持同步结构稿（离线/测试）。
+ *   getProject 用于统一 submit 链的项目上下文校验（body.projectId 非空时项目须存在）。
  */
-export function createImageEnqueue({ config, jobs, runJob, registry, llmCall, compileTimeoutMs = DEFAULT_COMPILE_TIMEOUT_MS } = {}) {
+export function createImageEnqueue({ config, jobs, runJob, registry, llmCall, getProject, compileTimeoutMs = DEFAULT_COMPILE_TIMEOUT_MS } = {}) {
     if (typeof jobs?.enqueue !== "function") throw new Error("createImageEnqueue 需要注入 jobs.enqueue（必须复用现有任务队列）");
     if (typeof runJob !== "function") throw new Error("createImageEnqueue 需要注入 runJob（复用现有 comfy 执行体）");
 
@@ -201,25 +204,27 @@ export function createImageEnqueue({ config, jobs, runJob, registry, llmCall, co
             const jobParams = { ...params, BATCH: 1, PROMPT: compiled.prompt, OUTPUT_PREFIX: `canvas/${id}` };
             const seed = Number(body?.seed);
             if (Number.isFinite(seed)) jobParams.SEED = seed;
-            const job = jobs.enqueue(
-                {
-                    id,
-                    kind: "image",
-                    backend: "local",
-                    template,
+            // 统一提交链（M1）：编译结果经 params.PROMPT 传入 → submit 跳过重复编译；
+            // 归属字段（source/projectId/toolId）由 submit 统一写入 meta。
+            const intent = createGenerationIntent({
+                source: "workbench",
+                kind: "image",
+                context: { projectId: body?.projectId },
+                toolId: template,
+                template,
+                params: jobParams,
+                options: {
+                    jobId: id,
                     name: `${template}-${index + 1}`,
-                    params: jobParams,
                     meta: {
-                        source: "image-workbench",
                         template,
                         prompt,
                         referenceCount: references.length,
-                        ...(body?.projectId ? { projectId: String(body.projectId) } : {}),
                         ...(compiled.warnings.length ? { promptWarning: compiled.warnings.join("；") } : {}),
                     },
                 },
-                runJob,
-            );
+            });
+            const job = await submitGenerationIntent(intent, { jobs, runner: runJob, registry, getProject });
             created.push({ id: job.id, status: job.status, template });
         }
         return { jobs: created };

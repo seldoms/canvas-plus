@@ -30,6 +30,7 @@ import { forwardToLlm, chat as llmChat, externalProviders } from "./providers/ll
 import { llmCall as promptLlmCall } from "./llm-client.js";
 import { createPromptApi } from "./prompt-api.js";
 import { compileWorkbenchPrompt, createImageEnqueue, filterJobs } from "./workbench-jobs.js";
+import { createGenerationIntent, submitGenerationIntent } from "./generation-intent.js";
 import { sanitizePrompt } from "./prompt-sanitize.js";
 import { createLocalRunner } from "./generate.js";
 import { probeRunningHub, listRunningHubModels, runRunningHubJob } from "./providers/runninghub.js";
@@ -170,7 +171,7 @@ async function runJob(job, ctx) {
 }
 
 // 生图工作台入队入口：复用同一条本地 GPU 队列与同一执行体（不另起并行），入队前由后端编译提示词。
-const imageEnqueue = createImageEnqueue({ config, jobs, runJob, registry, llmCall: promptLlmCall });
+const imageEnqueue = createImageEnqueue({ config, jobs, runJob, registry, llmCall: promptLlmCall, getProject: (id) => projects.get(id) });
 
 const pipeline = createPipeline({
     config,
@@ -307,6 +308,31 @@ async function resolveInputImageForSubmit(template, params) {
     }
 }
 
+/**
+ * submit 路径的提示词编译出口（决策 C 折中：调用方已编译则 PROMPT 直接进 params，不经过这里）。
+ * 原始提示词由调用方放进 intent.facts.prompt；编译失败的降级与 warning 语义沿用 compileWorkbenchPrompt。
+ */
+async function compileIntentPrompt(intent) {
+    const raw = typeof intent.facts?.prompt === "string" ? intent.facts.prompt : "";
+    if (!raw) return { prompt: null, warnings: [] };
+    const slotImages = [];
+    if (intent.params.INPUT_IMAGE) slotImages.push({ url: String(intent.params.INPUT_IMAGE), kind: "input_image" });
+    for (let i = 1; i <= 9; i += 1) {
+        const url = intent.params[`REF_IMAGE_${i}`];
+        if (url) slotImages.push({ url: String(url), kind: "reference" });
+    }
+    const warnings = [];
+    const compiled = await compileWorkbenchPrompt({
+        template: intent.template,
+        prompt: raw,
+        slotImages,
+        llmCall: promptLlmCall,
+        onWarning: (reason) => warnings.push(String(reason)),
+    });
+    warnings.push(...(compiled.warnings || []));
+    return { prompt: compiled.prompt || raw, warnings };
+}
+
 /** 入队入口：默认本地 ComfyUI，显式传 backend:"runninghub" 时才走云端。提交前按资源类别做 canRun 校验。 */
 async function submitGeneration(kind, body) {
     const backend = String(body.backend || config.generation.defaultBackend || "local").trim();
@@ -329,32 +355,37 @@ async function submitGeneration(kind, body) {
         const meta = { ...(body.meta && typeof body.meta === "object" ? body.meta : {}) };
         if (adapted.sizeAdjust) meta.sizeAdjust = adapted.sizeAdjust;
         if (adapted.durationAdjust) meta.durationAdjust = adapted.durationAdjust;
+        const params = { ...adapted.params };
+        if (typeof params.PROMPT === "string") params.PROMPT = sanitizePrompt(params.PROMPT);
         // 画布/API 直连路径此前**完全不做提示词编译**（只有生图工作台 /api/images/enqueue 与影视流水线做），
         // 于是「按所选模型重写 + 英文化 + negativeClause 的『不要 X 改写进正向』」全部缺失：
         // 实测「不要出现任何文字、字幕、logo」原样进了正向提示词，模型反而在招牌上画出一堆伪字。
-        // 这里补齐**同一条编译链**（prompt-compiler.js 的逐模型编译器：qwen-image-2.1 / krea2 / flux，generic 兜底）。
-        const params = { ...adapted.params };
-        if (typeof params.PROMPT === "string") params.PROMPT = sanitizePrompt(params.PROMPT);
-        const warnings = [];
+        // 这里补齐**同一条编译链**（prompt-compiler.js 的逐模型编译器：qwen-image-2.1 / krea2 / flux，generic 兜底），
+        // 编译统一走 submit 路径：原始提示词进 facts.PROMPT 由 deps.promptCompiler 编译，已编译调用方不经过这里。
+        const facts = {};
         if (kind === "image" && params.PROMPT) {
-            const slotImages = [];
-            if (params.INPUT_IMAGE) slotImages.push({ url: String(params.INPUT_IMAGE), kind: "input_image" });
-            for (let i = 1; i <= 9; i += 1) {
-                const url = params[`REF_IMAGE_${i}`];
-                if (url) slotImages.push({ url: String(url), kind: "reference" });
-            }
-            const compiled = await compileWorkbenchPrompt({
-                template,
-                prompt: params.PROMPT,
-                slotImages,
-                llmCall: promptLlmCall,
-                onWarning: (reason) => warnings.push(String(reason)),
-            });
-            params.PROMPT = compiled.prompt || params.PROMPT;
-            warnings.push(...(compiled.warnings || []));
+            facts.prompt = params.PROMPT;
+            delete params.PROMPT;
         }
-        if (warnings.length) meta.promptWarning = [...new Set(warnings)].join("；");
-        return local.submit({ ...body, params, meta, kind });
+        const intent = createGenerationIntent({
+            source: body.source,
+            kind,
+            context: {
+                projectId: body.projectId ?? meta.projectId,
+                episodeId: meta.episodeId,
+                sceneId: meta.sceneId,
+                shotId: meta.shotId,
+                slotId: meta.slotId,
+                runId: meta.runId,
+                stageId: meta.stageId,
+            },
+            toolId: template,
+            template,
+            facts,
+            params,
+            options: { name: body.name, idempotencyKey: meta.idempotencyKey, meta },
+        });
+        return submitGenerationIntent(intent, { jobs, runner: runJob, getProject: (id) => projects.get(id), promptCompiler: compileIntentPrompt });
     }
 
     if (backend !== "runninghub") throw new Error(`未知生成后端：${backend}`);

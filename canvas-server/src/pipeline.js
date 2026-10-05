@@ -2597,13 +2597,31 @@ ${JSON.stringify(partials, null, 2)}
                 ? { ...plan.params, SEED: (Number(plan.params.SEED) + variant * 7919) % 2147483647 }
                 : plan.params;
         const promptWarning = [plan.warning?.reason, rewriteWarningOf(item)].filter(Boolean).join("；");
+        // M1 归属字段（契约 §3.10，有值才写）：projectId 取 run.options 过渡位，episodeId/sceneId/shotId 取 item 自有值，
+        // slotId 与关键帧投影的 generationSlots id 同规则（slot_<shotId>_<role>）。
+        // 幂等键 = runId+stageId+itemId+attempt（attempt 即本次唯一 jobId）：重跑必然是新 attempt → 新 key；
+        // 同一 attempt 的重复入队（重放）命中队列幂等索引，直接返回原 Job，不重复执行。
+        const shotId = item.shotId === undefined || item.shotId === null || item.shotId === "" ? null : String(item.shotId);
         const job = jobs.enqueue({
             id,
             kind: plan.kind,
             template: plan.template,
             name: item.id,
             params,
-            meta: { runId: run.id, stageId: def.id, itemId: item.id, ...(promptWarning ? { promptWarning } : {}) },
+            meta: {
+                runId: run.id,
+                stageId: def.id,
+                itemId: item.id,
+                source: "project",
+                ...(run.options?.projectId ? { projectId: String(run.options.projectId) } : {}),
+                ...(item.episodeId ? { episodeId: String(item.episodeId) } : {}),
+                ...(item.sceneId ? { sceneId: String(item.sceneId) } : {}),
+                ...(shotId ? { shotId } : {}),
+                ...(shotId && item.role ? { slotId: `slot_${shotId}_${item.role}` } : {}),
+                ...(plan.template ? { toolId: String(plan.template) } : {}),
+                idempotencyKey: `${run.id}:${def.id}:${item.id}:${id}`,
+                ...(promptWarning ? { promptWarning } : {}),
+            },
         }, runJob);
         if (!job) return null;
         item.candidates = [

@@ -896,12 +896,21 @@ test("regenerate：只给指定 item 追加一个候选，旧候选与其它 ite
     assert.notEqual(start.candidates.at(-1).jobId, beforeStart.candidates.at(-1).jobId, "新 jobId 不是旧 id");
     // ③ 其它 item 完全不动（回写过的 end 帧一条候选不增）
     assert.deepEqual(end, beforeEnd);
-    // 新任务确实入队，kind=image、template 为新值、沿用原 params 与 meta
+    // 新任务确实入队，kind=image、template 为新值、沿用原 params；meta 在既有归属上带 M1 归属字段（§3.10）
     const newJob = jobs.get(start.candidates.at(-1).jobId);
     assert.equal(newJob.kind, "image");
     assert.equal(newJob.template, "img-alt");
     assert.equal(newJob.params.PROMPT, "少女走进老屋，中景");
-    assert.deepEqual(newJob.meta, { runId: run.id, stageId: "keyframe", itemId: "sh1-start" });
+    assert.deepEqual(newJob.meta, {
+        runId: run.id,
+        stageId: "keyframe",
+        itemId: "sh1-start",
+        source: "project",
+        shotId: "sh1",
+        slotId: "slot_sh1_start",
+        toolId: "img-alt",
+        idempotencyKey: `${run.id}:keyframe:sh1-start:${newJob.id}`,
+    });
 });
 
 test("regenerate：assembly 阶段换 video 模板追加候选，错 family 模板被拒", async (t) => {

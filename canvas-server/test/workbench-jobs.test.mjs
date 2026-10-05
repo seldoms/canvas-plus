@@ -44,7 +44,7 @@ test("enqueue：count 拆成 N 个 kind=image 任务，复用同一队列与执�
         assert.equal(entry.spec.backend, "local");
         assert.equal(entry.spec.params.BATCH, 1);
         assert.ok(entry.spec.params.PROMPT.includes("A cinematic photo of a cat."), "PROMPT 应是后端编译结果");
-        assert.equal(entry.spec.meta.source, "image-workbench");
+        assert.equal(entry.spec.meta.source, "workbench");
         assert.match(entry.spec.params.OUTPUT_PREFIX, /^canvas\/image-/);
     }
     // 每个 job 的 OUTPUT_PREFIX 必须互不相同，避免同名产物在 ComfyUI 输出目录互相覆盖。

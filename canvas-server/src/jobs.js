@@ -46,6 +46,9 @@ function queueKeyOf(resourceClass) {
 export function createJobQueue({ dataDir, concurrency = 1, label = "job", classConcurrency = {}, resolveDevice } = {}) {
     const storePath = join(ensureDir(dataDir), "jobs.json");
     const jobs = new Map();
+    // 幂等键派生索引（决策 B）：meta.idempotencyKey → jobId。内存派生、随 jobs.json 持久化重建，
+    // 不单独落盘 —— 权威仍是每个 job 自己的 meta。
+    const idempotencyIndex = new Map();
     const controllers = new Map();
     const queues = new Map();
     const events = new EventEmitter();
@@ -80,6 +83,9 @@ export function createJobQueue({ dataDir, concurrency = 1, label = "job", classC
                     job.finishedAt = job.finishedAt || nowIso();
                 }
                 jobs.set(job.id, job);
+                // 启动回填幂等索引：重启后同 key 重放仍命中原 Job（含已被收敛成 error 的中断任务）。
+                const savedKey = typeof job?.meta?.idempotencyKey === "string" ? job.meta.idempotencyKey : "";
+                if (savedKey) idempotencyIndex.set(savedKey, job.id);
             }
         } catch (error) {
             console.error(`[${label}] 读取历史任务失败：${error.message}`);
@@ -131,6 +137,13 @@ export function createJobQueue({ dataDir, concurrency = 1, label = "job", classC
     }
 
     function enqueue({ id, kind, backend, template, name, params, meta, resourceClass, deviceId }, runner) {
+        // 幂等重放（决策 B）：同 meta.idempotencyKey 一律返回原 Job（含终态），
+        // 不改状态、不重复入队、不重复执行。key 由调用方按「一次业务意图一个 key」生成。
+        const idempotencyKey = typeof meta?.idempotencyKey === "string" ? meta.idempotencyKey.trim() : "";
+        if (idempotencyKey) {
+            const existingId = idempotencyIndex.get(idempotencyKey);
+            if (existingId && jobs.has(existingId)) return jobs.get(existingId);
+        }
         const resolvedClass = resourceClass || inferResourceClass({ kind, backend });
         const key = queueKeyOf(resolvedClass);
         // deviceId 优先用调用方显式传入；否则由接线方（注册表）按资源类别解析出「该在哪台设备排队」。
@@ -155,6 +168,7 @@ export function createJobQueue({ dataDir, concurrency = 1, label = "job", classC
             updatedAt: stamp,
         };
         jobs.set(id, job);
+        if (idempotencyKey) idempotencyIndex.set(idempotencyKey, id);
         queueOf(key).pending.push({ job, runner });
         persist();
         events.emit("change", job);

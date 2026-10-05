@@ -287,6 +287,12 @@
 
 > 服务端 `generate.js:143` 已透传 `body.meta`，画布侧 `GatewayGenerateBody` 尚缺这些字段（属 P0-a/P0-b 接线）。
 
+> **M1 落地登记（只增不改）**：
+> 1. 实现额外写入三个本表未列的字段：`source`（`project|canvas|workbench|api`，提交入口）、`slotId`（生成槽位，与关键帧投影的 `slot_<shotId>_<role>` 同规则）、`idempotencyKey`（幂等键，决策 B：同 key 重放一律返回原 Job 含终态，不重复入队/执行；索引由 `jobs.json` 存量 meta 在启动时回填，重启后仍成立）。
+> 2. `workflowRunId` 本轮未接线：尚无项目级工作流运行实体可引用，留待后续里程碑。
+> 3. 画布侧 `GatewayGenerateBody` 已补 `meta`/`origin` 可选类型（仅类型就位，前端不发新请求、零行为改动）。
+> 4. `context.projectId` 非空时统一提交链会校验项目真实存在，悬空引用在入队前拒绝（`409 PROJECT_NOT_FOUND`；`/api/generate/*` 路由现状统一回 400）。
+
 ### 3.11 Canvas（浏览器编辑表面，D1：原 `CanvasProject` 更名）
 
 > 画布保存在浏览器 localforage，是 Project 上下文里的编辑表面；生产事实在服务端（D3）。高频拖拽产生的大对象（nodes/connections/viewport/chatSessions）只存浏览器。
