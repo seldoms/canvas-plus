@@ -17,10 +17,10 @@ test("MCP 读取当前激活网页的画布", async (t) => {
     session.updateState(snapshot("canvas-second"), "second");
 
     session.activateClient("first");
-    assert.equal(field(await session.callTool("canvas_get_state", {}), "projectId"), "canvas-first");
+    assert.equal(field(await session.callTool("canvas_get_state", {}), "canvasId"), "canvas-first");
 
     session.activateClient("second");
-    assert.equal(field(await session.callTool("canvas_get_state", {}), "projectId"), "canvas-second");
+    assert.equal(field(await session.callTool("canvas_get_state", {}), "canvasId"), "canvas-second");
 });
 
 test("按精确 clientId 读取画布快照，不受当前焦点影响", (t) => {
@@ -35,8 +35,8 @@ test("按精确 clientId 读取画布快照，不受当前焦点影响", (t) => 
     session.updateState(snapshot("canvas-second"), "second");
     session.activateClient("second");
 
-    assert.equal(field(session.canvasStateForClient("first"), "projectId"), "canvas-first");
-    assert.equal(field(session.canvasStateForClient("second"), "projectId"), "canvas-second");
+    assert.equal(field(session.canvasStateForClient("first"), "canvasId"), "canvas-first");
+    assert.equal(field(session.canvasStateForClient("second"), "canvasId"), "canvas-second");
     assert.equal(session.canvasStateForClient("missing"), null);
     first.close();
     assert.equal(session.canvasStateForClient("first"), null);
@@ -159,7 +159,7 @@ test("活动网页关闭后回退到仍连接的画布", async (t) => {
     session.activateClient("second");
     second.close();
 
-    assert.equal(field(await session.callTool("canvas_get_state", {}), "projectId"), "canvas-first");
+    assert.equal(field(await session.callTool("canvas_get_state", {}), "canvasId"), "canvas-first");
 });
 
 test("closing the active client falls back to the most recently focused client", async (t) => {
@@ -179,7 +179,7 @@ test("closing the active client falls back to the most recently focused client",
     session.activateClient("second");
     second.close();
 
-    assert.equal(field(await session.callTool("canvas_get_state", {}), "projectId"), "canvas-third");
+    assert.equal(field(await session.callTool("canvas_get_state", {}), "canvasId"), "canvas-third");
 });
 
 test("closing a client rejects its pending tool requests", async () => {
@@ -345,7 +345,7 @@ test("a bound client remains the tool target while focus changes", async (t) => 
     session.bindClient("first");
     session.activateClient("second");
 
-    assert.equal(field(await session.callTool("canvas_get_state", {}), "projectId"), "canvas-first");
+    assert.equal(field(await session.callTool("canvas_get_state", {}), "canvasId"), "canvas-first");
     const result = session.callTool("canvas_create_text_node", { text: "bound" });
     const call = first.event("tool_call");
     assert.equal(second.event("tool_call"), undefined);
@@ -353,7 +353,7 @@ test("a bound client remains the tool target while focus changes", async (t) => 
     assert.deepEqual(await result, { ok: true });
 
     session.releaseClient("first");
-    assert.equal(field(await session.callTool("canvas_get_state", {}), "projectId"), "canvas-second");
+    assert.equal(field(await session.callTool("canvas_get_state", {}), "canvasId"), "canvas-second");
 });
 
 test("a disconnected bound client never falls back and can resume with the same client id", async (t) => {
@@ -376,7 +376,7 @@ test("a disconnected bound client never falls back and can resume with the same 
     const reconnected = connect(session, "first");
     t.after(() => reconnected.close());
     session.updateState(snapshot("canvas-first-reconnected"), "first");
-    assert.equal(field(await session.callTool("canvas_get_state", {}), "projectId"), "canvas-first-reconnected");
+    assert.equal(field(await session.callTool("canvas_get_state", {}), "canvasId"), "canvas-first-reconnected");
 
     const result = session.callTool("canvas_create_text_node", { text: "reconnected" });
     const call = reconnected.event("tool_call");
@@ -537,9 +537,9 @@ function connect(session: CanvasSession, clientId: string, activeThreadId = "") 
     return response;
 }
 
-/** 创建最小画布快照。 */
-function snapshot(projectId: string) {
-    return { projectId, title: projectId, nodes: [], connections: [], selectedNodeIds: [], viewport: { x: 0, y: 0, k: 1 } };
+/** 创建最小画布快照（M2-D7：canvasId 装画布 id，projectId 为绑定的服务端项目 id，未绑定 null）。 */
+function snapshot(canvasId: string) {
+    return { canvasId, projectId: null, title: canvasId, nodes: [], connections: [], selectedNodeIds: [], viewport: { x: 0, y: 0, k: 1 } };
 }
 
 /** 安全读取测试对象字段。 */

@@ -26,7 +26,7 @@ function maxSeq(ids, prefix) {
 }
 
 export function createEpisodes(store) {
-    const { ulid, badRequest, httpError, requireArray, requireProject, persistProject, readJson, writeJsonAtomic } = store;
+    const { ulid, nowIso, badRequest, httpError, requireArray, requireProject, persistProject, readJson, writeJsonAtomic } = store;
 
     const episodeFile = (dir, episodeId) => safeJoin(dir, "episodes", `${String(episodeId)}.json`);
     const summary = (episode) => ({ id: episode.id, index: episode.index, title: episode.title, status: episode.status });
@@ -252,6 +252,71 @@ export function createEpisodes(store) {
         return { shot, episode };
     }
 
+    /** slotId 规则（契约 §3.5）：slot_<shotId>_<role>；解析出 role，不匹配返回空串。 */
+    function slotRoleOf(shotId, slotId) {
+        const prefix = `slot_${String(shotId ?? "")}_`;
+        const text = String(slotId ?? "");
+        if (!text.startsWith(prefix)) return "";
+        return text.slice(prefix.length).trim();
+    }
+
+    /** 候选字段完整性（契约 §3.5）：jobId 必填，形状归一，来源 source 有值才带。 */
+    function normalizeSlotCandidate(input) {
+        const body = input && typeof input === "object" ? input : {};
+        const jobId = String(body.jobId ?? "").trim();
+        if (!jobId) throw badRequest("候选缺少 jobId");
+        return {
+            template: String(body.template ?? ""),
+            jobId,
+            artifactUrl: body.artifactUrl ?? null,
+            status: String(body.status ?? ""),
+            ...(body.source ? { source: String(body.source) } : {}),
+            createdAt: String(body.createdAt ?? nowIso()),
+        };
+    }
+
+    /**
+     * 槽位候选追加（M2）：shot 必须存在；slotId 必须匹配 slot_<shotId>_<role> 规则，
+     * 槽位不存在则按规则创建壳（selected:null、candidates:[]）。幂等：同 jobId 不重复追加、不写盘。
+     */
+    function appendSlotCandidate(projectId, shotId, slotId, input) {
+        const found = findShot(projectId, shotId);
+        if (!found) throw badRequest(`镜头不存在：${shotId}`);
+        const { project, dir, episode, shot } = found;
+        const role = slotRoleOf(shot.id, slotId);
+        if (!role) throw badRequest(`slotId 必须是 slot_<shotId>_<role>：${slotId}`);
+        const candidate = normalizeSlotCandidate(input);
+        shot.generationSlots = requireArray(shot.generationSlots ?? [], "generationSlots");
+        let slot = shot.generationSlots.find((item) => item.id === String(slotId));
+        if (!slot) {
+            slot = { id: String(slotId), shotId: shot.id, role, selected: null, candidates: [] };
+            shot.generationSlots = [...shot.generationSlots, slot];
+        }
+        if ((slot.candidates || []).some((item) => item.jobId === candidate.jobId)) return { slot, episode };
+        slot.candidates = [...(Array.isArray(slot.candidates) ? slot.candidates : []), candidate];
+        writeJsonAtomic(episodeFile(dir, episode.id), episode);
+        syncIndex(dir, project, episode);
+        return { slot, episode };
+    }
+
+    /** 槽位采用（M2）：jobId 必须是该槽位已有候选（否则 404 CANDIDATE_NOT_FOUND）；幂等，已是指向则不写盘。 */
+    function selectSlotCandidate(projectId, shotId, slotId, jobId) {
+        const found = findShot(projectId, shotId);
+        if (!found) throw badRequest(`镜头不存在：${shotId}`);
+        const { project, dir, episode, shot } = found;
+        const id = String(jobId ?? "").trim();
+        if (!id) throw badRequest("缺少 jobId");
+        const slot = (shot.generationSlots || []).find((item) => item.id === String(slotId ?? ""));
+        const candidate = slot && (slot.candidates || []).find((item) => item.jobId === id);
+        if (!slot || !candidate) throw Object.assign(httpError(404, `候选不存在：${id}`), { code: "CANDIDATE_NOT_FOUND", field: "jobId" });
+        if (slot.selected !== id) {
+            slot.selected = id;
+            writeJsonAtomic(episodeFile(dir, episode.id), episode);
+            syncIndex(dir, project, episode);
+        }
+        return { slot, episode };
+    }
+
     /** 遍历项目所有集，找场/镜所属的集（跨集引用由此可被识别为不在本集）。 */
     function findScene(projectId, sceneId) {
         const { project, dir } = requireProject(projectId);
@@ -299,5 +364,5 @@ export function createEpisodes(store) {
         return { episode };
     }
 
-    return { save, get, list, listDetails, update, addScene, updateScene, addShot, updateShot, reorder, findScene, findShot, requireEpisode };
+    return { save, get, list, listDetails, update, addScene, updateScene, addShot, updateShot, reorder, findScene, findShot, requireEpisode, appendSlotCandidate, selectSlotCandidate };
 }

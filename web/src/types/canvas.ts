@@ -77,6 +77,9 @@ export type CanvasNodeMetadata = {
     freeResize?: boolean;
     images?: CanvasNodeImage[];
     primaryImageId?: string;
+    /** 服务端产物（M2）：content 直接存 artifact URL 时同步登记产物身份；有 artifactUrl 时 hydrate 直接用，不走 IndexedDB 重建。 */
+    artifactId?: string;
+    artifactUrl?: string;
     storageKey?: string;
     mimeType?: string;
     bytes?: number;

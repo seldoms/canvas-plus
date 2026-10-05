@@ -31,6 +31,9 @@ import { llmCall as promptLlmCall } from "./llm-client.js";
 import { createPromptApi } from "./prompt-api.js";
 import { compileWorkbenchPrompt, createImageEnqueue, filterJobs } from "./workbench-jobs.js";
 import { createGenerationIntent, submitGenerationIntent } from "./generation-intent.js";
+// M2 画布接入事实链：槽位候选业务（追加/采用/终态自动投影）与外部文件导入登记。
+import { createSlotCandidates } from "./slot-candidates.js";
+import { createArtifactImport } from "./artifact-import.js";
 import { sanitizePrompt } from "./prompt-sanitize.js";
 import { createLocalRunner } from "./generate.js";
 import { probeRunningHub, listRunningHubModels, runRunningHubJob } from "./providers/runninghub.js";
@@ -157,6 +160,11 @@ const jobs = createJobQueue({
 });
 const local = createLocalRunner({ config, comfy, jobs });
 startupMark("jobs 队列加载");
+
+// M2：槽位候选（画布/导入产物 → generationSlots）与外部文件导入登记。
+// 纯业务编排，存储走 projects.episodes / jobs.recordImport。
+const slotCandidates = createSlotCandidates({ jobs, episodes: projects.episodes });
+const artifactImport = createArtifactImport({ jobs, getProject: (id) => projects.get(id) });
 /** 后端分派：默认走本地 ComfyUI；只有显式指定 runninghub 且配置允许时才走云端。 */
 function backendOf(job) {
     return job.backend === "runninghub" ? "runninghub" : "local";
@@ -195,6 +203,8 @@ const pipeline = createPipeline({
     registerAssetRef: (projectId, input) => projects.assets.create(projectId, input),
     // 就地更新已存在的资产引用（参考图绑定走这条路：空引用自愈为已绑定，不产生重复引用）。
     updateAssetRef: (projectId, refId, patch) => projects.assets.update(projectId, refId, patch),
+    // M2-D6：画布来源 Job 终态自动投影为槽位候选（只追加候选、不动 selected）。
+    projectCanvasJob: (job) => slotCandidates.projectCanvasTerminalJob(job),
 });
 startupMark("pipeline 创建");
 /**
@@ -836,6 +846,36 @@ router.any("/api/artifacts/archive", artifactsWrite((body) => artifacts.archive(
 router.any("/api/artifacts/restore", artifactsWrite((body) => artifacts.restore(body)));
 router.any("/api/artifacts/delete", artifactsWrite((body) => artifacts.remove(body)));
 
+/**
+ * M2-D4：登记外部文件为 Artifact（multipart：file + fields）。
+ * 合成 status="done"、kind="import" 的 Job，字节落 data/artifacts/<jobId>/<filename>，
+ * 产物复用 jobs→artifacts 懒索引；同 idempotencyKey 重放返回同一 job + artifact。
+ * fields 带 projectId+shotId+slotId 时，终态投影会自动把它追加为槽位候选。
+ */
+router.post("/api/artifacts/import", async (req, res) => {
+    try {
+        const contentType = req.headers["content-type"] || "";
+        if (!contentType.includes("multipart/form-data")) throw Object.assign(new Error("只接受 multipart/form-data（file + fields）"), { status: 400 });
+        const form = await new Request("http://localhost/", {
+            method: "POST",
+            headers: req.headers,
+            body: Readable.toWeb(req),
+            duplex: "half",
+        }).formData();
+        const file = [...form.values()].find((value) => typeof value === "object" && value?.arrayBuffer);
+        if (!file) throw Object.assign(new Error("未找到导入文件"), { status: 400 });
+        const fields = {};
+        for (const key of ["source", "projectId", "episodeId", "sceneId", "shotId", "slotId", "idempotencyKey"]) {
+            const value = form.get(key);
+            if (typeof value === "string" && value.trim()) fields[key] = value.trim();
+        }
+        const result = await artifactImport.importArtifact({ filename: file.name, contentType: file.type, buffer: Buffer.from(await file.arrayBuffer()), fields });
+        sendJson(res, 200, result);
+    } catch (error) {
+        sendError(res, error.status || 400, error.message, error.code);
+    }
+});
+
 // 产物文件。`?variant=thumb[&w=320]` 走**真缩略图**（按需生成 + 缓存，列表/卡片用）：
 // 生成不了就回退原图（宁可退回大图，也绝不裂图）；下载仍取原图（download=1）。
 router.get("/api/artifacts/:jobId/:filename", async (req, res, { params, url }) => {
@@ -1177,6 +1217,35 @@ const updateShot = routeHandler(async (req, res, { params }) => {
 });
 router.add("PATCH", "/api/projects/:id/shots/:shotId", updateShot);
 router.post("/api/projects/:id/shots/:shotId", updateShot);
+
+// ——— M2 槽位候选：追加 / 采用（契约 §3，薄路由：解析请求、调业务、回响应） ———
+// 错误形状沿用 generation-intent.js（status + code + field），body 里一并回 code 供前端分支。
+const slotRoute = (run) => async (req, res, { params }) => {
+    try {
+        const body = await readJson(req).catch(() => ({}));
+        sendJson(res, 200, run(params, body && typeof body === "object" ? body : {}));
+    } catch (error) {
+        sendError(res, error.status || 400, error.message, error.code);
+    }
+};
+
+// 画布绑定（M2）：幂等 attach/detach 项目 canvasIds，派生写入不 bump version。
+router.post("/api/projects/:id/canvas-refs", routeHandler(async (req, res, { params }) => {
+    const body = await readJson(req).catch(() => ({}));
+    sendJson(res, 200, { project: projects.attachCanvas(params.id, body?.canvasId) });
+}));
+
+router.add("DELETE", "/api/projects/:id/canvas-refs/:canvasId", routeHandler((req, res, { params }) => {
+    sendJson(res, 200, { project: projects.detachCanvas(params.id, params.canvasId) });
+}));
+
+// 追加候选：body { jobId } → { slot }；404 JOB_NOT_FOUND / NO_ARTIFACT_OUTPUT，409 PROJECT_MISMATCH；同 jobId 幂等。
+router.post("/api/projects/:id/shots/:shotId/slots/:slotId/candidates", slotRoute((params, body) =>
+    slotCandidates.appendCandidate({ projectId: params.id, shotId: params.shotId, slotId: params.slotId, jobId: body.jobId })));
+
+// 采用候选：body { jobId } → { slot }；404 CANDIDATE_NOT_FOUND。
+router.post("/api/projects/:id/shots/:shotId/slots/:slotId/select", slotRoute((params, body) =>
+    slotCandidates.selectCandidate({ projectId: params.id, shotId: params.shotId, slotId: params.slotId, jobId: body.jobId })));
 
 // 源版本（不可变）
 router.get("/api/projects/:id/sources", routeHandler((req, res, { params }) => {

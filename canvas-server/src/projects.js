@@ -369,6 +369,27 @@ export function createProjects({ dataDir, stages } = {}) {
         return persistDerived(dir, project);
     }
 
+    /** 画布绑定登记（M2）：幂等 attach/detach，派生写入不 bump version（同 attachRun 语义）。 */
+    function attachCanvas(id, canvasId) {
+        const value = String(canvasId ?? "").trim();
+        if (!value) throw badRequest("缺少 canvasId");
+        const { project, dir } = requireProject(id);
+        const canvasIds = Array.isArray(project.canvasIds) ? project.canvasIds : [];
+        if (canvasIds.includes(value)) return project;
+        project.canvasIds = [...canvasIds, value];
+        return persistDerived(dir, project);
+    }
+
+    function detachCanvas(id, canvasId) {
+        const value = String(canvasId ?? "").trim();
+        if (!value) throw badRequest("缺少 canvasId");
+        const { project, dir } = requireProject(id);
+        const canvasIds = Array.isArray(project.canvasIds) ? project.canvasIds : [];
+        if (!canvasIds.includes(value)) return project;
+        project.canvasIds = canvasIds.filter((item) => item !== value);
+        return persistDerived(dir, project);
+    }
+
     /**
      * 把 01 剧本阶段产出的 planSuggestion 回填到项目 plan，只填「用户尚未填写」的字段：
      * 未填写 = 仍是 PLAN_DEFAULTS 的占位值（或空串/缺省）；已有值一律不动。ratio / styleAnchor 不在建议范围内，不碰。
@@ -488,7 +509,7 @@ export function createProjects({ dataDir, stages } = {}) {
     const getSource = (projectId, revisionId) => sources.get(projectId, revisionId);
 
     return {
-        create, get, list, update, archive, context, gates, applyPlanSuggestion, attachRun, applyScriptProjection, applyEpisodeProjection,
+        create, get, list, update, archive, context, gates, applyPlanSuggestion, attachRun, attachCanvas, detachCanvas, applyScriptProjection, applyEpisodeProjection,
         saveEpisode, getEpisode, saveSource, getSource,
         episodes, sources, assets,
         ulid, ULID_PATTERN,

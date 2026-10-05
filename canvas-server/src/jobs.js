@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { EventEmitter } from "node:events";
 import { join } from "node:path";
 
-import { ensureDir, saveBuffer } from "./files.js";
+import { artifactUrl, ensureDir, sanitizeName, saveBuffer } from "./files.js";
 
 const TERMINAL = new Set(["done", "error", "canceled"]);
 
@@ -176,8 +176,51 @@ export function createJobQueue({ dataDir, concurrency = 1, label = "job", classC
         return job;
     }
 
-    function cancel(id) {
-        const job = jobs.get(id);
+    /**
+     * 登记一份外部字节为已完成 Job（kind="import"，M2 画布存量图片入事实链）：
+     * 字节落 data/artifacts/<jobId>/<filename>，outputs 形状与真实生成 Job 一致，
+     * 产物由 artifacts.js 懒索引拾取（不另开索引来源）。幂等键语义与 enqueue 一致：
+     * 同 meta.idempotencyKey 重放返回原 Job，不重写字节、不新增记录。
+     */
+    async function recordImport({ id, filename, buffer, type, meta, name } = {}) {
+        const idempotencyKey = typeof meta?.idempotencyKey === "string" ? meta.idempotencyKey.trim() : "";
+        if (idempotencyKey) {
+            const existingId = idempotencyIndex.get(idempotencyKey);
+            if (existingId && jobs.has(existingId)) return jobs.get(existingId);
+        }
+        const jobId = id || `import-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+        const safeName = sanitizeName(filename || "import");
+        const bytes = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer || []);
+        await saveBuffer(join(ensureDir(join(dataDir, "artifacts", jobId)), safeName), bytes);
+        const stamp = nowIso();
+        const job = {
+            id: jobId,
+            kind: "import",
+            backend: "local",
+            template: "import",
+            name: name || safeName,
+            params: {},
+            meta: meta || {},
+            resourceClass: null,
+            queue: null,
+            deviceId: null,
+            status: "done",
+            outputs: [{ url: artifactUrl(null, jobId, safeName), type: type || "file", filename: safeName, bytes: bytes.length }],
+            progress: { value: 1, max: 1 },
+            queuedAt: stamp,
+            startedAt: stamp,
+            finishedAt: stamp,
+            createdAt: stamp,
+            updatedAt: stamp,
+        };
+        jobs.set(jobId, job);
+        if (idempotencyKey) idempotencyIndex.set(idempotencyKey, jobId);
+        persist();
+        events.emit("change", job);
+        return job;
+    }
+
+    function cancel(id) {        const job = jobs.get(id);
         if (!job) return null;
         if (TERMINAL.has(job.status)) return job;
         const queue = queues.get(job.queue) || queues.get(queueKeyOf(job.resourceClass));
@@ -259,7 +302,7 @@ export function createJobQueue({ dataDir, concurrency = 1, label = "job", classC
         });
     }
 
-    return { enqueue, get, list, update, cancel, counts, on, persist, storePath, waitForIdle };
+    return { enqueue, recordImport, get, list, update, cancel, counts, on, persist, storePath, waitForIdle };
 }
 
 /** 让调用方（流水线编排）能等待某个任务进入终态。 */

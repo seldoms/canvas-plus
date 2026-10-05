@@ -102,3 +102,31 @@ export async function deleteArtifacts(ids: string[]): Promise<{ deleted: string[
 export function isArtifactUrl(url?: string): boolean {
     return typeof url === "string" && url.includes("/api/artifacts/");
 }
+
+/** POST /api/artifacts/import（multipart）的字段；传了 slotId 服务端会自动投影为槽位候选，前端不要再重复调 candidates 追加。 */
+export type ArtifactImportFields = {
+    source?: string;
+    projectId?: string;
+    episodeId?: string;
+    sceneId?: string;
+    shotId?: string;
+    slotId?: string;
+    idempotencyKey?: string;
+};
+
+export type ArtifactImportResult = {
+    job: { id: string; status?: string; kind?: string; meta?: Record<string, unknown> };
+    artifact: { id: string; url: string; bytes?: number; kind?: string };
+};
+
+/** 登记外部文件为 Artifact（M2-D4）：合成已完成 Job（status=done、kind=import），同 idempotencyKey 幂等返回同一 job+artifact。 */
+export async function importArtifact(file: Blob, fields: ArtifactImportFields, filename = "canvas-import.png"): Promise<ArtifactImportResult> {
+    const form = new FormData();
+    form.append("file", file, filename);
+    for (const [key, value] of Object.entries(fields)) {
+        if (value) form.append(key, value);
+    }
+    const data = await artifactRequest<ArtifactImportResult>({ method: "post", url: "/api/artifacts/import", data: form });
+    if (!data?.artifact?.url || !data?.job?.id) throw new Error("unreachable");
+    return data;
+}

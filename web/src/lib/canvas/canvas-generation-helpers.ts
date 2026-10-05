@@ -2,6 +2,7 @@ import { defaultConfig, resolveModelForCapability, type AiConfig } from "@/store
 import i18n from "@/i18n";
 import { ensureImagePreview, resolveImageUrl, uploadImage } from "@/services/image-storage";
 import { resolveMediaUrl } from "@/services/file-storage";
+import { resolveGatewayUrl } from "@/services/api/gateway";
 import { imageMetadata, referenceUrl } from "@/lib/canvas/canvas-node-factory";
 import type { NodeGenerationInput } from "@/components/canvas/canvas-node-generation";
 import type { CanvasNodeGenerationMode } from "@/components/canvas/canvas-node-prompt-panel";
@@ -35,8 +36,10 @@ export async function resolveMetadataReferences(metadata: CanvasNodeMetadata) {
     if (!metadata.references?.length) return null;
     const references = await Promise.all(
         metadata.references.map(async (url, index) => {
-            const dataUrl = url.startsWith("image:") ? await resolveImageUrl(url, "") : url;
-            return dataUrl ? { id: `${index}`, name: `reference-${index}.png`, type: "image/png", dataUrl, storageKey: url.startsWith("image:") ? url : undefined } : null;
+            // 兼容 artifact 相对路径（/api/artifacts/...）：补全成网关绝对地址；http(s)/data 原样透传。
+            const resolved = url.startsWith("/") ? resolveGatewayUrl(url) : url;
+            const dataUrl = resolved.startsWith("image:") ? await resolveImageUrl(resolved, "") : resolved;
+            return dataUrl ? { id: `${index}`, name: `reference-${index}.png`, type: "image/png", dataUrl, storageKey: resolved.startsWith("image:") ? resolved : undefined } : null;
         }),
     );
     return references.every(Boolean) ? (references as ReferenceImage[]) : null;
@@ -49,6 +52,10 @@ export async function hydrateCanvasImages(nodes: CanvasNodeData[]) {
             const content = metadata?.content;
             if ((node.type === CanvasNodeType.Video || node.type === CanvasNodeType.Audio) && metadata?.storageKey) return { ...node, metadata: { ...metadata, content: await resolveMediaUrl(metadata.storageKey, content) } };
             if (node.type !== CanvasNodeType.Image || !metadata || !content) return node;
+            // content 已是 http(s)/相对路径 URL（M2 artifact 节点）：直接用，不走 IndexedDB 重建。
+            // 有 artifactUrl 时以它为准（相对路径原样保留，同源经 vite proxy / nginx 可达）。
+            if (metadata.artifactUrl) return metadata.content === metadata.artifactUrl ? node : { ...node, metadata: { ...metadata, content: metadata.artifactUrl } };
+            if (/^https?:\/\//i.test(content) || content.startsWith("/")) return node;
             const images = await Promise.all(
                 (metadata.images || []).map(async (image) => {
                     if (!image.content) return image;

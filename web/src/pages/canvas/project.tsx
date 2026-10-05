@@ -74,6 +74,10 @@ import { registerBuiltinNodes } from "@/components/canvas/nodes/builtin-nodes";
 import { CanvasPluginManagerModal } from "@/components/canvas/canvas-plugin-manager-modal";
 import { CanvasRefreshShell } from "@/components/canvas/canvas-refresh-shell";
 import { CanvasTopBar } from "@/components/canvas/canvas-top-bar";
+import { CanvasBindProjectModal } from "@/components/canvas/canvas-bind-project-modal";
+import { CanvasSlotDialog } from "@/components/canvas/canvas-slot-dialog";
+import { getProject } from "@/services/api/projects";
+import type { SlotGeneratedImage } from "@/lib/canvas/canvas-project-slots";
 import { ConnectionCreateMenu, NodeCreateMenu, type PendingConnectionCreate } from "@/components/canvas/canvas-create-menus";
 import {
     CanvasNodeType,
@@ -260,6 +264,10 @@ function InfiniteCanvasPage() {
     const [isNodeResizing, setIsNodeResizing] = useState(false);
     const [dropTargetGroupId, setDropTargetGroupId] = useState<string | null>(null);
     const [referencePickerNodeId, setReferencePickerNodeId] = useState<string | null>(null);
+    // M2 绑定与槽位对话框（绑定 = 本地 serverProjectId + 服务端 canvas-refs，见 canvas-bind-project-modal）
+    const [bindModalOpen, setBindModalOpen] = useState(false);
+    const [slotDialogNodeId, setSlotDialogNodeId] = useState<string | null>(null);
+    const [boundProjectTitle, setBoundProjectTitle] = useState<string | null>(null);
 
     const nodesRef = useRef(nodes);
     const connectionsRef = useRef(connections);
@@ -791,6 +799,7 @@ function InfiniteCanvasPage() {
     const referenceConnectedNodeIds = useMemo(() => new Set([referencePickerNodeId, ...(referencePickerNodeId ? connectedNodesByNodeId.get(referencePickerNodeId)?.flatMap((node) => node.type === CanvasNodeType.Group ? [node.id, ...getGroupResourceNodes(node.id, nodes).map((child) => child.id)] : [node.id]) || [] : [])].filter((id): id is string => Boolean(id))), [connectedNodesByNodeId, nodes, referencePickerNodeId]);
     const { applyAgentOps } = useAgentBridge({
         projectId,
+        serverProjectId: currentProject?.serverProjectId || null,
         title: currentProject?.title,
         nodes,
         connections,
@@ -821,6 +830,63 @@ function InfiniteCanvasPage() {
         setDialogNodeId,
         applyAgentOps,
     });
+
+    /* ---- M2 绑定与槽位接线（不动既有浏览器直连生成链路） ---- */
+    const boundProjectId = currentProject?.serverProjectId || null;
+    const slotDialogNode = slotDialogNodeId ? nodeById.get(slotDialogNodeId) || null : null;
+
+    useEffect(() => {
+        if (!boundProjectId) {
+            setBoundProjectTitle(null);
+            return;
+        }
+        let alive = true;
+        getProject(boundProjectId)
+            .then((project) => {
+                if (alive) setBoundProjectTitle(project.title || boundProjectId);
+            })
+            .catch(() => {
+                if (alive) setBoundProjectTitle(boundProjectId);
+            });
+        return () => {
+            alive = false;
+        };
+    }, [boundProjectId]);
+
+    const handleProjectBound = useCallback(
+        (serverProjectId: string | null, title?: string) => {
+            updateProject(projectId, { serverProjectId: serverProjectId || undefined });
+            setBoundProjectTitle(serverProjectId ? title || serverProjectId : null);
+        },
+        [projectId, updateProject],
+    );
+
+    /** 生成新候选完成：在源节点右侧建 artifact 图片节点，content 直接存 artifact 相对路径（刷新/重启后仍指向同一产物）。 */
+    const handleSlotGenerated = useCallback((image: SlotGeneratedImage, sourceNode: CanvasNodeData) => {
+        const spec = NODE_DEFAULT_SIZE[CanvasNodeType.Image];
+        const nodeSize = fitNodeSize(image.width || spec.width, image.height || spec.height, spec.width, spec.height);
+        const newNode: CanvasNodeData = {
+            id: `image-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+            type: CanvasNodeType.Image,
+            title: (sourceNode.metadata?.prompt || "").slice(0, 32) || "Generated Image",
+            position: { x: sourceNode.position.x + sourceNode.width + 96, y: sourceNode.position.y + sourceNode.height / 2 - nodeSize.height / 2 },
+            width: nodeSize.width,
+            height: nodeSize.height,
+            metadata: {
+                prompt: sourceNode.metadata?.prompt,
+                status: NODE_STATUS_SUCCESS,
+                content: image.artifactUrl,
+                artifactUrl: image.artifactUrl,
+                naturalWidth: image.width,
+                naturalHeight: image.height,
+                mimeType: "image/png",
+                model: image.template,
+                generationType: sourceNode.metadata?.content || sourceNode.metadata?.references?.length ? "edit" : "generation",
+            },
+        };
+        setNodes((prev) => [...prev, newNode]);
+        setConnections((prev) => [...prev, { id: nanoid(), fromNodeId: sourceNode.id, toNodeId: newNode.id }]);
+    }, []);
     const createNode = useCallback(
         (type: CanvasNodeTypeId, position?: Position) => {
             const targetPosition = position || getCanvasCenter();
@@ -3132,6 +3198,8 @@ function InfiniteCanvasPage() {
                     agentOpen={agentPanelOpen}
                     compactAgentStatus={{ connected: localAgentConnected, enabled: localAgentEnabled, activity: localAgentActivity }}
                     onToggleAgent={toggleAgentPanel}
+                    boundProjectTitle={boundProjectId ? boundProjectTitle || boundProjectId : null}
+                    onBindProject={() => setBindModalOpen(true)}
                 />
 
                 <InfiniteCanvas
@@ -3276,6 +3344,7 @@ function InfiniteCanvasPage() {
                     onToggleFreeResize={(node) => toggleNodeFreeResize(node.id)}
                     onDelete={(node) => deleteNodes(new Set([node.id]))}
                     onUngroup={(node) => ungroupSelection(new Set([node.id]))}
+                    onAddProjectCandidate={boundProjectId ? (node) => setSlotDialogNodeId(node.id) : undefined}
                 />
 
                 {hasMultipleSelectedNodes && !selectionBox ? (
@@ -3400,6 +3469,9 @@ function InfiniteCanvasPage() {
                 </Modal>
 
                 <AssetPickerModal open={assetPickerOpen} onInsert={handleAssetInsert} onClose={() => setAssetPickerOpen(false)} />
+
+                <CanvasBindProjectModal open={bindModalOpen} canvasId={projectId} boundProjectId={boundProjectId} boundProjectTitle={boundProjectTitle} onBound={handleProjectBound} onClose={() => setBindModalOpen(false)} />
+                {boundProjectId ? <CanvasSlotDialog open={Boolean(slotDialogNode)} node={slotDialogNode} projectId={boundProjectId} projectTitle={boundProjectTitle} onGenerated={handleSlotGenerated} onClose={() => setSlotDialogNodeId(null)} /> : null}
             </section>
         </main>
     );

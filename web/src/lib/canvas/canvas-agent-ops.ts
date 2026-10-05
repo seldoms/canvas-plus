@@ -15,7 +15,10 @@ export type CanvasAgentOp =
     | { type: "run_generation"; nodeId: string; mode?: "text" | "image" | "video" | "audio"; prompt?: string };
 
 export type CanvasAgentSnapshot = {
-    projectId: string;
+    /** 画布 id（M2-D7 语义修正前由 projectId 担任）。 */
+    canvasId: string;
+    /** 绑定的服务端项目 id；未绑定为 null。 */
+    projectId: string | null;
     title: string;
     nodes: CanvasNodeData[];
     connections: CanvasConnection[];

@@ -200,6 +200,12 @@ function unwrapList<T>(data: unknown, key: string): T[] {
     return [];
 }
 
+/** 列项目的集索引（GET /api/projects/:id/episodes）；网关未挂该端点时兜底成空列表。 */
+export async function listEpisodes(projectId: string): Promise<Episode[]> {
+    const data = await projectRequest<unknown>({ method: "get", url: `/api/projects/${encodeURIComponent(projectId)}/episodes` });
+    return unwrapList<Episode>(data, "episodes");
+}
+
 /** 读集详情（含各场镜头）；不存在返回 null。 */
 export async function getEpisode(projectId: string, episodeId: string): Promise<EpisodeDetail | null> {
     const data = await projectRequest<unknown>({
@@ -303,4 +309,70 @@ export async function listProjectGates(projectId: string): Promise<ProjectGate[]
                   .filter(Boolean)
             : [],
     }));
+}
+
+/* ------------------------------------------------------------------ *
+ * 画布绑定与槽位候选（M2，契约见 m2-implementation-plan.md §3）
+ * ------------------------------------------------------------------ */
+
+/** 绑定：把画布登记到服务端项目 canvasIds（幂等 attach）。 */
+export async function attachCanvasRef(projectId: string, canvasId: string) {
+    const data = await projectRequest<unknown>({ method: "post", url: `/api/projects/${encodeURIComponent(projectId)}/canvas-refs`, data: { canvasId } });
+    return unwrapEntity<Project>(data, "project");
+}
+
+/** 解绑：从服务端项目 canvasIds 移除画布（幂等 detach）。 */
+export async function detachCanvasRef(projectId: string, canvasId: string) {
+    const data = await projectRequest<unknown>({ method: "delete", url: `/api/projects/${encodeURIComponent(projectId)}/canvas-refs/${encodeURIComponent(canvasId)}` });
+    return unwrapEntity<Project>(data, "project");
+}
+
+/** 槽位候选（M2 契约）：candidate = { template, jobId, artifactUrl, status, source, createdAt }。 */
+export type SlotCandidate = {
+    template?: string;
+    jobId: string;
+    artifactUrl?: string | null;
+    status?: string;
+    source?: string;
+    createdAt?: string;
+};
+
+/** 槽位视图：候选追加 / 采用端点都回 { slot }。 */
+export type GenerationSlotView = {
+    id: string;
+    shotId?: string;
+    role?: string;
+    selected: string | null;
+    candidates: SlotCandidate[];
+};
+
+function unwrapSlot(data: unknown): GenerationSlotView {
+    const slot = unwrapEntity<Partial<GenerationSlotView>>(data, "slot");
+    return {
+        id: String(slot?.id ?? ""),
+        ...(slot?.shotId ? { shotId: String(slot.shotId) } : {}),
+        ...(slot?.role ? { role: String(slot.role) } : {}),
+        selected: slot?.selected ? String(slot.selected) : null,
+        candidates: Array.isArray(slot?.candidates) ? (slot.candidates as SlotCandidate[]) : [],
+    };
+}
+
+/** POST .../slots/:slotId/candidates { jobId }：把已完成 Job 追加为槽位候选（幂等）。 */
+export async function appendSlotCandidate(projectId: string, shotId: string, slotId: string, jobId: string) {
+    const data = await projectRequest<unknown>({
+        method: "post",
+        url: `/api/projects/${encodeURIComponent(projectId)}/shots/${encodeURIComponent(shotId)}/slots/${encodeURIComponent(slotId)}/candidates`,
+        data: { jobId },
+    });
+    return unwrapSlot(data);
+}
+
+/** POST .../slots/:slotId/select { jobId }：采用候选（设 slot.selected）。 */
+export async function selectSlotCandidate(projectId: string, shotId: string, slotId: string, jobId: string) {
+    const data = await projectRequest<unknown>({
+        method: "post",
+        url: `/api/projects/${encodeURIComponent(projectId)}/shots/${encodeURIComponent(shotId)}/slots/${encodeURIComponent(slotId)}/select`,
+        data: { jobId },
+    });
+    return unwrapSlot(data);
 }

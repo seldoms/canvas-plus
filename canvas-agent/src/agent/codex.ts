@@ -404,7 +404,7 @@ function canvasSourceFits(source: JsonRecord, limit: number) {
 }
 
 function canvasPrivateValues(snapshot: CanvasSnapshot) {
-    return [snapshot.projectId, snapshot.clientId, ...(snapshot.nodes || []).map((node) => node.id), ...(snapshot.connections || []).map((connection) => connection.id)]
+    return [snapshot.canvasId, snapshot.projectId, snapshot.clientId, ...(snapshot.nodes || []).map((node) => node.id), ...(snapshot.connections || []).map((connection) => connection.id)]
         .filter((value): value is string => typeof value === "string" && value.length >= 6);
 }
 

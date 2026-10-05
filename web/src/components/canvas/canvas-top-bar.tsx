@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { BookOpen, Bot, Download, Home, Images, Menu, PanelLeftClose, PanelLeftOpen, Plus, Redo2, Trash2, Undo2, Upload } from "lucide-react";
+import { BookOpen, Bot, Download, Home, Images, Link2, Menu, PanelLeftClose, PanelLeftOpen, Plus, Redo2, Trash2, Undo2, Upload } from "lucide-react";
 import { Button, Dropdown, Modal, Tooltip } from "antd";
 import { useTranslation } from "react-i18next";
 
@@ -31,6 +31,8 @@ export function CanvasTopBar({
     agentOpen,
     compactAgentStatus,
     onToggleAgent,
+    boundProjectTitle,
+    onBindProject,
 }: {
     title: string;
     titleDraft: string;
@@ -53,6 +55,9 @@ export function CanvasTopBar({
     agentOpen: boolean;
     compactAgentStatus: { connected: boolean; enabled: boolean; activity: string };
     onToggleAgent: () => void;
+    /** 已绑定的服务端项目名（M2-D1）；null/undefined = 未绑定。 */
+    boundProjectTitle?: string | null;
+    onBindProject: () => void;
 }) {
     const colorTheme = useThemeStore((state) => state.theme);
     const { t } = useTranslation();
@@ -136,6 +141,18 @@ export function CanvasTopBar({
                         )}
                     </div>
                     <CompactAgentStatus status={compactAgentStatus} onClick={onToggleAgent} />
+                    <Tooltip title={boundProjectTitle ? t("canvas.projectBinding.boundTip", { title: boundProjectTitle }) : t("canvas.projectBinding.bindTip")}>
+                        <button
+                            type="button"
+                            onClick={onBindProject}
+                            aria-label={t("canvas.projectBinding.bind")}
+                            className="flex h-7 max-w-[180px] items-center gap-1.5 rounded-full px-2 text-xs transition hover:bg-black/5 dark:hover:bg-white/10"
+                            style={{ color: boundProjectTitle ? theme.node.text : theme.node.muted }}
+                        >
+                            <Link2 className="size-3.5 shrink-0" />
+                            <span className="truncate">{boundProjectTitle || t("canvas.projectBinding.bind")}</span>
+                        </button>
+                    </Tooltip>
                 </div>
 
                 <div className="pointer-events-auto flex items-center gap-1.5">

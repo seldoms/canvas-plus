@@ -315,7 +315,7 @@ function fillTemplate(text, context) {
  * assemble 是「片段 → 成片」的后期执行体，默认用 delivery.js 的 assembleEpisode；
  * 编排器只负责判定何时拼接、把清单与参数交给它，ffmpeg 命令构造与执行都留在 delivery.js。
  */
-export function createPipeline({ config, skillsDir, jobs, comfy, llm, llmCall, runJob, assemble = assembleEpisode, getProject, applyPlanSuggestion, applyScriptProjection, applyEpisodeProjection, attachProjectRun, registerAssetRef, updateAssetRef } = {}) {
+export function createPipeline({ config, skillsDir, jobs, comfy, llm, llmCall, runJob, assemble = assembleEpisode, getProject, applyPlanSuggestion, applyScriptProjection, applyEpisodeProjection, attachProjectRun, registerAssetRef, updateAssetRef, projectCanvasJob } = {}) {
     const pipelineConfig = config?.pipeline || {};
     // 半自动总开关：注入 getProject（项目化模式）时才启用「单镜失败自动重试」。
     // 未注入时一律保持旧的「失败即止」行为；plan 驱动参数靠 projectOf 返回 null 自然回落，不需要额外开关。
@@ -1610,6 +1610,27 @@ ${JSON.stringify(partials, null, 2)}
     }
 
     /**
+     * 槽位合并（M2-D5）：run 投影重写 slot 时，保留 jobId 不在本 run 候选集合内的既有候选
+     * （画布 / 导入来源），selected 指向被保留候选时保留原值；本 run 没有的既有槽位原样保留，
+     * 绝不因重跑关键帧冲掉画布候选与采用结果。
+     */
+    function mergeGenerationSlots(nextSlots, prevSlots) {
+        const prevById = new Map((Array.isArray(prevSlots) ? prevSlots : []).filter((slot) => slot && slot.id).map((slot) => [String(slot.id), slot]));
+        const merged = (Array.isArray(nextSlots) ? nextSlots : []).map((slot) => {
+            const prev = prevById.get(String(slot.id));
+            prevById.delete(String(slot.id));
+            if (!prev) return slot;
+            const runJobIds = new Set((slot.candidates || []).map((candidate) => String(candidate.jobId)));
+            const kept = (Array.isArray(prev.candidates) ? prev.candidates : []).filter((candidate) => candidate && !runJobIds.has(String(candidate.jobId)));
+            const next = { ...slot, candidates: [...(slot.candidates || []), ...kept] };
+            if (prev.selected && kept.some((candidate) => String(candidate.jobId) === String(prev.selected))) next.selected = prev.selected;
+            return next;
+        });
+        for (const rest of prevById.values()) merged.push(rest);
+        return merged;
+    }
+
+    /**
      * 一集的关键帧镜：把归一后的分镜 shot 逐个落到 Project 侧 Shot（契约 §3.4），并挂上 frames 派生的
      * `generationSlots`（§3.5）。已存在的镜**按 id / 分镜顺序**复用（保留其稳定 `sh_` 主键与人工编辑），
      * 缺镜才新建（id 用 derivedShotId，稳定幂等）。绝不为分镜没覆盖的旧镜删数据。
@@ -1638,7 +1659,7 @@ ${JSON.stringify(partials, null, 2)}
             const storyboardPayload = storyboardPayloadOf(source);
             if (!shot.storyboard || (typeof shot.storyboard === "object" && !Array.isArray(shot.storyboard) && Object.keys(shot.storyboard).length === 0)) shot.storyboard = storyboardPayload;
             if (!(Number(shot.index) > 0)) shot.index = Number(source.index) > 0 ? Number(source.index) : position + 1;
-            shot.generationSlots = generationSlotsFor(framesByShot.get(storyboardShotId), shotId);
+            shot.generationSlots = mergeGenerationSlots(generationSlotsFor(framesByShot.get(storyboardShotId), shotId), match?.generationSlots);
             if (shot.status !== "done" && shot.generationSlots.some((slot) => (slot.candidates || []).some((candidate) => candidate.status === "done"))) shot.status = "done";
             next.push(shot);
         });
@@ -3170,7 +3191,11 @@ ${JSON.stringify(partials, null, 2)}
     function projectJob(job) {
         if (!job || !TERMINAL_JOB.has(job.status)) return null;
         const { runId, stageId, itemId } = job.meta || {};
-        if (!runId || !stageId || !itemId) return null;
+        if (!runId || !stageId || !itemId) {
+            // 画布来源 Job（无 run 三元组）：终态投影为项目槽位候选（M2-D6，只追加候选、不动 selected）。
+            if (typeof projectCanvasJob === "function") projectCanvasJob(job);
+            return null;
+        }
         const run = get(runId);
         const def = stageDefs.get(String(stageId));
         const stage = run?.stages?.[stageId];
