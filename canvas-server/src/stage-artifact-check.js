@@ -109,15 +109,14 @@ function checkScript(output, fail, warn) {
 function checkStoryboard(output, upstream, fail, warn) {
     const shots = list(output?.shots);
     const scriptScenes = idSet(list(upstream?.script?.scenes));
-    const scriptEpisodes = idSet(list(upstream?.script?.episodes));
 
     for (const id of duplicates(shots.map((shot) => shot?.id))) fail("storyboard.shot_duplicate", "shots", `镜头 id 重复：${id}`);
     shots.forEach((shot, index) => {
         checkRef({ ref: shot?.sceneId, refPath: `shots[${index}].sceneId`, targetIds: scriptScenes, targetLabel: "剧本场次", missingCode: "storyboard.scene_ref", fail, warn });
-        if (text(shot?.episodeId) && scriptEpisodes.size && !scriptEpisodes.has(text(shot.episodeId))) {
-            warn("storyboard.episode_ref", `shots[${index}].episodeId`, `引用的分集「${shot.episodeId}」不在剧本分集里`);
-        }
     });
+    // 不校验 shots[].episodeId：绑定项目时编排器会把归一成**项目侧集 id（ep_0001）**，
+    // 与剧本侧（ep1）本就不同源，拿剧本集合比对必然误报；真实问题由
+    // production-contracts.normalizeShotEpisodeIds 的 unresolved / remapped 告警兜底（实测踩过，见 CHANGELOG）。
 }
 
 function checkDesign(output, upstream, fail, warn) {

@@ -147,6 +147,15 @@ test("上游集合缺失或为空时只提示，不判 error（否则新项目�
     assert.deepEqual(errorCodes(keyframeEmpty), [], "分镜镜头集合为空同理");
 });
 
+test("放过：绑定项目后 shots[].episodeId 是项目侧 id（ep_0001），不得判为引用断裂", () => {
+    // 实测踩过：编排器把 episodeId 归一成项目侧 id，与剧本侧（ep1）不同源。
+    const output = clone(STORYBOARD);
+    output.shots[0].episodeId = "ep_0001";
+    const result = check("storyboard", output);
+    assert.deepEqual(errorCodes(result), []);
+    assert.equal(result.warnings.some((item) => item.code === "storyboard.episode_ref"), false, "真实问题由 normalizeShotEpisodeIds 的 unresolved/remapped 兜底");
+});
+
 test("放过：引用 id 本身为空只提示", () => {
     const output = clone(STORYBOARD);
     output.shots[0].sceneId = "";
