@@ -84,6 +84,9 @@ so they do not render in the docs site. Read them directly from the repository.
   fact that **text already runs on cloud DeepSeek while image/video/audio stay local**, the local
   capability table, and ten registered contradictions (C1–C10) with nine decisions (P1–P9) for
   the owner. Read this before deciding what belongs on which page.
+- `docs/content/docs/progress/project-integration-implementation-guide.md` — **Project 主线整合实施蓝图**：把 Project、Canvas、Workflow、Tool、生图/生视频工作台和七段流水线收敛到一条服务端事实链；给出 GenerationIntent 接线形态、页面职责、M0–M5 改造顺序、Kimi/千问文件边界以及真实 HTTP、GPU、产物回写和用户动线验收指标。
+- `docs/content/docs/progress/local-agent-integration-plan.mdx` — **本地 Agent 接入计划**：记录 localhost + SSE/MCP 桥接、Canvas 与 Project 两种工具作用域、审批/幂等/审计边界，以及从画布 MVP 到资料包生产 MVP 的验收条件。
+- `docs/content/docs/progress/external-solutions-and-skills-research.md` — **外部方案与短剧 Skill 调研**：核对 H3 Motion Context、原生 latent 续接、短剧生产系统和公开 Agent Skill，给出 H3 Continuation Provider、许可证、质量门禁和 P0/P1 采用顺序。
 
 ## Notes
 

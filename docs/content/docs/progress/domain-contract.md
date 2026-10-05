@@ -159,6 +159,29 @@
 | `params` | `Record<string, unknown>` | 是 | 本次实际参数 |
 | `createdAt` | `string` | 是 | 创建时间 |
 
+> **P1 续接扩展**：Candidate 仍是 GenerationSlot 的历史最小单元；涉及 H3 多段生成时追加以下字段。旧候选可以缺失这些字段，新写入必须完整填写，不能把续接关系塞进文件名或 prompt。
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `takeId` | `string` | 否（续接时是） | 同一 Shot 的一次完整尝试或续接分支 |
+| `parentCandidateId` | `string \| null` | 否（续接时是） | 分叉自的候选；重新开链为 `null` |
+| `approvalStatus` | `pending \| approved \| rejected \| superseded` | 否 | 当前候选的采用状态；`selected` 仍由 GenerationSlot 统一指向 |
+| `continuationChainId` | `string \| null` | 否（续接时是） | H3 链标识；单段生成可为 `null` |
+| `segmentIndex` | `number \| null` | 否（续接时是） | 链内从 0 开始的段序 |
+| `parentArtifactId` | `string \| null` | 否（续接时是） | 上一段不可变 Artifact |
+| `contextArtifactId` | `string \| null` | 否 | 实际送入 Provider 的上下文视频/帧/音频 Artifact |
+| `latentArtifactId` | `string \| null` | 否 | Provider 暴露 latent/context 时的中间产物；不得假设所有 Provider 都支持 |
+| `continuation` | `ContinuationMeta \| null` | 否 | 重叠/新增帧、分辨率、采样率及接缝 QC，见下方 |
+
+`ContinuationMeta` 最小形态：
+
+```text
+{ overlapFrames, addedFrames, width, height, fps, audioSampleRate,
+  seam: { audioCorrelation, rmsStepDb, freezeDetected, motionDrift, reviewed } }
+```
+
+续接链的每一段仍然是独立 Job、Artifact 和 Candidate。链只能通过父引用向前追溯；从已批准候选分叉时创建新的 `takeId`/`continuationChainId`，不得改写原链或覆盖原 Artifact。
+
 ### 3.7 Artifact（不可变产物）
 
 | 字段 | 类型 | 必填 | 说明 |
@@ -377,7 +400,7 @@
 | 现有代码字段 / 概念 | 新契约字段 | 说明 |
 | --- | --- | --- |
 | `CanvasProject`（`use-canvas-store.ts:10-22`） | `Canvas` | 纯改名（D1）；字段不变，仅 `projectId` 语义需纠正 |
-| `CanvasAgentSnapshot.projectId`（当前填的是**画布 id**） | `Canvas.id`（在 `Project.canvasIds[]` 中） | 语义纠正，避免 `projectId` 歧义（D1 代价说明） |
+| `CanvasAgentSnapshot.projectId`（当前填的是**画布 id**） | `CanvasAgentSnapshot.canvasId` + `productionContext.projectId` | 语义纠正：画布身份与 Project 生产上下文分开；改造完成前不得把画布 id 继续写入 `projectId` |
 | `Asset`（`use-asset-store.ts:15-26`） | `AssetRef`（项目引用模型） | 现有浏览器 Asset CRUD 只作迁移输入，不约束新接口（development-plan §5.2） |
 | `Asset.projectId`（**当前缺失**） | `AssetRef.projectId` | 空 = 全局素材库；有值 = 项目私有 |
 | `Asset.bindingId`（**当前缺失**） | `AssetRef.bindingId` | 绑定到剧本里的角色/场景/道具 → 一致性锚点 |
@@ -412,7 +435,7 @@
 
 ## 8. 已拍板决策与遗留待定
 
-### 8.1 已由用户拍板（2026-10-03，登记于 `development-plan.md` §7 D7–D11）
+### 8.1 已由用户拍板或已纳入执行基线（登记于 `development-plan.md` §7 D7–D16）
 
 | 项 | 决策 | 落点 |
 | --- | --- | --- |
@@ -420,7 +443,9 @@
 | 规划参数层级 | **D8 项目级默认、逐集可覆盖** | §3.1 `Plan` + §3.2 `Episode.plan?` |
 | 审核提示粒度 | **D9 任何环节可产生，按 scope 就近展示** | §3.1 `ReviewNote` 结构化定义 |
 | 候选保留上限 | **D10 不设上限、不自动清理** | §3.5 `candidates`、§5.3 |
-| 一键跑完五阶段 | **D11 不做**，保留逐阶段人工审核门禁 | 阶段门禁（P0-a 落地） |
+| 一键跑完全部生产阶段 | **D11 现阶段保留逐阶段人工审核门禁，后期允许全局开关自动推进** | 阶段门禁（P0-a 落地） |
+
+> D13～D15 的数据边界、画布接入和声音生产决策见 `development-plan.md`；D16 的 Shot/Take/Candidate/Approval 与 H3 continuation 字段见 §3.6，属于本轮执行基线。D16 不等于承诺“无限续接”，默认 Provider 仍须经过 POC 和接缝验收。
 
 ### 8.2 文档分歧（按冻结晶执行，无需再拍板）
 

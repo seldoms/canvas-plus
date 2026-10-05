@@ -9,8 +9,14 @@ description: 当前项目后续值得处理的事项
 
 - 本地 Agent 接入后续：按[本地 Agent 接入规划](/zh-CN/docs/progress/local-agent-integration-plan)把 Claude Code CLI Adapter 升级为 Claude Agent SDK Adapter，并完善工具队列体验。
 - Agent Skill 后续：补充网络检索安装、Skill 资源文件管理和可控的本地记忆沉淀。
+- Agent 生产作用域：新增项目上下文、阶段/Job 状态、跑阶段/取消、采用候选和资料包导出工具；保留 Canvas 本地工具，正式生产统一走 Project/流水线 API，并落实确认、乐观版本、幂等键和审计记录。
+- H3 续接 POC：先探测原生 Masked AV（ComfyUI PR #15375），再在 16GB 机器上对比原生 Masked AV 候选、MIT latent-tail Continuation、官方 Add Guide 和 Motion Context，按 2/4/8/10 段记录音频接缝相关性、响度/底噪突变、画面冻结、运动漂移、显存、耗时和链深衰减，验证前不把任何方案登记为默认 Provider。
+- Project 契约补充 continuation chain 字段：`continuationChainId`、`segmentIndex`、`parentArtifactId`、`contextArtifactId`、`latentArtifactId`、重叠/新增帧、分辨率锁、音频采样率和接缝指标；每段仍是独立 Job/Artifact/Candidate。
+- 吸收经审核的短剧 Skill：连续性锁、稳定 SHOT/TAKE ID、道具/场景参考板、文字与时间确定性检查、生产前预览确认、可恢复审核门禁；不复制第三方运行时代码，也不建立第二套 Markdown 数据库。
 
 ## 本地网关与影视流水线
+
+- **PRD 与里程碑收口（仅规划）**：首个目标为 60～90 秒完整验证短片及剪辑交接包；已确认的分批、风格圣经、资产标准见 `prd.md` §1.1～§1.4。继续确认声音/对白、画幅、验收质量、画布职责、自动模式失败处理及目标剪辑工具，再形成实施里程碑。人工门禁现阶段开启，后期可全局切换（修订 D11）；本轮未实现新功能，不移入待测试清单。
 
 - **P0 健康检查边界（2026-10-05 复核后已基本收口）**：LLM 侧已收口 —— 产品负责人拍板「外部模型探测不实用，模型清单只读注册表」，探测链路（`probeLlm`/`listLlmModels`/`modelsAt`/探测缓存/`probeTimeoutMs`）整条删除，`/v1/models` 等四处清单改为注册表静态展开（渠道声明的 `models[]` → 「渠道名::模型名」，启动与渠道表写入时自动 sync）；`/api/health` 的 `ok` 改为存活语义 + 新增 `service` 段，`llm` 段带 `probed:false`，前端「测试连接」不再把「已登记」显示成「已连通」。**依赖探测也已收口**：`comfy`/`runninghub` 改走 30s TTL 缓存 + 过期后台刷新 + 单次 3s 硬超时，首次未就绪返回 `pending:true`，`/api/health` 实测 **1.8~2.4ms**（历史上是 8s+）。**仍未做**：生成就绪度还没与依赖连通分离。画幅改为**只检测不改稿**（`aspectRatioConflict` 命中即整稿弃用、回落同步稿 + warning），仍需真实任务验收；H3 新任务真实 UI 取证**已完成**（`h3-i2v-ui-evidence.md`），只剩带台词镜头的视频逐字台词未取证。方案与验收见开发计划 §11.7、契约见 `model-registry-contract.md` §3.1。
 - **2026-10-04 轮的运维遗留**：① `data/runs/run-murvf1vq-aqyqm/run.json.bak-bloated`（529MB，#67 事故备份）在修复后的 run.json 经正常使用确认无误后删除 —— 2026-10-05 复核仍在盘上；② ~~工作区按作者/主题分批提交~~ → **已全部提交**（2026-10-05 复核工作区干净，HEAD `0ca5698`）。
@@ -26,7 +32,7 @@ description: 当前项目后续值得处理的事项
 - **P1-a 打通项目产物图谱**：Artifact/AssetRef、分镜、角色、场景和关键帧在新工作区互相跳转；旧插件只作为一次性导入源。
 - **P1-b 生图/生视频活扣与批量执行**：**已落地**（候选活扣 `candidates[]` + 逐条 `regenerate` 端点换模型只追加候选 + 横向铺开候选「换个模型再出一张」+ 逐镜重试默认 2 次 + 模型别名）；**仍缺**：分组运行（整集批量）与 Canvas 内的批量操作。
 - **P1-c 六阶段方法论吸收**：**阶段技能接线已完成**（五个阶段技能接管两个方法论库、长篇分块路径注入内容创作红线）；**阶段 0 规划已落地**（题材/基调/动画片/像素风/布偶戏等预置选项 + `planSuggestion` 自动回填 + 01 改三段式 `analyze→outline→script`，集数/时长真进提示词）；**仍未落**：按 Project/Workflow 版本运行。~~产品拍板的两条硬约束 D1/D3~~ → **均已落地（2026-10-05 复核）**：D1 = `src/durations.js` + `GET /api/durations`（`index.js:494`）+ `capability-limits.js:25,89,266` 按模型吸附 `17k+5` 并在提交前校验；D3 = `config.js:83 maxKeyframesPerShot: 4` + `pipeline.js:2578` 单镜不达标自动重试。
-- **P1-d 片段合成和交付**：**成片执行体已完成**（`delivery.js`：concat/xfade 拼接 + 外部音轨 `amix` 混音 + **字幕烧入** + **抽封面** + 可复现拼接清单 + ffmpeg 日志 + 独立合成接口 `POST /runs/:id/steps/assembly/assemble`，19+8 例测试）；**仍缺**：**音源自己产生**（当前 `plan.audio` 靠外部手工传入，流水线无任何环节生产音频）、分集/全剧交付包与后期工作区界面。⟶ **更正（2026-10-03 傍晚）**：TTS 与音色**已有真实产出** —— `audio_qwen3_tts` 工作流已建并合成了两名角色的对白（中位基频 143.7Hz / 254.0Hz，客观可区分）；语速不再被 LLM 的表演注解驱动（`pilot-issues.md` #50）。**仍缺的是接线**：未接进流水线阶段、无音频 Job、AudioCue 未落库、无响度/M&E/多语言音轨。见 `pilot-issues.md` #23/#49。
+- **P1-d 片段合成和交付**：**成片执行体已完成**（`delivery.js`：concat/xfade 拼接 + 外部音轨 `amix` 混音 + **字幕烧入** + **抽封面** + 可复现拼接清单 + ffmpeg 日志 + 独立合成接口 `POST /runs/:id/steps/assembly/assemble`，19+8 例测试）；**仍缺**：**音源自己产生**（当前 `plan.audio` 靠外部手工传入，流水线无任何环节生产音频）、分集/全剧交付包与后期工作区界面。⟶ **更正（2026-10-03 傍晚）**：TTS 与音色**已有真实产出** —— `audio_qwen3_tts` 工作流已建并合成了两名角色的对白（中位基频 143.7Hz / 254.0Hz，客观可区分）；语速不再被 LLM 的表演注解驱动（`pilot-issues.md` #50）。**仍缺的是接线**：未接进流水线阶段、无音频 Job、AudioCue 未落库、无响度/M&E/多语言音轨。默认架构已确定为独立 Qwen3-TTS 对白轨 + CPU/ffmpeg 混音；H3 原生音频和口型同步仅按镜头可选。见 `pilot-issues.md` #23/#49。
 - **P2 项目复用与收尾**：跨集资产版本、引用计数/清理、性能与离线导出**尚未开工**；旧页面与兼容适配层的移除也归这一档。
 - 旧画布数据：用户已确认**不要旧画布数据**（那是他的测试数据），**不做迁移、不写兼容层**（登记为 `development-plan.md` §7 D12，P0-a 方案 R1/R11 随之撤销）。
 - 视频提速：实测上游 `video_h3_i2v_sla` / `video_h3_i2v_blockcache` 加速模板；先降分辨率出草稿、定稿再出高清是零新增模型零新增模板的方案。

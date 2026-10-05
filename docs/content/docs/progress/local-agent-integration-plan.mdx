@@ -13,11 +13,11 @@ Allow locally authenticated coding agents to read and modify the active browser 
 
 Canvas Agent is the single local bridge. The browser synchronizes structured canvas state to it over authenticated HTTP and SSE. Codex and future Claude adapters use MCP tools exposed by Canvas Agent. Browser-side writes remain structured, reviewable, and undoable.
 
-The service is divided into agent adapters, canvas state and tool handling, HTTP/SSE transport, and MCP exposure. Codex is the first adapter through `codex app-server`; Claude should use the Claude Agent SDK rather than duplicating canvas logic.
+The service is divided into agent adapters, canvas state and tool handling, HTTP/SSE transport, and MCP exposure. Codex is the first adapter through `codex app-server`; Claude should use the Claude Agent SDK rather than duplicating canvas logic. This bridge remains local, but its tools have two explicit scopes: `canvas_*` for browser canvas editing and `project_*` for the server-owned production fact chain. The latter must call canonical Project/pipeline APIs and must not mutate production data through localforage.
 
 ## Tool design
 
-Tools should cover state and selection reads, node creation and updates, connections, batch operations, viewport and selection changes, and text, image, or video generation. High-level tools convert to a small set of canvas operations before the browser applies them.
+Tools should cover state and selection reads, node creation and updates, connections, batch operations, viewport and selection changes, and text, image, or video generation. High-level canvas tools convert to a small set of canvas operations before the browser applies them. Project tools should separately cover project context, stage gates, Job/Artifact status, candidate adoption, stage execution/cancellation, and delivery package export. Workbench tools remain suitable for independent experiments; a Project-scoped generation must use the canonical `GenerationIntent → Job → Artifact → AssetRef` path.
 
 ## Side panel
 
@@ -29,6 +29,9 @@ The browser panel manages connection state, conversations, streaming events, mod
 - Pin the accepted browser origin.
 - Keep local agent login and file permissions out of the hosted site.
 - Make writes confirmable and undoable in the browser.
+- Require confirmation for production writes, compute starts, and exports; read-only inspection may run automatically.
+- Carry `projectId`, `canvasId`, stable shot context, optimistic version, and `idempotencyKey` separately. Never put a Canvas id in `CanvasAgentSnapshot.projectId`.
+- Record Agent operations with actor, thread/turn/item identity, before/after version, and affected Job/Artifact ids.
 - Never redirect an active turn to another tab when its initiating page disconnects.
 
 ## Delivery stages
@@ -37,5 +40,6 @@ The browser panel manages connection state, conversations, streaming events, mod
 2. Add the browser Codex panel with streaming conversations and history.
 3. Add a Claude Agent SDK adapter using the same canvas tools.
 4. Improve approvals, diagnostics, multi-tab behavior, Skills, and recovery.
+5. Add Project-scoped tools and route formal production through the canonical Project/pipeline APIs.
 
-The MVP is complete when an agent can connect to the active canvas, read state and selection, apply visible node operations, start a generation workflow, return structured errors, and remain isolated across tabs.
+Canvas MVP is complete when an agent can connect to the active canvas, read state and selection, apply visible node operations, start a generation workflow, return structured errors, and remain isolated across tabs. Production MVP additionally requires reading Project stage state, starting and observing a real Job, adopting its Artifact, and exporting a delivery package with a traceable manifest.

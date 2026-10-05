@@ -1,7 +1,7 @@
 # 开发计划 —— Project 一等实体与模块联动
 
 > 内部文档，**有意不登记进 `meta.json`**，不进文档站导航。
-> 版本：v2（2026-10-03）。来源：一次三视角并行调研（资产复用 / 数据流断点 / 用户成本）+ LibTV 联动模式对标 + 代码审计。
+> 版本：v3（2026-10-06）。来源：一次三视角并行调研（资产复用 / 数据流断点 / 用户成本）+ 外部短剧产品与 Skill 对标 + H3 续接方案核查 + 代码审计。
 > 上位文档：`prd.md`（产品需求）。本文是**执行计划**，PRD 是**产品意图**。
 >
 > **证据分级**：每条结论标注
@@ -167,7 +167,7 @@ Artifact { id, jobId, url, type, checksum, createdAt, nodeId?, outputName? }
 `run` 的小说正文改为引用 `sourceRevisionId`，运行记录只保存输入版本、提示词版本、模型/工具选择和输出引用。
 这样项目页可以快速加载摘要，长篇小说不会随着每次进度轮询重复传输，也能知道一次运行是否基于已经被用户修改过的原文。
 
-当前五阶段注册表应升级为可版本化的 `Workflow` 注册表。每个 Stage 要声明输入/输出 schema、人工确认门禁和可用 Tool；
+当前七阶段注册表应升级为可版本化的 `Workflow` 注册表。每个 Stage 要声明输入/输出 schema、人工确认门禁和可用 Tool；
 每个 Tool 要声明 `capability`、参数 schema、资源类别（GPU/CPU/LLM/API）、Provider 选择策略、取消和重试能力。
 ComfyUI 模板、外部图像/视频 API、LLM、TTS、ffmpeg 都是 Tool 的不同适配器，不能继续用一个 `template` 字段表达全部执行语义。
 
@@ -352,9 +352,11 @@ ReviewNote { id, scope: project|episode|scene|shot, targetId?, stage,
 
 `GenerationSlot.candidates[]` 不设数量上限，不自动清理；磁盘压力由用户手动归档或清理。生成记录的可追溯性优先于磁盘节省。
 
-### D11 不做「一键跑完五阶段」 【用户已定】
+### D11 人工门禁：现阶段开启，后期可全局切换 【用户已定；本轮修订】
 
-保留逐阶段人工审核门禁。一键跑完绕不过人工确认环节，不做。
+现阶段保留逐阶段人工确认，产出可修改并按影响范围重跑。后期流程与模型能力稳定后，通过全局开关支持自动推进，不永久禁止完整流程自动运行。关闭人工确认不取消必需输入、产物完整性校验和失败处理；自动采用资产/风格版本的策略仍待设计。
+
+本轮目标、批次策略、风格前置及最低资产标准以 `prd.md` §1.1～§1.4 为准；本决定取代历史“不做一键跑完”的产品限制，不表示自动模式已实现。
 
 ### D12 旧画布数据丢弃，不做迁移 【用户已定】
 
@@ -381,6 +383,25 @@ ReviewNote { id, scope: project|episode|scene|shot, targetId?, stage,
 - **三档深度**（详见 `platform-positioning.md` §5.5）：**A 最小**（产物登记 + `projectId`）｜**B 中度**（A + 画布生成改走服务端队列，收敛三套提交链）｜**C 重度**（B + 画布节点图由服务端持有；与 D7"画布单写者"、§7「画布是可替换的编辑表面」冲突）。
 - **工程侧倾向 B**；**拍板前不要在画布侧写资料包入口**（会被现状挡着）。
 
+### D15 声音生产默认分离，口型同步可选 【用户已定，2026-10-05】
+
+默认采用“画面与声音分开生产”：MiniMax H3 负责动态画面，Qwen3-TTS 按角色 `VoiceProfile` 生成独立对白 `AudioCue`，环境声、音效和 BGM 作为独立轨道，最终由 CPU/ffmpeg 混音并生成字幕。H3 原生音频、H3 Talk、MuseTalk 和 LatentSync 保留为按镜头启用的可选增强；口型同步失败不得阻断默认成片。
+
+- **原因**：音色可以跨镜头稳定复用；修改台词只需重做对应音频和字幕，不必重跑视频；当前 16GB 单卡的口型后处理质量和显存调度都不足以成为主链路门槛。
+- **调度约束**：本地 TTS、H3 和口型模型共用 GPU 串行队列，CPU 混音在 GPU 任务后执行；没有对白的镜头跳过 TTS 与口型阶段。
+- **范围控制**：第一版继续使用已跑通的 Qwen3-TTS，不切换 CosyVoice/GPT-SoVITS；ACE-Step 和口型增强进入后续对比验证，不提前塞进默认工作流。
+
+### D16 Shot/Take/Candidate/Approval 与 H3 续接链分层 【本轮蓝图升级，2026-10-06】
+
+`Shot` 是叙事镜头，`Take` 是同一镜头的一次完整生成尝试或续接分支，`Candidate` 是一次 Job 产出的可比较结果，`Approval` 是当前采用指针。`GenerationSlot.candidates[]` 继续保存历史，不因重跑、换模型或续接而覆盖旧结果。
+
+- MiniMax H3 的多段生成按 `continuationChainId → segmentIndex → parentArtifactId` 组织；每段仍是独立 Job/Artifact/Candidate，支持从任一已批准 Segment 分叉和恢复。
+- “无限续接”只作为待验证的 Provider 能力，不写成产品承诺；先在 16GB 单卡上比较原生 Masked AV、MIT latent-tail Continuation、官方 Add Guide 与 Motion Context，再登记默认 Provider。
+- Skill 输出先落成结构化事实对象（StoryBible、VisualBible、CharacterBible、SceneBible、PropBible、DialogueBook、ShotPlan），再由 Compiler 按 Provider 能力编译；前端不暴露编译细节。
+- 每个续接连接点记录音频相关性、响度突变、冻结检测、运动漂移和人工复核，链深衰减或剧情转折不合格时必须允许重新开链。
+
+该决定对应 `project-integration-implementation-guide.md` 的 M3.5/M3.6，并把真实 60～90 秒闭环验收提升为 M6；在 M3.5 POC 完成前，不把任何 H3 custom node 直接写入主工作流。
+
 ### 7.1 用户故事：从小说到可交付短剧
 
 以下用户故事是页面设计和接口验收的主线。用户不应该理解 `runId`、ComfyUI prompt 或某个模板文件的目录结构，
@@ -391,7 +412,7 @@ ReviewNote { id, scope: project|episode|scene|shot, targetId?, stage,
 用户进入「项目」页，点击「新建短剧项目」，填写剧名、导入小说或剧本文件，选择默认比例、单集时长、目标集数和本地/外部模型策略。
 系统立即创建 Project 和一个默认 Canvas，但只保存原文的 `sourceRevisionId`；页面显示可编辑的规划报告、完成度检查表和预计资源成本。
 
-用户可以选择一个短剧模板（角色设定板、场景板、分镜板、默认六阶段 Workflow），模板只复制结构、提示词和参数，不复制历史产物。
+用户可以选择一个短剧模板（角色设定板、场景板、分镜板、默认七阶段 Workflow），模板只复制结构、提示词和参数，不复制历史产物。
 规划阶段结束后，系统停在“待确认”，用户确认后才允许进入剧本阶段。超过阈值的长篇应在这里显示预计 LLM 调用数、预计时间和可取消/续跑说明。
 
 页面必须能处理：文件格式不支持、文件为空、重复导入、编码异常、原文超长、网关不可达、模型列表为空，以及用户在尚未运行前修改规划参数。
@@ -512,7 +533,7 @@ ReviewNote { id, scope: project|episode|scene|shot, targetId?, stage,
 | **P0-g** | 内容与工艺质量门禁：结构校验、引用完整性、连续性、时长、口型/对白、音频响度、黑帧/静帧、字幕安全区和交付规格检查统一为可重放 QC Job | P0-b、P0-e | 每个阶段给出可解释的 pass/warn/block；失败项能定位到集/场/镜/音频 Cue；人工可以豁免并留下记录，系统不把风险提示混入正文 |
 | **P1-a** | 打通项目产物图谱：Artifact/AssetRef 回写项目，分镜、角色、场景和关键帧可在新工作区互相跳转；必要时提供旧插件数据导入适配器 | P0-a、P0-b | 关键帧进入项目资产无需复制像素；镜头详情可追溯来源、工具、任务和采用候选 |
 | **P1-b** | 活扣与批量执行：`GenerationSlot.candidates[]`、分组运行、逐镜重试、并排比较、采用/回退和 Canvas 批量操作 | P0-b、P0-d | 同一镜头使用两个 Tool 生成候选，保留全部历史并可点选采用；整集部分失败可续跑 |
-| **P1-c** | 六阶段方法论吸收 + 阶段 0 规划 + `skills/libraries/` 接线，按 Project/Workflow 版本运行 | P0-a、P0-c | 受 `AGENTS.md` 内容创作规范约束；规划、剧本、分镜、资产、关键帧、视频和后期均有确认门禁 |
+| **P1-c** | 七阶段方法论吸收 + 阶段 0 规划 + `skills/libraries/` 接线，按 Project/Workflow 版本运行 | P0-a、P0-c | 受 `AGENTS.md` 内容创作规范约束；规划、剧本、分镜、资产、角色定妆、关键帧、音频和后期均有确认门禁 |
 | **P1-d** | Delivery Executor：CPU ffmpeg 拼接、音频/TTS、字幕、封面、分集/全剧交付包和可复现清单；当前仅完成执行器和接口，尚无成功成片证据 | P0-b、P0-d | 片段全部完成不自动等于成片完成；后期失败可单步重跑并保留日志和中间产物；至少完成一次全链路可播放成片验收 |
 | **P1-e** | 完整声音后期：对白/旁白 TTS、音色锚点、口型参考音频、环境声、音效、BGM Cue、降噪/响度/混音、M&E 与多语言音轨 | P0-f、P0-g | 每句对白可追溯到角色、VoiceProfile、文本 revision 和 AudioArtifact；能单独替换音轨而不重做画面；交付前通过同步和响度检查 |
 | **P1-f** | 编辑与视觉完成：代理文件、时间线、粗剪/精剪、镜头替换、转场、节奏版本、色彩/画面统一、片头片尾和安全区 | P0-b、P0-e、P0-g | 用户可以在镜头级调整顺序和入出点；重做单镜不破坏剪辑版本；每个交付物保留 timeline/EDL/拼接清单 |
@@ -534,9 +555,9 @@ ReviewNote { id, scope: project|episode|scene|shot, targetId?, stage,
 2. 阶段 0 规划参数的层级 → **D8**（项目级默认，逐集可覆盖）
 3. `reviewNotes[]` 粒度 → **D9**（任何环节可产生，按 scope 就近展示）
 4. 活扣候选保留上限 → **D10**（不设上限，不自动清理）
-5. 「一键跑完五阶段」 → **D11**（不做，保留逐阶段人工门禁）
+5. 人工门禁与自动推进 → **D11**（本轮修订：现阶段开启，后期可全局切换）
 
-当前无待确认项。
+本轮待确认项见 `prd.md` §1.4；旧决策表不能视为本轮 PRD 与里程碑已全部定稿。
 
 后续追加：**D12 旧画布数据丢弃、不做迁移**（用户已拍板，见 §7）。
 
@@ -595,7 +616,8 @@ ReviewNote { id, scope: project|episode|scene|shot, targetId?, stage,
 | **P0-g** 内容与工艺质量门禁 | 🟡 | ⟶ **复核上调（⬜→🟡）**：**结构校验 + 引用完整性**已落地 —— 新增纯函数 `stage-artifact-check.js`，在产物落盘前校验七类产物（引用断裂 / id 重复 / 帧角色非法 / 配音时间倒挂判 error 并拦住阶段，可选字段缺失只放过或提示），编排器（`pipeline.js` 的 `executeStage`）、人工修订（`setStageInput`）与成片合成（`executeAssemble`，只告警不作废）三处接线，带 36 例单元 + 4 例集成回归。**仍未做**：连续性、声画同步、音频响度、黑帧/静帧、字幕安全区、交付规格这些**跨镜/跨阶段的工艺检查**，以及把检查统一成可重放的 QC Job、人工豁免留痕（`ReviewNote` 通道已有，尚未由 QC 自动生成） |
 | **P1-a** 项目产物图谱 | 🟡 | ⟶ 复核：缺口①②**已修** —— 资产工作区改为**以服务端 AssetRef 为唯一数据源**（不再读前端本地 store）、补上缩略图与站内弹窗预览、采用状态与切换候选入口（`180b173`）。残留缺口③：角色三视图/场景母版**已进入 AssetRef**（本机 keyframe 参考图 6 条已绑定），但**音色基准尚未进入图谱** |
 | **P1-b** 活扣与批量执行 | ✅ | `GenerationSlot.candidates[]` + 逐条 `regenerate` + 模型别名 + 横向候选交互 + 逐镜重试（默认 2）。缺口（未变）：分组（整集）运行与画布批量操作 |
-| **P1-c** 六阶段方法论 + 阶段 0 规划 | 🟡 | 阶段 0 预置 + `planSuggestion` 回填；01 `analyze→outline→script`；五阶段技能接方法论库；`normalizeEpisodes` 强制集数对齐。⟶ 复核：`textOverlays` 契约已落 02（#44 修正），台词注解「不参与生产参数」已写进 02（#50）。**缺口未变**：**D1 时长档位跟模型（`24×秒+3`，仅 5/10/15s）未落**（grep 0 处）；**D3 关键帧单镜 ≥4 张未落**（`config.pipeline.maxKeyframesPerShot` 仍 = 2，自动重生成未接） |
+| **P1-c** 七阶段方法论 + 阶段 0 规划 | 🟡 | 阶段 0 预置 + `planSuggestion` 回填；01 `analyze→outline→script`；七阶段技能接方法论库；`normalizeEpisodes` 强制集数对齐。⟶ 复核：`textOverlays` 契约已落 02（#44 修正），台词注解「不参与生产参数」已写进 02（#50）。**缺口未变**：**D1 时长档位跟模型（`24×秒+3`，仅 5/10/15s）未落**（grep 0 处）；**D3 关键帧单镜 ≥4 张未落**（`config.pipeline.maxKeyframesPerShot` 仍 = 2，自动重生成未接） |
+| **P0-h** Shot/Take/Approval 与 H3 continuation | ⬜ | 蓝图已冻结关系和字段；待 M3.5 完成本机能力探测、Provider 对比、续接链回溯、分叉恢复和接缝 QC。未完成前不宣称“无限续接”，也不把 custom node 写死进主流程 |
 | **P1-d** Delivery Executor | 🟡 | `delivery.js`(15.2KB)：ffmpeg concat/xfade + `amix` + 字幕 + 封面 + 清单 + 日志；测试 delivery(19)+wiring(8)。⟶ 复核：**已有真实片段产物证据** —— 本项目 `sh1`/`sh5` 两段 768×1376 / 24fps mp4 落盘且**自带 aac 音轨**（H3 是音画联合模型）。**缺口**：仍无**完整成片**（17 镜只出 2 段，其余 15 段为控算力主动取消）；`plan.audio` 仍靠外部手工传入，TTS 未接生产阶段 |
 | **P1-e** 完整声音后期 | 🟡 | ⟶ **复核上调（⬜→🟡）**：`audio.js`(29.4KB) + `audio-track.js`(18.9KB) 已实现 VoiceProfile / AudioCue / 声画对齐检查 / 幂等投影（grep 85 处）；台词清洗与显式语速解析已落（#50）；**TTS 工作流 `audio_qwen3_tts` 已建并产出两条真实音色对白**（老周 F0 143.7Hz / 女孩 254.0Hz，客观可区分）。缺口：**未接进 pipeline 阶段**（当前靠手工/一次性调用产出，无音频 Job、无 AudioCue 落库、无响度/M&E/多语言音轨）；环境声/BGM Cue 未做 |
 | **P1-f** 编辑与视觉完成 | ⬜ | 有 assembly 清单与 ffmpeg 执行器，无版本化 Timeline / 代理媒体 / 粗剪精剪 / 锁画工作区（grep 0 处） |
@@ -864,7 +886,7 @@ function markStale(project, changedIds) {
 2. **P0：角色/场景参考锁**——真正生成并确认三视图、正脸特写、场景母版，建立 ShotBinding 和 AssetRef selected 指针。
 3. **P0：关键帧一致性链**——关键帧 start 必须按 ShotBinding 注入参考 Artifact；Tool 不支持参考图时明确阻断；增加跨镜身份/服装/场景 QC。
 4. **P0：可逆执行链（P0-e）**——revision、输入指纹、影响分析、stale、分支 run、旧结果只读。
-5. **P0：音频生产链**——VoiceProfile、TTS Tool、AudioCue、独立对白轨、声画对齐门禁。
+5. **P0：音频生产链**——VoiceProfile、TTS Tool、AudioCue、独立对白轨、声画对齐门禁；默认不依赖口型同步，H3 Talk/MuseTalk/LatentSync 作为可选增强。
 6. **P1：结构化摄影机**——从 `camera` 字符串逐步升级为可校验对象，并按 Tool 能力映射或明确提示“不支持”。
 7. **P1：统一调度与交付**——本地短视频、外部短剧、TTS、音乐、音效和 CPU 混音全部使用同一 Job/Artifact/AssetRef 契约。
 
@@ -872,7 +894,7 @@ function markStale(project, changedIds) {
 
 ## 13. 全生产链主动审计：当前计划还缺什么
 
-当前五阶段流水线主要覆盖“剧本 → 分镜 → 视觉资产 → 关键帧 → 视频/后期生成”。一套可以稳定生产短视频和短剧的平台还必须覆盖制片、声音、编辑、质检、本地化和发布。下面按用户真正经历的生产周期重新盘点；“技能文档已有”不等于“系统已实现”。
+当前七阶段流水线覆盖“剧本 → 分镜 → 视觉资产 → 角色定妆 → 关键帧 → 音频 → 片段合成”。一套可以稳定生产短视频和短剧的平台还必须覆盖制片、编辑、质检、本地化和发布。下面按用户真正经历的生产周期重新盘点；“技能文档已有”不等于“系统已实现”。
 
 ### 13.1 立项与制作规格
 
@@ -1186,7 +1208,7 @@ const provenance = {
 | 缺口 | 现状 | 影响 |
 | --- | --- | --- |
 | **B 剪辑资料包无入口** | `edit-export.js:654` 的 `exportDeliveryPackage` 只有 CLI（`scripts/export-edit-package.mjs --run <id>`），`index.js` 无路由、`web/` 零引用 | 画布/前端**物理上无法**产出 zip（分集成片 + clips + srt + FCPXML/EDL） |
-| **Agent 无流水线工具** | canvas-agent 的 33 个工具全是 `canvas_*` / `workbench_*` / `assets_*` / `prompts_search` | Agent 只能操作画布节点，**驱动不了七段流水线、也拿不到资料包** |
+| **Agent 无流水线工具** | canvas-agent 的 33 个工具全是 `canvas_*` / `workbench_*` / `assets_*` / `prompts_search` | Agent 目前只能操作画布节点，**驱动不了七段流水线、也拿不到资料包**；目标是保留本地桥接并新增 `project_*` 作用域 |
 | **无报告渲染层** | 流水线页只渲染原始 JSON，前端不读 `stage.warnings` | 缺「一页可评审」的产物视图（门结果、分镜表、导出按钮无处呈现） |
 
 ### 11.9.5 两个数据形态 / 历史故障（务必先看再动手）
@@ -1231,11 +1253,10 @@ const provenance = {
 | P2 | 四页唯一职责表 | 照 §5.1 收敛：项目=主线事实、画布/工作台=可丢弃的编辑与试验表面、流水线=跑批控制台 |
 | P3 ✅ | "工作流"统一叫法 | **已拍板并落实**：统一为 **阶段 / 跑批 / 模板 / 画布**（写进 `domain-contract.md` §3.9）；UI 本来就没有"工作流"字样 |
 | P4 | 本期目标锁定 **B 包能出** | 认同；给 `edit-export` 接 HTTP + UI + Agent 工具（现在只有 CLI） |
-| P5 | 是否补 **Agent 的流水线工具** | 建议补 3 个（看状态/跑阶段/导出包），否则"Agent 产出资料包"无从谈起 |
+| P5 | 是否补 **Agent 的流水线工具** | **建议补 Project 作用域工具**：项目上下文/阶段门禁/Job 与 Artifact 状态/跑阶段/取消/采用候选/导出包；否则“Agent 产出资料包”无从谈起。具体权限、幂等和审计见 `project-integration-implementation-guide.md` §7 |
 | P6 | 外部 API 口径（C8） | RunningHub 不投入；浏览器直连渠道只保留在工作台，项目/流水线一律走网关 |
 | P7 | BR 草稿 A–F 正式拍板或归档（C6） | 逐条给结论，或把 BR 降级为"参考"并在文首标注 |
 | P8 ✅ | 文档过期清理（C4/C5/C9） | **已拍板并部分落实**：段数统一"七段"（`domain-contract.md` §3.9 口径 + PRD 数据边界）；**代码侧仍存**：`gates.js` 缺 casting/audio（已入册 **#96**）、前端 fallback requires 冲突（**#97**）（待施工） |
 | P9 ✅ | **画布是否接入服务端事实链**（C7/C10） | **已拍板 D14：接**。深度分 A/B/C 三档（`platform-positioning.md` §5.5），工程侧倾向 **B**，产品负责人要求**先交外部评审**；拍板前不要在画布侧写资料包入口 |
 
 **拍板前不要做的事**：不要在"画布能不能出包"这个问题上继续写代码——P9 没定之前，画布侧的任何资料包入口都建不起来（C7 挡着）。
-

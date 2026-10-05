@@ -2,6 +2,18 @@
 
 ## Unreleased
 
++ [文档] 开发蓝图升级为 v3：冻结 Shot/Take/Candidate/Approval 关系、H3 continuation chain 与 Skill/Compiler/Provider 分层，新增 M3.5/M3.6 与 M6 真实闭环验收，并同步续接字段、分叉恢复、接缝 QC 和 Provider 能力门槛。
+
++ [文档] 新增外部方案与短剧 Skill 调研：确认 H3 Motion Context 是可恢复的 latent 续接节点而非真正无限长生成，优先验证 MIT 原生 latent-tail Continuation，并登记 H3 chain 数据字段、接缝质量门禁、Agent/短剧 Skill 借鉴方向与许可证边界。
+
++ [文档] 补充 Huobao Drama 对照分析：确认其优势在 SQLite/WAL、Mastra Agent、统一任务生命周期、批量重试、可编辑 Skill 与 Electron 产品化；登记 CC BY-NC-SA 非商业许可证，以及未覆盖 H3 长链、Project Artifact 图谱和声音事实链的边界。
+
++ [文档] 补充本地 Agent 整改蓝图：保留 localhost + SSE/MCP + 结构化 Canvas op 链路，纠正 `canvasId` 与 `projectId` 混用，新增 Project 生产作用域工具、统一审批/幂等/审计规则，并把 Agent 纳入资料包闭环验收。
+
++ [文档] 新增 `project-integration-implementation-guide.md`：把 Project、Canvas、Workflow、Tool、生图/生视频工作台和七段流水线落成一条 GenerationIntent → Job → Artifact → AssetRef 事实链，补充 M0–M5 改造顺序、核心代码形态、委派文件边界和端到端验收指标。
+
++ [文档] **确认声音生产架构**：默认由 Qwen3-TTS 生成独立对白轨，再由 CPU/ffmpeg 与环境音、音效、BGM 混音；H3 原生音频及 H3 Talk/MuseTalk/LatentSync 口型同步降为按镜头启用的可选增强，并登记 16GB 单卡串行调度约束。
+
 + [新增] **阶段产物契约校验落地（P0-g 的「结构校验 + 引用完整性」部分）**：新增纯函数模块 `stage-artifact-check.js`，覆盖 script / storyboard / design / casting / keyframe / audio / assembly 七类产物——引用断裂（分镜 `sceneId` 不在剧本、关键帧 `shotId` 不在分镜、片段 `keyframeId` 不存在、配音 `shotId` 不在分镜、分集 `sceneIds` 不在剧本）、id 重复、帧角色非法、配音时间倒挂一律判 **error 并拦住该阶段**（阶段置 `error`、产物不落盘、下游拿不到 done）；可选增强字段缺失、artifact/job 为空、`keyframeId=null`、上游集合缺失等一律放过或只提示，不误拦。人工「修订产物」走同一道门（不合法直接 400），成片已产出则只记 warning、不作废。
 + [新增] **运行审计日志（追加式 `runs/<id>/log.jsonl`）**：创建 run、阶段开始/产出/失败、人工修订、成片合成各记一条 `{at, actor, op, stage, hash, ok, message}`，`hash` 是产物内容指纹（阶段没有 revision，用它对账「这是哪一版产物」）；新增 `GET /api/pipeline/runs/:id/log?limit=`；写入失败只告警、不阻断生产。
 
