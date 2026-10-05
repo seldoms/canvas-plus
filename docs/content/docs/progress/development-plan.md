@@ -1130,3 +1130,57 @@ const provenance = {
 - **不把「改写」扩成「二次创作」**：补全器只从上下文取数并按规则推导；推不出的**显式标缺**，绝不编造
 - **不动已验收的 H3 字段结构**与「台词/画面文字逐字锁」——它现在是唯一跑通并取证过的视频链路
 - **不在有任务运行时重启后端**（运维红线，见 `canvas-plus-pipeline` 技能）
+
+## 11.9 质量门与审计日志落地 + 首次全链路 smoke（2026-10-05 晚）
+
+### 11.9.1 本轮落地（已部署，可复算）
+
+| 项 | 内容 | 证据 |
+| --- | --- | --- |
+| **P0-g 结构 + 引用完整性** | 新增纯函数 `canvas-server/src/stage-artifact-check.js`：七类产物（script / storyboard / design / casting / keyframe / audio / assembly）。**error**：引用断裂（分镜 `sceneId`、关键帧 `shotId`、片段 `keyframeId`、配音 `shotId`、分集 `sceneIds`）、id 重复、帧角色非法、配音时间倒挂 → 阶段 `error`、**产物不落盘**、下游拿不到 `done`；**放过**：可选增强字段缺失、artifact/job 为空、`keyframeId=null`、上游集合缺失 → 只写 `stage.warnings` | commit `02b0eba`；`test/stage-artifact-check.test.mjs` 37 例（20 条击穿 + 防误拦） |
+| 接线三处 | `executeStage`（所有阶段，落盘前）、`setStageInput`（人工修订，不合法 400、不覆盖磁盘已有产物）、`executeAssemble`（**只告警，不作废已合成成片**） | `test/stage-artifact-gate.test.mjs` 4 例集成 |
+| **追加式审计日志** | 新增 `canvas-server/src/run-log.js` + `GET /api/pipeline/runs/:id/log?limit=`；写 `data/runs/<id>/log.jsonl`（一行一条、永不重写），字段 `at/actor/op/stage/hash/ok/message`，`hash` 为产物内容指纹（阶段无 revision，用它回答「这是哪一版产物」）；写入失败只告警 | `test/run-log.test.mjs` 5 例 + `test/pipeline-log-http.test.mjs` 1 例 |
+| 线上真机自检 | 违约产物 → `400 产物未通过契约校验（1 处）：episodes[0].sceneIds：引用的场次「sc9」不存在`；合规产物 → `done`；日志两条（`run.create` / `stage.edit`，带 actor 与指纹）；自检 run 已删除 | 远程 `02b0eba` 部署后实测 |
+
+测试口径：本地 `cd canvas-server && node --test test/*.test.mjs` → **955 用例 / 946 通过 / 1 跳过**；**8 项为本机环境差异**（macOS homebrew ffmpeg 无 libwebp → 4 个缩略图用例、缺真实 `config.json` → deepseek 渠调用例、2 个真机媒体用例），服务器上这 8 项通过。远程对外基线仍记 903/903（本轮新增用例未重算该口径）。
+
+### 11.9.2 真机实测暴露并已修的问题
+
+- **`storyboard.episode_ref` 误报（已修，`5e1d3a4`）**：绑定项目时编排器把 `shots[].episodeId` 归一为**项目侧集 id（`ep_0001`）**，与剧本侧（`ep1`）不同源，拿剧本集合比对必然误报。真机证据：`run-muv6y60o-uesqy` 的 `stage.warnings` 出现该条，而该阶段门与骨架判定均通过。真实问题由 `production-contracts.normalizeShotEpisodeIds` 的 `unresolved / remapped` 告警兜底，本模块不再重复造规则；已补「绑定项目后不得报警」的防回归用例。
+- 观察：`stage.warnings` 目前**混着对象与字符串**（既有的 8 条是对象，本轮追加的是字符串），前端又不读该字段，暂无影响，但登记为待统一项。
+
+### 11.9.3 全链路 smoke 现状（进行中）
+
+- **大文本只做分镜验收**（不绑项目，`run-muv6mvcs-ksgz8`）：剧本 done（160s）→ 分镜 done（340s）→ **41 镜 / 205 秒 / 23 场次局部全覆盖 / 门零误拦**。
+- **小项目全链路**：`prj_01M45YJN7NFXPQRV8EESK59JQA「[全链路验收] 最后一班」` + `run-muv6y60o-uesqy`（原文 800 字内，plan 1 集 × 45 秒 × 9:16）：
+
+| 阶段 | 状态 | 观测 |
+| --- | --- | --- |
+| script | ✅ done | 50s |
+| storyboard | ✅ done | 120s，**8 镜 / 50 秒 / 2 场次**，门零误拦 |
+| design | ✅ done | **12 分钟出 5 张参考图**（2 角色 + 1 场景），`assetRefs` 已登记 |
+| casting | ✅ done | 逐角色 `face + voice` 确认后放行（人工拍板点） |
+| keyframe | 🔄 running | 8 帧 × 4 候选 = **32 张图入队**；t2i 单张约 30–60 秒 |
+| assembly / post | ⏸ 待跑 | 按 8 段 × 5 秒 × H3 ≈ 8 分钟/段估算 ≈ 64 分钟 |
+| 资料包 | ⏸ 待跑 | 见 11.9.4 |
+
+### 11.9.4 「标准资料包」还缺的三处（本轮新增登记）
+
+| 缺口 | 现状 | 影响 |
+| --- | --- | --- |
+| **B 剪辑资料包无入口** | `edit-export.js:654` 的 `exportDeliveryPackage` 只有 CLI（`scripts/export-edit-package.mjs --run <id>`），`index.js` 无路由、`web/` 零引用 | 画布/前端**物理上无法**产出 zip（分集成片 + clips + srt + FCPXML/EDL） |
+| **Agent 无流水线工具** | canvas-agent 的 33 个工具全是 `canvas_*` / `workbench_*` / `assets_*` / `prompts_search` | Agent 只能操作画布节点，**驱动不了七段流水线、也拿不到资料包** |
+| **无报告渲染层** | 流水线页只渲染原始 JSON，前端不读 `stage.warnings` | 缺「一页可评审」的产物视图（门结果、分镜表、导出按钮无处呈现） |
+
+### 11.9.5 两个数据形态 / 历史故障（务必先看再动手）
+
+- **`project.script` 形态坑**：「喜宴之外」`prj_01M45S6PMAPT56CABAKZAZJC3T` 的 `script` 是 **5751 字 markdown 文本**，而契约要结构化对象 → `normalizeScript` 得到空结构 → **`episodes = 0`**，分镜跑不起来（该项目的 `runs` 也是 0）。同时 **`applyScriptProjection` 会直接覆盖 `project.script`**（`projects.js:407`）→ 在有内容的项目上重跑剧本阶段会**冲掉人写的剧本**，必须先备份或另建 run。
+- **视频任务历史全 error**：远程 5 条 `video_h3_i2v` 失败原因均为 `模板 video_h3_i2v 缺少参数：INPUT_IMAGE`（2026-10-04，早于现有「拿不到首帧就不入队」守卫）。新门 `assembly.keyframe_missing` / `keyframe.shot_ref` 会提前把这类状态摆出来。
+
+### 11.9.6 版本控制与部署纪律（本轮修正）
+
+- 远程工作区曾有 **11 个提交从未推给裸仓库**（`/root/repos/canvas-plus.git` 的 HEAD 还停在旧的 `666f0bb`，等于没有备份）。现已推齐：**本地 = 裸仓库 = 远程工作区 = `5e1d3a4`**。
+- 另一会话在服务器上的未提交成果（`prompt-sanitize.js` + 测试 + `research/prompt-elements/`）已固定为 `a987cea`，本轮的 `02b0eba` 叠在它之上。
+- **部署只走 git**：本地提交 → 推裸仓库 → 远程 `git pull /root/repos/canvas-plus.git canvas-plus`（公网 remote 会因 host key 校验失败）→ `systemctl restart canvas-server`。**不要用 `scripts/sync-remote.sh`**：它是 `rsync -a --delete`，会把服务器上未提交的成果**删掉**。
+- 重启前先确认无 running/queued 任务（重启会把在跑任务判失败）。
+

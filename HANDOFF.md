@@ -24,7 +24,21 @@
 
 ## 当前状态
 
-**最后更新**：2026-10-05（独立代码审查：核对代码完成度与文档差异、清理已失效结论。**进度细节的唯一入口**：`docs/content/docs/progress/development-plan.md` §11「进度快照与问题台账」+ `pilot-issues.md`）
+**最后更新**：2026-10-05 晚（质量门 + 审计日志落地并部署；首次全链路 smoke 进行中。**进度细节的唯一入口**：`docs/content/docs/progress/development-plan.md` §11「进度快照与问题台账」——本轮登记在 **§11.9**，问题台账另见 `pilot-issues.md`）
+
+**2026-10-05 晚 本轮结论（先读这段，再看下面的历史表格）**
+
+> 基线：`canvas-plus` @ `5e1d3a4`（本地 = 裸仓库 = 远程工作区三处一致）；后端 `node --test` → **955 用例 / 946 通过 / 1 跳过**。本机 8 项失败全部是**环境差异**（macOS ffmpeg 无 libwebp、缺真实 `config.json`、2 个真机媒体用例），服务器上通过。
+
+| 结论 | 证据 |
+| --- | --- |
+| ✅ **P0-g「结构 + 引用完整性」已落地**（§11.1 P0-g ⬜→🟡）：新增纯函数 `canvas-server/src/stage-artifact-check.js`，error 级问题让阶段 `error` 且**产物不落盘**，可选字段缺失只 warn；接线 `executeStage` / `setStageInput`（人工修订 400）/ `executeAssemble`（只告警、不作废成片） | commit `02b0eba`；`test/stage-artifact-check.test.mjs`（37 例）+ `stage-artifact-gate.test.mjs`（4 例） |
+| ✅ **追加式审计日志已落地**：`canvas-server/src/run-log.js` + `GET /api/pipeline/runs/:id/log`，写 `data/runs/<id>/log.jsonl`（一行一条，`at/actor/op/stage/hash/ok/message`） | commit `02b0eba`；`test/run-log.test.mjs`（5 例）+ `pipeline-log-http.test.mjs`（1 例） |
+| ✅ **真机实测修掉一条误报门**：绑定项目时 `shots[].episodeId` 是项目侧 id（`ep_0001`），拿剧本侧（`ep1`）比对必然误报 → 该规则删除，改由 `normalizeShotEpisodeIds` 兜底 | `5e1d3a4`；`run-muv6y60o-uesqy` 的 `stage.warnings` 实测证据 |
+| 🔄 **全链路 smoke 进行中**：`prj_01M45YJN7NFXPQRV8EESK59JQA`，script → storyboard（8 镜 / 50 秒 / 2 场次）→ design（5 张参考图 / 12 分钟）→ casting（逐角色确认）全 done；**keyframe 正在出图（8 帧 × 4 候选 = 32 张）**，assembly / 成片 / 资料包待跑 | `run-muv6y60o-uesqy`；大文本分镜验收 `run-muv6mvcs-ksgz8`（41 镜、门零误拦） |
+| ⚠️ **「标准资料包」还缺三处**：① 剪辑资料包 `exportDeliveryPackage` **只有 CLI、无 HTTP/UI**；② canvas-agent **33 个工具里没有流水线工具**（Agent 驱动不了七段、拿不到包）；③ **无报告渲染层**（前端只显示原始 JSON、不读 `stage.warnings`） | `development-plan.md` §11.9.4 |
+| ⚠️ **两个必读坑**：① `project.script` 若是 markdown 文本则 `episodes=0`、分镜跑不起来，且重跑剧本阶段会**覆盖 `project.script`**（`projects.js:407`）；② 视频任务历史 5 连 error 全是 `缺少参数：INPUT_IMAGE`（缺首帧） | `development-plan.md` §11.9.5 |
+| ⚠️ **部署纪律（本轮修正）**：远程曾有 11 个提交未推裸仓库（裸仓库 HEAD 停在 `666f0bb`，等于没备份），现已推齐；**部署只走 git**（`git pull /root/repos/canvas-plus.git canvas-plus` + 重启），**不要用 `sync-remote.sh`**（`rsync --delete` 会删掉服务器上未提交的成果）；重启前确认无在跑任务 | `development-plan.md` §11.9.6 |
 
 **2026-10-05 独立审查结论（先读这段，再往下看历史表格）**
 
