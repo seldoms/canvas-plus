@@ -4,6 +4,7 @@ import type { ServerResponse } from "node:http";
 import type { AgentAttachment } from "../agent/types.js";
 import { logger } from "../utils/logger.js";
 import { buildCanvasToolRequest, fitAttachmentNodeSize } from "./operations.js";
+import { callProjectTool, isProjectTool } from "./project-tools.js";
 import type { ToolName } from "./schemas.js";
 import { compactCanvasState, compactNode, isToolName, nextCanvasX, parseToolInput } from "./tools.js";
 import type { CanvasSnapshot } from "./types.js";
@@ -441,6 +442,9 @@ export class CanvasSession {
         if (!isToolName(name)) throw new Error(`未知工具：${String(name)}`);
         logger.info("MCP tool called", { name, input: rawInput, targetClientId: this.targetClientId });
         const input = parseToolInput(name, rawInput) as Record<string, unknown>;
+        // project_*：服务端项目/流水线，走网关 HTTP。**必须排在画布分支之前**——
+        // 它们不依赖网页连接，没连画布时也要能调（这正是 M5 的核心价值）。
+        if (isProjectTool(name)) return await callProjectTool(name, input);
         if (SITE_TOOLS.has(name)) {
             if (!this.clients.size) throw new Error("当前没有已连接网页");
             return await this.requestCanvasTool(name, input);

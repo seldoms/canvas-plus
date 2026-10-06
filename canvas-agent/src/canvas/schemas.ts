@@ -42,6 +42,13 @@ export const toolNames = [
     "prompts_search",
     "assets_list",
     "assets_add",
+    "project_context",
+    "project_gates",
+    "project_list_jobs",
+    "project_run_stage",
+    "project_cancel_stage",
+    "project_adopt_candidate",
+    "project_export_package",
 ] as const;
 export type ToolName = (typeof toolNames)[number];
 
@@ -124,6 +131,17 @@ export const toolInputSchemas = {
     prompts_search: z.object({ keyword: z.string().optional(), category: z.string().optional(), tags: z.array(z.string()).optional(), page: z.number().optional(), pageSize: z.number().optional() }),
     assets_list: z.object({ kind: z.enum(["all", "text", "image", "video"]).optional(), keyword: z.string().optional(), page: z.number().optional(), pageSize: z.number().optional() }),
     assets_add: z.object({ kind: z.enum(["text", "image"]), title: z.string(), content: z.string().optional(), imageUrl: z.string().optional(), tags: z.array(z.string()).optional(), source: z.string().optional(), note: z.string().optional() }),
+    // ——— project_*：Agent 驱动服务端项目/流水线（M5）。
+    // 与 canvas_* 的关键区别：**走网关 HTTP，不依赖网页画布连接**，
+    // 因此 Agent 能在没有前端页面打开时也能读项目、跑阶段、看任务、取交付包。
+    project_context: z.object({ projectId: z.string() }),
+    project_gates: z.object({ projectId: z.string() }),
+    project_list_jobs: z.object({ status: z.enum(["queued", "running", "done", "error", "canceled"]).optional(), kind: z.string().optional(), limit: z.number().optional() }),
+    project_run_stage: z.object({ runId: z.string(), stage: z.string(), options: recordSchema.optional() }),
+    project_cancel_stage: z.object({ runId: z.string(), stage: z.string() }),
+    /** 采用某个候选：jobId 传 null 表示撤销采用（与 M3 的 select 语义一致）。 */
+    project_adopt_candidate: z.object({ projectId: z.string(), shotId: z.string(), slotId: z.string(), jobId: z.string().nullable() }),
+    project_export_package: z.object({ runId: z.string(), episodeId: z.string().optional(), allowPartial: z.boolean().optional(), steps: z.array(z.string()).optional() }),
 } satisfies Record<ToolName, z.AnyZodObject>;
 
 export const toolDescriptions: Record<ToolName, string> = {
@@ -161,4 +179,11 @@ export const toolDescriptions: Record<ToolName, string> = {
     prompts_search: "搜索提示词库（第三方提示词合集），支持 keyword、category、tags 过滤和 page/pageSize 分页，返回标题、提示词、分类、标签、封面等。",
     assets_list: "列出用户「我的素材」，支持 kind（text/image/video）过滤、keyword 搜索和 page/pageSize 分页。为控制体积不返回图片/视频原始 data，仅返回封面与元信息。",
     assets_add: "向「我的素材」新增素材。kind=text 时用 content 传文本内容；kind=image 时用 imageUrl 传图片地址或 dataURL。可附带 title、tags、source、note。",
+    project_context: "读取服务端项目的上下文：基本信息、风格锚点、plan、七段式集/场/镜进度、关联的 runIds 与画布 id、资产引用数。**这是 Agent 了解「服务端短剧项目」的唯一入口，与 canvas_get_state（读网页画布）完全不同**：不需要前端页面已打开。批量生产的第一步。",
+    project_gates: "读取项目的阶段门禁：七段（script/storyboard/design/casting/keyframe/audio/assembly）各自 status 与 blockedBy（被哪个上游挡住）。跑某个阶段前先用它确认能不能跑，避免白等。",
+    project_list_jobs: "列出服务端生成任务（生图/生视频/配音等），可按 status 与 kind 过滤。用于「批量入队后等终态」「只重试失败的那些」——重复调用不会重复入队（服务端按幂等键去重）。",
+    project_run_stage: "触发服务端流水线某个阶段：runId + stage（如 storyboard/keyframe/assembly）。**202 立刻返回**，真实生成在后台跑；用 project_list_jobs 看进度。阶段未就绪会被门禁拒绝并给出可读原因。",
+    project_cancel_stage: "取消服务端流水线正在执行的某个阶段（runId + stage）。已完成的阶段不受影响。",
+    project_adopt_candidate: "采用/撤销采用某个槽位候选。传 jobId 采用（写入 slot.selected），传 **null 撤销采用**（幂等、不动候选数组）。这是「批量生成后由 Agent 逐个确认采用」的关键动作。",
+    project_export_package: "导出完整交付包：自动粗剪成片 + clips/ 分集原片 + SRT + FCPXML + EDL + 清单 + 说明，打成 zip。**202 立刻返回**（真实 ffmpeg 是分钟级），完成后用 GET 同路径读 manifest。与浏览器端的「成片+字幕」下载不同，这个含剪辑工程文件，可直接导入剪映继续剪。",
 };
