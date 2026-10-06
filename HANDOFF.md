@@ -24,7 +24,41 @@
 
 ## 当前状态
 
-**最后更新**：2026-10-05 晚（质量门 + 审计日志落地并部署；首次全链路 smoke 进行中。**进度细节的唯一入口**：`docs/content/docs/progress/development-plan.md` §11「进度快照与问题台账」——本轮登记在 **§11.9**，问题台账另见 `pilot-issues.md`）
+**最后更新**：2026-10-06 上午（M0–M3.5 全部提交并部署；前端 dist 已重建。**本节是当前唯一准确状态，下面的历史轮次仅作考古**）
+
+**2026-10-06 上午 本轮结论（先读这段，再看下面的历史表格）**
+
+> 基线：`canvas-plus` @ `48cd886`（工作区干净）；后端 `node --test` → **1002/1002 pass / 0 fail**（实测 30.2s）；前端 `npx tsc --noEmit` → **0 错**；`vite build` 通过（20s）。网关已 `systemctl restart canvas-server`，M3.5 五条端点线上实测生效。
+
+### 里程碑进度（M0–M6，权威定义见 `m0-m1-implementation-plan.md` §2）
+
+| 里程碑 | 状态 | 提交 |
+| --- | --- | --- |
+| M0 阶段/字段/状态/门禁统一 | ✅ 已提交 | `5920366` |
+| M1 统一生成提交链 GenerationIntent | ✅ 已提交 | `1add938` |
+| M2 画布接入 Project 事实链 | ✅ 已提交 | `9d97c16` |
+| M3 工作台↔项目互通 | ✅ 已提交 | `afe9a4f` |
+| M3.5 Shot/Take/Approval + H3 续接链 | ✅ **服务端 + 前端均已提交并部署** | `0f78aa7` / `dee012e` |
+| M4 声音与后期闭环 | ⬜ 未开工（**成片阻断项**） | — |
+| M5 Agent 批量生产与恢复 | ⬜ 未开工（canvas-agent 33 个工具无 `project_*` 作用域） | — |
+| M6 60–90 秒真实闭环 | ⬜ 未开工（历史最远：keyframe 全 done + assembly partial，6 镜 OOM） | — |
+
+### 本轮踩到并修掉的三个坑（别再踩）
+
+| 坑 | 症状 | 真相 |
+| --- | --- | --- |
+| **远端有两个同名目录** | 在 `/root/canvas-plus` 查代码，会得出「代码丢了 / 提交号对不上」的错误结论 | `/sobey/canvas-plus` 才是活的（systemd `WorkingDirectory`）；`/root/canvas-plus` 是上一轮旧部署位置、**已废弃**，HEAD 停在 `fa34613`。上一轮 REPORT.md 提到的 `9b159f9` 在主仓库 `git cat-file` 报无效对象，**待确认是否丢失** |
+| **服务重启 ≠ 代码生效** | M3.5 提交后 `GET .../continuation-chains` 仍返回「未找到路由」 | 进程起于 07:05 而 `continuation.js` 写入于 09:53。**改完后端代码必须重启**，且重启前确认队列为空 |
+| **前端 dist 是独立产物** | 后端新了、页面还是旧的 | `web/dist` 曾停在 10-05，M0–M3.5 全部前端改动用户看不到。**每次前端改动后必须 `npx vite build`**，否则等于没做 |
+
+### 本轮的事实核验方法（接手者可复现）
+
+- **重启前查队列是铁律**：`/api/health` 的 `queue` 与 `/api/jobs?status=running` 都要确认。注意 **ComfyUI（147）上可能有用户自己的任务在跑，与网关队列无关、不要碰**。
+- **启动重放很慢**：重启后历史任务重放耗 **113 秒**（793 个任务）。期间 HTTP 已可用但日志未打印完成，**不要误判为启动失败**。
+- **验证新路由是否注册**：拿一个不存在的 shotId 打过去，**正确响应是业务错误**（`SHOT_NOT_FOUND` / `CONTRACT_INVALID` 带 error code）而不是「未找到路由」。
+- **远程构建前置**：先重建依赖树（仓库 lockfile 是 macOS 生成的，缺 Linux 可选依赖），用 `--legacy-peer-deps`。
+
+<details><summary>历史轮次结论（考古用）</summary>
 
 **2026-10-05 晚 本轮结论（先读这段，再看下面的历史表格）**
 
@@ -322,3 +356,5 @@ scripts/                  deploy.sh（git 发布）/ sync-remote.sh（rsync 调�
 - 引擎首次加载 int4 权重约 8 分钟（CPU/磁盘 bound），之后改 quality_enhance/cache/LoRA 不重载，换模型文件或 pinned 开关才重载。
 - LoRA 组合未测：原生 LoRA 节点只认 diffusers/PEFT 格式，kohya 版 turbo LoRA 需先用插件自带 `scripts/qf_lora_convert.py` 转换；鉴于纯引擎已慢于基线，转换优先级低，未做。
 - 复测触发条件：147 内存扩到 64GB+ 或常驻内存大户（8190 ComfyUI 实例、桌面应用）清退后，用同一模板重跑即可，官方数字打对折（≤710s）就算值得切换。
+
+</details>
