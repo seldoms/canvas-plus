@@ -1,7 +1,7 @@
 import axios, { type AxiosRequestConfig } from "axios";
 
 import i18n from "@/i18n";
-import type { ArtifactId, AssetRef, AssetRefId, AssetRole, Episode, EpisodeId, Plan, Project, ProjectId, Scene, SceneId, Shot, ShotId } from "@/types/domain";
+import type { ArtifactId, AssetRef, AssetRefId, AssetRole, CandidateStatus, Episode, EpisodeId, Plan, Project, ProjectId, Scene, SceneId, Shot, ShotId } from "@/types/domain";
 import { gatewayBaseUrl } from "./gateway";
 
 /**
@@ -375,4 +375,124 @@ export async function selectSlotCandidate(projectId: string, shotId: string, slo
         data: { jobId },
     });
     return unwrapSlot(data);
+}
+
+/* ------------------------------------------------------------------ *
+ * H3 多段续接链（M3.5；契约 §3.6 续接扩展，服务端业务见 canvas-server/src/continuation.js）
+ * ------------------------------------------------------------------ */
+
+/** 接缝量化指标：服务端单项测不到时写 null，缺项也可能整体缺省，故全部可选。 */
+export type ContinuationSeamMetrics = {
+    boundarySsim?: number | null;
+    boundaryPsnrDb?: number | null;
+    parentTailRmsDb?: number | null;
+    childHeadRmsDb?: number | null;
+    audioSeamDeltaDb?: number | null;
+    seamIntegratedLufs?: number | null;
+    seamTruePeakDbfs?: number | null;
+};
+
+/** 接缝 QC：契约最小形态子字段 + 量化值 metrics；未产出 QC 时为 null。 */
+export type ContinuationSeam = {
+    audioCorrelation: number | null;
+    rmsStepDb: number | null;
+    freezeDetected: boolean;
+    motionDrift: number | null;
+    reviewed: string;
+    reviewNote?: string;
+    needsReview?: boolean;
+    metrics?: ContinuationSeamMetrics;
+};
+
+/** 链内一段；segmentIndex 从 0 开始，status 已由服务端折算成候选状态口径。 */
+export type ContinuationSegment = {
+    segmentIndex: number;
+    jobId: string;
+    status: CandidateStatus;
+    artifactUrl: string | null;
+    seam: ContinuationSeam | null;
+    approvalStatus: string;
+    needsReview: boolean;
+};
+
+/** 一条续接链（派生视图）：takeId == chainId；分叉链的 parentCandidateId 指向他链候选。 */
+export type ContinuationChain = {
+    chainId: string;
+    takeId: string;
+    parentCandidateId: string | null;
+    status: string;
+    segments: ContinuationSegment[];
+};
+
+/** 开链 / 分叉的返回：首段 Job 已入队。 */
+export type ContinuationStartResult = {
+    chainId: string;
+    takeId: string;
+    slotId: string;
+    firstJobId: string;
+};
+
+/** GET .../continuation-chains：纯派生链视图（链 → 段 → parent 可回溯）。 */
+export async function listContinuationChains(projectId: string, shotId: string) {
+    const data = await projectRequest<unknown>({
+        method: "get",
+        url: `/api/projects/${encodeURIComponent(projectId)}/shots/${encodeURIComponent(shotId)}/continuation-chains`,
+    });
+    return unwrapList<ContinuationChain>(data, "chains");
+}
+
+function unwrapStart(data: unknown): ContinuationStartResult {
+    const body = (data && typeof data === "object" ? data : {}) as Record<string, unknown>;
+    const firstJob = body.firstJob as { id?: string } | undefined;
+    return {
+        chainId: String(body.chainId ?? ""),
+        takeId: String(body.takeId ?? ""),
+        slotId: String(body.slotId ?? ""),
+        firstJobId: String(firstJob?.id ?? ""),
+    };
+}
+
+/** POST .../continuation-chains：开新链（seg0 走 T2VA）；segments 为 1..8 的整数，prompt 非空。 */
+export async function startContinuationChain(
+    projectId: string,
+    shotId: string,
+    input: { prompt: string; segments: number; seed?: number | null; template?: string | null; params?: Record<string, unknown> },
+) {
+    const data = await projectRequest<unknown>({
+        method: "post",
+        url: `/api/projects/${encodeURIComponent(projectId)}/shots/${encodeURIComponent(shotId)}/continuation-chains`,
+        data: input,
+    });
+    return unwrapStart(data);
+}
+
+/** POST .../continuation-branches：从 done 候选分叉（父候选非 done → 409 PARENT_NOT_DONE）。 */
+export async function startContinuationBranch(projectId: string, shotId: string, input: { parentCandidateId: string; prompt: string; segments: number; seed?: number | null }) {
+    const data = await projectRequest<unknown>({
+        method: "post",
+        url: `/api/projects/${encodeURIComponent(projectId)}/shots/${encodeURIComponent(shotId)}/continuation-branches`,
+        data: input,
+    });
+    return unwrapStart(data);
+}
+
+/** POST .../continuation-chains/:chainId/resume：已完成段幂等跳过、只补缺失段；链已完成回 job:null。 */
+export async function resumeContinuationChain(projectId: string, shotId: string, chainId: string) {
+    const data = await projectRequest<{ resumedFromSegment?: number | null; job?: { id?: string } | null }>({
+        method: "post",
+        url: `/api/projects/${encodeURIComponent(projectId)}/shots/${encodeURIComponent(shotId)}/continuation-chains/${encodeURIComponent(chainId)}/resume`,
+    });
+    return { resumedFromSegment: data?.resumedFromSegment ?? null, jobId: data?.job?.id ?? null };
+}
+
+/** POST .../continuation-reviews { jobId, reviewed, note? }：接缝人工复核（写 continuation.seam.reviewed + reviewNote）。 */
+export async function reviewContinuationSeam(projectId: string, shotId: string, input: { jobId: string; reviewed: "approved" | "rejected"; note?: string }) {
+    const data = await projectRequest<unknown>({
+        method: "post",
+        url: `/api/projects/${encodeURIComponent(projectId)}/shots/${encodeURIComponent(shotId)}/continuation-reviews`,
+        data: input,
+    });
+    // 服务端回 { candidate }；候选形状与契约 §3.6 一致，这里只取复核要用的两个字段。
+    const candidate = unwrapEntity<{ jobId?: string; continuation?: { seam?: ContinuationSeam | null } | null }>(data, "candidate");
+    return { jobId: String(candidate?.jobId ?? input.jobId), seam: candidate?.continuation?.seam ?? null };
 }

@@ -5,9 +5,19 @@ import { useTranslation } from "react-i18next";
 import { getEpisode, listEpisodes, listProjects, type EpisodeDetail, type GenerationSlotView, type ProjectSummary } from "@/services/api/projects";
 import type { Episode, Scene, Shot } from "@/types/domain";
 
-/** 槽位 id 规则（与服务端 pipeline.js generationSlotsFor 一致）：slot_<shotId>_<role>，本轮只有关键帧 key。 */
+/** 槽位 id 规则（与服务端 episodes.js slotRoleOf 一致）：slot_<shotId>_<role>。 */
+export function slotIdFor(shotId: string, role: string) {
+    return `slot_${shotId}_${role}`;
+}
+
+/** 关键帧槽位（M2/M3 生图候选用）。 */
 export function keyframeSlotId(shotId: string) {
-    return `slot_${shotId}_key`;
+    return slotIdFor(shotId, "key");
+}
+
+/** 片段槽位（M3.5 续接链的段候选都落这里，采用 take 时 selected 指向末段候选）。 */
+export function clipSlotId(shotId: string) {
+    return slotIdFor(shotId, "clip");
 }
 
 /** 级联选中的目标槽位（与画布 SlotTarget 同形，结构兼容）。 */
@@ -22,11 +32,12 @@ export type SlotCascadeTarget = {
 type ShotRow = { scene: Scene; shot: Shot };
 
 /**
- * 「项目 → 集 → 镜头 → 关键帧槽位」级联选择核心（M3-D4）：数据加载与选中态都收在这里，
+ * 「项目 → 集 → 镜头 → 槽位」级联选择核心（M3-D4）：数据加载与选中态都收在这里，
  * 画布槽位对话框与生图工作台「加入项目候选」各自包壳复用，不复制粘贴。
  * 传 projectId 表示项目已固定（画布绑定）；不传则加载项目列表供选择（工作台）。
+ * slotRole 选槽位角色：关键帧候选传 "key"（默认），M3.5 视频续接链传 "clip"。
  */
-export function useProjectSlotCascade({ active, projectId: fixedProjectId }: { active: boolean; projectId?: string }) {
+export function useProjectSlotCascade({ active, projectId: fixedProjectId, slotRole = "key" }: { active: boolean; projectId?: string; slotRole?: string }) {
     const { message } = App.useApp();
     const [projects, setProjects] = useState<ProjectSummary[] | null>(null);
     const [projectId, setProjectId] = useState(fixedProjectId || "");
@@ -38,13 +49,13 @@ export function useProjectSlotCascade({ active, projectId: fixedProjectId }: { a
 
     const shotRows = useMemo<ShotRow[]>(() => (detail?.scenes || []).flatMap((scene) => (scene.shots || []).map((shot) => ({ scene, shot }))), [detail]);
     const currentRow = shotRows.find((row) => row.shot.id === shotId) || null;
-    const slotId = shotId ? keyframeSlotId(shotId) : "";
+    const slotId = shotId ? slotIdFor(shotId, slotRole) : "";
     const slot = useMemo<GenerationSlotView | null>(() => {
         if (slotOverride && slotOverride.id === slotId) return slotOverride;
-        const raw = currentRow?.shot.generationSlots?.find((item) => item.id === slotId || item.role === "key");
+        const raw = currentRow?.shot.generationSlots?.find((item) => item.id === slotId || item.role === slotRole);
         if (!raw) return null;
         return { id: raw.id || slotId, shotId: raw.shotId, role: raw.role, selected: raw.selected ?? null, candidates: raw.candidates || [] };
-    }, [currentRow, slotId, slotOverride]);
+    }, [currentRow, slotId, slotRole, slotOverride]);
     const target = useMemo<SlotCascadeTarget | null>(() => (currentRow && episodeId && projectId ? { projectId, episodeId, sceneId: currentRow.scene.id, shotId, slotId } : null), [currentRow, episodeId, projectId, shotId, slotId]);
 
     const loadDetail = useCallback(
