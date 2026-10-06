@@ -43,6 +43,20 @@
 | M5 Agent 批量生产与恢复 | ⬜ 未开工（canvas-agent 33 个工具无 `project_*` 作用域） | — |
 | M6 60–90 秒真实闭环 | ⬜ 未开工（历史最远：keyframe 全 done + assembly partial，6 镜 OOM） | — |
 
+### 本轮真机验证发现并修掉的三个缺陷（单测全绿也测不出来）
+
+M3.5 部署后跑了一条真实 2 段链（`prj_01M3ZZ2MJVQ2TJBRY1K3B0HBXF` / `sh_01M4087HE9FY4KKZ6G9K7ZP1Q0`，seed 20261007），**两段都真的产出 mp4**。过程中挖出三个缺陷，均已修复并加回归测试：
+
+| # | 症状 | 根因 | 修法 |
+| --- | --- | --- | --- |
+| 1 | 开链返回 **HTTP 201 但 Job 立刻 error**：「模板 video_minimax_h3_t2v 缺少参数：STEPS」，链根本没跑起来 | `submitSegment` 只给了尺寸/帧数/seed，而 seg0 的 T2VA 模板还声明 STEPS。`pipeline.js` 早有 `applyPresetParams` 按规则表参数档回填，续接编排器漏了这道工序 | 从 `prompt-compiler` 导入 `presetForTemplate`（底层能力，无循环依赖）+ `tool-adapter` 的 `scanTemplateDir` 扫真实模板；回填语义与 pipeline 一致：模板声明且调用方未给值才回填 |
+| 2 | 日志刷 `[continuation] preflight 释放内存失败：Unexpected end of JSON input` | 实测 147 的 `POST /free` 返回 `200 + Content-Length: 0`，而 `comfy.js` 的 `json()` 无条件 `.json()` → 空体必抛，把「成功」误报成「失败」 | 新增 `jsonOrNull`（先取 text，空体/非 JSON 返回 null）**只给 `free()` 用**；其余读接口仍严格；非 2xx 仍抛错 |
+| 3 | 段视图与 Job meta 里 `parentCandidateId` 全是 null，链结构在 meta 层断了 | `afterSegmentDone` 提交下一段时没传 `parentCandidateId`（`submitSegment` 内部有回溯兜底所以抽帧仍能跑，但 meta 记 null → 事后无法从 Job 反查链结构） | 把本段 `job.id` 显式作为下一段的 `parentCandidateId`，符合契约 §3.6「链只能通过父引用向前追溯」 |
+
+**教训（比这三个 bug 本身更重要）**：
+- 缺陷 1 之所以能溜过，是因为**老测试把 `submitIntent` 换成假实现、从不渲染模板**。新增的 `test/continuation-params.test.mjs` 走真实 `createContinuation` + 真实 `workflows` 目录，断言开链产出的 params 覆盖段模板每个 token。
+- 三个新测试都用**回退法验证过有效性**：改坏生产代码 → 测试变红并精确报出缺项/行为；改好 → 全绿。**没验证过有效性的测试等于没写。**
+
 ### 本轮踩到并修掉的三个坑（别再踩）
 
 | 坑 | 症状 | 真相 |
