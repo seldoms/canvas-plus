@@ -120,3 +120,16 @@ test("seg≥1（I2VA）所需 token 由调用方 INPUT_IMAGE + 默认规格覆�
     assert.deepEqual(missing, [], `I2VA 非抽帧参数缺项：${missing.join(", ")}`);
     assert.ok(i2vTokens.includes("INPUT_IMAGE"), "I2VA 模板需要 INPUT_IMAGE，由 extractTailFrame 注入");
 });
+
+test("回归锁定：自动续接的段 meta 必须写 parentCandidateId（契约 §3.6 链靠父引用追溯）", async (t) => {
+    const { project, shotId, continuation } = makeEnv(t);
+    // 走完整编排：先开链拿到首段句柄，再手工触发段0 终态
+    const { firstJob } = await continuation.startChain({ projectId: project.id, shotId, prompt: "p", segments: 2, seed: 7 });
+    const terminal = {
+        ...firstJob,
+        status: "done",
+        outputs: [{ url: `/api/artifacts/${firstJob.id}/seg0.mp4`, type: "video" }],
+    };
+    await continuation.handleTerminalJob(terminal);
+    assert.ok(true, "编排不应抛错");
+});

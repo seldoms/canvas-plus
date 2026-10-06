@@ -467,6 +467,10 @@ export function createContinuation(deps = {}) {
         }
         if (cont.segmentIndex + 1 < cont.totalSegments) {
             const { projectId, shotId } = job.meta || {};
+            // 显式解析本段（= 下一段的父）候选 id 传给下一段：契约 §3.6 要求
+            // `parentCandidateId` 写入段meta，链「只能通过父引用向前追溯」。
+            // 不传时submitSegment 会回溯兜底，但 meta 会记成 null，事后无法从Job 反查链结构。
+            const parentCandidateId = job.id;
             await submitSegment({
                 projectId,
                 shotId,
@@ -476,6 +480,7 @@ export function createContinuation(deps = {}) {
                 totalSegments: cont.totalSegments,
                 prompt: cont.prompt,
                 seed: cont.seed !== null && cont.seed !== undefined ? cont.seed + 1 : null,
+                parentCandidateId,
             });
         }
     }
