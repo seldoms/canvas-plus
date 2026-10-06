@@ -151,3 +151,74 @@ export async function assemblePipelineRun(runId: string, body: Record<string, un
         assembly: readRunAssembly(payload.run) ?? payload.assembly ?? null,
     };
 }
+
+// ——— 完整交付包（服务端拼装） ———
+// 与上面的浏览器端打包**并存且不重叠**：
+//   - 浏览器端（useProjectDelivery）：成片 + 封面 + 字幕 + 清单，直接 saveAs 下载，零服务端负担；
+//   - 服务端（exportDeliveryPackage）：另外产出 **clips/ 分集原片 + FCPXML + EDL**，
+//     这些是「导入剪映继续剪」必需的材料，浏览器端做不了（要重新扫盘上所有片段再拼时间线）。
+// 用户要「能直接进剪映的完整工程」时才走服务端。
+
+/** 服务端导出 manifest 的最小形状（完整字段见 edit-export.js 的 export-manifest.json）。 */
+export type ExportPackageManifest = {
+    pkgId?: string;
+    runId?: string | null;
+    projectId?: string | null;
+    createdAt?: string;
+    partial?: boolean;
+    missing?: unknown[];
+    episodes?: Array<{ episodeId: string; index?: number; title?: string; partial?: boolean; finalFile?: string | null; durationSec?: number | null }>;
+    package?: { zipPath?: string; files?: Array<{ path: string; bytes?: number }> };
+};
+
+export type ExportPackageResult = {
+    inflight: boolean;
+    runId: string;
+    episodeId: string | null;
+};
+
+/**
+ * 触发服务端素材包导出：POST /api/pipeline/runs/:id/steps/assembly/export。
+ * 真实 ffmpeg 拼接与打包是分钟级，后端 **202 立刻返回**；进度看 run 的 progress 端点。
+ * 完成后用 `fetchExportPackage` 读 manifest。
+ */
+export async function exportDeliveryPackage(runId: string, body: Record<string, unknown> = {}, baseUrl?: string): Promise<ExportPackageResult> {
+    let response: Response;
+    try {
+        response = await fetch(resolveGatewayUrl(`/api/pipeline/runs/${encodeURIComponent(runId)}/steps/assembly/export`, baseUrl), {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(body),
+        });
+    } catch {
+        throw new Error(i18n.t("gateway.unreachable"));
+    }
+    const payload = (await response.json().catch(() => null)) as
+        | { runId?: string; inflight?: boolean; episodeId?: string | null; error?: { message?: string } }
+        | null;
+    if (!response.ok) throw new Error(payload?.error?.message || i18n.t("gateway.httpFailed", { status: response.status }));
+    return { inflight: Boolean(payload?.inflight), runId: payload?.runId ?? runId, episodeId: payload?.episodeId ?? null };
+}
+
+/**
+ * 读服务端导出结果：GET /api/pipeline/runs/:id/steps/assembly/export[?packageId=]。
+ * **不重跑导出**，纯读盘上已落盘的 manifest；还没导出时返回 `{ manifest: null, packages: [] }`。
+ */
+export async function fetchExportPackage(runId: string, packageId?: string, baseUrl?: string): Promise<{ packageId: string | null; packages: string[]; manifest: ExportPackageManifest | null }> {
+    let response: Response;
+    const query = packageId ? `?packageId=${encodeURIComponent(packageId)}` : "";
+    try {
+        response = await fetch(resolveGatewayUrl(`/api/pipeline/runs/${encodeURIComponent(runId)}/steps/assembly/export${query}`, baseUrl));
+    } catch {
+        throw new Error(i18n.t("gateway.unreachable"));
+    }
+    const payload = (await response.json().catch(() => null)) as
+        | { packageId?: string | null; packages?: string[]; manifest?: ExportPackageManifest; error?: { message?: string } }
+        | null;
+    if (!response.ok) throw new Error(payload?.error?.message || i18n.t("gateway.httpFailed", { status: response.status }));
+    return {
+        packageId: payload?.packageId ?? null,
+        packages: payload?.packages ?? [],
+        manifest: payload?.manifest ?? null,
+    };
+}
