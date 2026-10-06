@@ -1720,3 +1720,108 @@ test("promptOverride：重跑仍是追加候选，旧候选与 selected 语义�
     assert.deepEqual(after.candidates[0], before.candidates[0], "旧候选一条不少、内容原样保留");
     assert.equal(after.selected, after.candidates.at(-1).jobId, "新候选成为 selected");
 });
+
+
+// ——— 批量重试失败条目（retryFailedItems）———
+
+/**
+ * 人为把某条目的 selected 候选标成 error，模拟「服务重启中断」。
+ *
+ * 只走 jobs.finish（**不要**再手动改 candidate.status）：finish 会 emit 触发
+ * projectJob 回写，内部 run 对象与候选状态都会正确更新。
+ * 手动改 pipeline.get() 返回的快照只会改到一份拷贝，是无效操作——
+ * 这个坑我踩过一次：候选数看起来没变，误以为重试没追加候选。
+ */
+function markItemError(pipeline, jobs, runId, itemId) {
+    const item = pipeline.get(runId).stages.keyframe.output.frames.find((entry) => entry.id === itemId);
+    const candidate = (item.candidates || []).find((entry) => entry.jobId === item.selected) || item.candidates.at(-1);
+    jobs.finish(candidate.jobId, "error", { error: "服务重启，任务中断" });
+    // 读回内部真实状态并断言它真的变成 error —— 否则后面测的是别的东西。
+    const after = pipeline.get(runId).stages.keyframe.output.frames.find((entry) => entry.id === itemId);
+    const afterCandidate = (after.candidates || []).find((entry) => entry.jobId === candidate.jobId);
+    assert.equal(afterCandidate?.status, "error", `前置失败：${itemId} 应变为 error，实际 ${afterCandidate?.status}`);
+    return after;
+}
+
+test("retryFailedItems：只重试 error 的条目，成功的条目完全不动", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    env.config.workflowsDir = makeWorkflows(env.root, ["img-alt"]);
+    const { pipeline, jobs, run } = await toKeyframeDone(env);
+
+    markItemError(pipeline, jobs, run.id, "sh1-start");
+    const okItemBefore = structuredClone(pipeline.get(run.id).stages.keyframe.output.frames.find((entry) => entry.id === "sh1-end"));
+
+    const result = await pipeline.retryFailedItems(run.id, "keyframe");
+    assert.deepEqual(result.retried, ["sh1-start"], "只该重试失败的那条");
+    assert.equal(result.failedTotal, 1);
+    assert.equal(result.remaining, 0);
+    assert.deepEqual(result.skipped, [], "没有跳过的");
+    // 成功的条目一个字节都不该动（候选数、原样内容）
+    assert.deepEqual(pipeline.get(run.id).stages.keyframe.output.frames.find((entry) => entry.id === "sh1-end"), okItemBefore);
+});
+
+test("retryFailedItems：limit 生效且 remaining 如实报告（不静默截断）", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    env.config.workflowsDir = makeWorkflows(env.root, ["img-alt"]);
+    const { pipeline, jobs, run } = await toKeyframeDone(env);
+
+    markItemError(pipeline, jobs, run.id, "sh1-start");
+    markItemError(pipeline, jobs, run.id, "sh1-end");
+
+    const result = await pipeline.retryFailedItems(run.id, "keyframe", { limit: 1 });
+    assert.equal(result.retried.length, 1, "limit 生效");
+    assert.equal(result.failedTotal, 2);
+    assert.equal(result.remaining, 1, "剩余必须如实报告，让调用方决定要不要再来一轮");
+});
+
+test("retryFailedItems：partial 状态放行（一成功一失败正是它的用武之地）", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    env.config.workflowsDir = makeWorkflows(env.root, ["img-alt"]);
+    const { pipeline, jobs, run } = await toKeyframeDone(env);
+    markItemError(pipeline, jobs, run.id, "sh1-start");
+    // 一成功一失败 → recomputeStage 会算成 partial。此时**不该**被拦。
+    assert.equal(pipeline.get(run.id).stages.keyframe.status, "partial", "前提：阶段应处于 partial");
+
+    const result = await pipeline.retryFailedItems(run.id, "keyframe");
+    assert.deepEqual(result.retried, ["sh1-start"], "partial 必须放行，否则这个能力在最需要时用不了");
+});
+
+test("retryFailedItems：还有条目在排队/生成时 409 拒绝（避免并发重复入队）", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    env.config.workflowsDir = makeWorkflows(env.root, ["img-alt"]);
+    const { pipeline, jobs, run } = await toKeyframeDone(env);
+    markItemError(pipeline, jobs, run.id, "sh1-start");
+
+    // 同一条目既有失败候选、又有排队中的候选 —— 说明还有活没干完。
+    // 先单条重跑制造出「排队中」的状态，再批量重试就该被busy 检查拦下。
+    await pipeline.executeRegenerate(pipeline.beginRegenerate(run.id, "keyframe", { itemId: "sh1-start" }));
+    const queuedBefore = jobs.list().filter((job) => job.status === "queued").length;
+
+    await assert.rejects(
+        () => pipeline.retryFailedItems(run.id, "keyframe"),
+        (error) => error.status === 409 && /排队或生成中/.test(error.message),
+        "还有未完成候选时必须拒绝，不能再往队列里塞活",
+    );
+    // 被拒后队列不该多出新任务
+    assert.equal(jobs.list().filter((job) => job.status === "queued").length, queuedBefore, "被拒不该入队任何新任务");
+});
+
+test("retryFailedItems：没有失败条目时不入队任何东西", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    env.config.workflowsDir = makeWorkflows(env.root, ["img-alt"]);
+    const { pipeline, run } = await toKeyframeDone(env);
+
+    const before = structuredClone(pipeline.get(run.id).stages.keyframe.output.frames);
+    const result = await pipeline.retryFailedItems(run.id, "keyframe");
+    assert.deepEqual(result.retried, []);
+    assert.equal(result.failedTotal, 0);
+    assert.deepEqual(pipeline.get(run.id).stages.keyframe.output.frames, before, "没失败就不该动任何条目");
+});
+
+
+

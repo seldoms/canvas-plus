@@ -1182,6 +1182,26 @@ router.get("/api/pipeline/runs/:id/steps/assembly/export", (req, res, { params, 
  * 同步部分做门禁：参数/引用非法（item 不存在、文本阶段、模板非法）→ 400；
  * 阶段或条目正忙（防并发重复入队）→ 409。通过后入队（非阻塞）→ 202，真实生成在任务队列后台跑。
  */
+router.post("/api/pipeline/runs/:id/steps/:stage/retry-failed", async (req, res, { params }) => {
+    try {
+        const body = await readJson(req).catch(() => ({}));
+        const options = body && typeof body === "object" ? body : {};
+        // 逐条 beginRegenerate 串行执行：真实入队非阻塞，这里只做入队本身。
+        const result = await pipeline.retryFailedItems(params.id, params.stage, { limit: options.limit });
+        sendJson(res, 202, {
+            runId: params.id,
+            stage: params.stage,
+            inflight: true,
+            retried: result.retried,
+            skipped: result.skipped,
+            failedTotal: result.failedTotal,
+            remaining: result.remaining,
+        });
+    } catch (error) {
+        sendError(res, error.status || 400, error.message);
+    }
+});
+
 router.post("/api/pipeline/runs/:id/steps/:stage/regenerate", async (req, res, { params }) => {
     try {
         const body = await readJson(req).catch(() => ({}));

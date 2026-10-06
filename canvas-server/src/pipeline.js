@@ -2754,7 +2754,7 @@ ${JSON.stringify(partials, null, 2)}
      * 语义：给一个 item 换模板再追加一个候选，不动其它 item、不删旧候选；慢的真实生成由任务队列后台跑。
      * 门禁失败抛 gateError：参数/引用非法 400，阶段或条目正忙（防并发重复入队）409。
      */
-    function beginRegenerate(runId, stageId, { itemId, template, params, promptOverride } = {}) {
+    function beginRegenerate(runId, stageId, { itemId, template, params, promptOverride, allowPartialStage = false } = {}) {
         const run = requireRun(runId);
         const def = requireStageDef(stageId);
         const stage = requireStage(run, def);
@@ -2762,7 +2762,12 @@ ${JSON.stringify(partials, null, 2)}
         const family = STAGE_TEMPLATE_FAMILY[def.id];
         if (!family) throw gateError(`阶段「${def.title}」不是生成型阶段，不支持逐条重跑`);
         // 阶段整体在跑（LLM 编排中，或已有条目在排队/生成）→ 拒绝并发重复入队。
-        if (stage.status === "running") throw gateError(`阶段「${def.title}」正在运行中，请先取消或等它结束再逐条重跑`, 409);
+        //
+        // allowPartialStage 只给批量重试用（retryFailedItems）：批量入口自己已经按
+        // **条目级**判据（有没有未完成候选）做过检查，那比阶段状态精确得多 ——
+        // 阶段 running 可能只是「别的条目还在排队」，而批量重试的正是那些已失败的条目。
+        // 单条入口保持原样：用户手动点重试时，阶段在跑就该被拒。
+        if (stage.status === "running" && !allowPartialStage) throw gateError(`阶段「${def.title}」正在运行中，请先取消或等它结束再逐条重跑`, 409);
         const items = def.id === "keyframe" ? stage.output?.frames : stage.output?.clips;
         const item = Array.isArray(items) ? items.find((entry) => entry.id === itemId) : null;
         if (!item) throw gateError(`阶段「${def.title}」里没有条目：${itemId ?? "(空)"}`);
@@ -2833,6 +2838,72 @@ ${JSON.stringify(partials, null, 2)}
         writeProgress(run.id, { ...(readProgress(run.id) || {}), runId: run.id, stage: def.id, phase: "running", label: `重跑条目 ${item.id}（${plan.template}）` });
         saveRun(run);
         return { run, jobId };
+    }
+
+    /**
+     * 批量重试：把阶段里**失败**的条目一次性重排队（2026-10-06）。
+     *
+     * ## 为什么需要它
+     *
+     * 逐条 regenerate 在「服务重启导致大面积中断」这种场景下不可用：
+     * jobs.js 启动回放会把所有悬挂的中间态收敛成 `error`（这是**有意设计**，
+     * 否则前端会永远轮询），实测一次重启就让 70 镜的关键帧里273 条变成 error。
+     * 逐条点重跑要点273 次，不现实。
+     *
+     * ## 范围严格限定
+     *
+     * 只重试 **error** 的条目，且逐条走 beginRegenerate —— 于是门禁全部生效：
+     *   - blocked（有未完成候选 / 缺参考图）不会被误重试；
+     *   - 正在 running 的阶段直接拒绝，避免并发重复入队；
+     *   - 成功/已取消的条目**不动**，历史候选一条不少。
+     *
+     * 不自动重试的原因很实际：失败可能是**真失败**（提示词违规、模板缺参数），
+     * 无脑重跑只是白烧GPU。默认 limit 保守（20），且如实返回剩余计数，
+     * 让调用方决定要不要再来一轮。
+     *
+     * **不拦 partial**：partial 是「一部分成功一部分失败」的常态，
+     * 而这正是本能力要处理的场景。
+     */
+    async function retryFailedItems(runId, stageId, { limit = 20 } = {}) {
+        const run = requireRun(runId);
+        const def = requireStageDef(stageId);
+        const stage = requireStage(run, def);
+        // 只在**还有条目在排队/生成**时拒绝（避免并发重复入队、撞 jobId）。
+        //
+        // 刻意**不拦 partial**：partial 正是「一部分成功一部分失败」的常态，
+        // 而批量重试失败项就是为它准备的。若把 partial 也拦掉，这个能力在最需要的时候反而用不了。
+        const items = def.id === "keyframe" ? stage.output?.frames : stage.output?.clips;
+        const pool = Array.isArray(items) ? items : [];
+        const busy = pool.find((item) => (item.candidates || []).some((candidate) => candidate.status === "queued" || candidate.status === "running"));
+        if (busy) throw gateError(`阶段「${def.title}」还有条目在排队或生成中（${busy.id}），请等它们结束再批量重试`, 409);
+        const failed = pool.filter((item) => {
+            const selected = (item.candidates || []).find((candidate) => candidate.jobId === item.selected) || (item.candidates || []).at(-1);
+            return selected?.status === "error";
+        });
+        const capped = Math.max(0, Math.min(Number(limit) || 0, failed.length));
+        const retried = [];
+        const skipped = [];
+        for (const item of failed.slice(0, capped)) {
+            try {
+                // allowPartialStage：阶段状态由本函数上方的**条目级** busy 检查把关，
+                // 不能再用阶段级 running 判断——否则「别的条目在排队」会把整批误杀
+                // （2026-10-06 真实项目实测：273 条待重试，阶段 running 导致 14/15 被跳过）。
+                const begun = beginRegenerate(runId, stageId, { itemId: item.id, allowPartialStage: true });
+                await executeRegenerate(begun);
+                retried.push(item.id);
+            } catch (error) {
+                // 单条失败不中断整批：记下来如实返回，让调用方看到哪条没救回来、为什么。
+                skipped.push({ itemId: item.id, reason: error.message });
+            }
+        }
+        saveRun(run);
+        return {
+            run,
+            retried,
+            skipped,
+            failedTotal: failed.length,
+            remaining: Math.max(0, failed.length - retried.length),
+        };
     }
 
     /**
@@ -3752,5 +3823,5 @@ ${JSON.stringify(partials, null, 2)}
         return fixed;
     }
 
-    return { stages, list, get, create, estimate: estimateFor, runStage, beginStage, executeStage, stageProgress, runLog, reconcileRunning, setStageInput, projectJob, bindJobs, cancelStage, beginAssemble, executeAssemble, assembleStage, beginRegenerate, executeRegenerate, stageGate, stageGates, patchStageShot, durationPolicy, skeletonOf, castingReadinessOf, enforceCastingGate, confirmCasting };
+    return { stages, list, get, create, estimate: estimateFor, runStage, beginStage, executeStage, stageProgress, runLog, reconcileRunning, setStageInput, projectJob, bindJobs, cancelStage, beginAssemble, executeAssemble, assembleStage, beginRegenerate, executeRegenerate, retryFailedItems, stageGate, stageGates, patchStageShot, durationPolicy, skeletonOf, castingReadinessOf, enforceCastingGate, confirmCasting };
 }
