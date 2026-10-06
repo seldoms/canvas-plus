@@ -146,7 +146,7 @@ test("buildConcatArgs 外部音轨走 amix，字幕烧入接在最终视频标�
     const filter = args[args.indexOf("-filter_complex") + 1];
     assert.match(filter, /\[2:a\]aresample=44100\[a0\]/);
     assert.match(filter, /\[3:a\]aresample=44100\[a1\]/);
-    assert.match(filter, /\[a0\]\[a1\]amix=inputs=2:duration=longest:normalize=0\[amixed\];\[amixed\]apad\[aout\]/);
+    assert.match(filter, /\[a0\]\[a1\]amix=inputs=2:duration=longest:normalize=0\[amixed\];\[amixed\]apad\[apadded\];\[apadded\]loudnorm=I=-16:LRA=11:TP=-1\.5\[aout\]/);
     assert.match(filter, /\[vcat\]subtitles=filename='\/x\/sub.srt'\[vsub\]/);
     assert.deepEqual(args.slice(args.indexOf("-map"), args.indexOf("-map") + 5), ["-map", "[vsub]", "-map", "[aout]", "-shortest"]);
     assert.ok(args.includes("aac"));
@@ -225,7 +225,7 @@ test("buildConcatArgs 每轨按 delayMs 施加 adelay，混音轨补静音到视
     const filter = args[args.indexOf("-filter_complex") + 1];
     assert.match(filter, /\[2:a\]aresample=44100\[a0\]/, "延迟 0 不加 adelay");
     assert.match(filter, /\[3:a\]adelay=2250\|2250,aresample=44100,volume=-3dB\[a1\]/);
-    assert.match(filter, /\[a0\]\[a1\]amix=inputs=2:duration=longest:normalize=0\[amixed\];\[amixed\]apad\[aout\]/);
+    assert.match(filter, /\[a0\]\[a1\]amix=inputs=2:duration=longest:normalize=0\[amixed\];\[amixed\]apad\[apadded\];\[apadded\]loudnorm=I=-16:LRA=11:TP=-1\.5\[aout\]/);
     assert.deepEqual(args.slice(args.indexOf("-map"), args.indexOf("-map") + 5), ["-map", "[vcat]", "-map", "[aout]", "-shortest"]);
 });
 

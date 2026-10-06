@@ -45,6 +45,40 @@ const num = (value) => {
 };
 
 /** 本机是否装有 ffmpeg（测试与非 Linux 环境用来决定是否跳过真机用例）。 */
+/**
+ * 成片响度归一（EBU R128）。**为什么必须做**：H3 每段独立生成，段间响度会漂
+ * （2026-10-06 实测两段相差 6.8dB：-44.6 vs -51.4 RMS），cut 档音轨是硬接的
+ * （acrossfade 只在转场档走），观众会听到明显音量跳变。
+ *
+ * 用 ffmpeg `loudnorm` 的**单遍动态模式**：一次扫描完成测量与调整。
+ * 代价是精度不如双遍（±1~2 LU），但省掉一遍解码，对短剧集长是可接受的取舍；
+ * 需要严格母版时用 `loudnormMode: "two-pass"`。
+ */
+const LOUDNORM_DEFAULTS = Object.freeze({ i: -16, lra: 11, tp: -1.5 });
+
+/**
+ * 目标响度换算成 filter 串。
+ *
+ * `scope` 决定作用面，这是本模块最关键的一个区分：
+ *   - `"clip"`：**逐段**归一，concat/xfade 之前用。消除段间漂移（实测差 6.8dB），
+ *     这是解决「接缝处音量跳变」的唯一正确位置。
+ *   - `"master"`：整片**末端**归一一次。只保证成片整体响度落在目标附近，
+ *     **不消除段间差**（实测归一后仍差 5.8dB）。
+ *
+ * 两档串联使用：先 clip 后 master。
+ *
+ * 逐段档**默认跟随整片档**（`clipI ?? i`）：只调 `i` 时两档一起变，符合直觉；
+ * 需要逐段单独设定（片段动态范围与整片不同时）才显式给 `clipI/clipLra/clipTp`。
+ */
+export function buildLoudnormChain(plan, scope = "master") {
+    const cfg = plan?.loudnorm;
+    if (!cfg) return [];
+    const i = scope === "clip" ? (cfg.clipI ?? cfg.i) : cfg.i;
+    const lra = scope === "clip" ? (cfg.clipLra ?? cfg.lra) : cfg.lra;
+    const tp = scope === "clip" ? (cfg.clipTp ?? cfg.tp) : cfg.tp;
+    return [`loudnorm=I=${i}:LRA=${lra}:TP=${tp}`];
+}
+
 export function ffmpegAvailable(bin = "ffmpeg") {
     const result = spawnSync(bin, ["-version"], { stdio: "ignore" });
     return !result.error;
@@ -238,6 +272,9 @@ export function buildAssemblyPlan({
     subtitleStyle = null,
     includeClipAudio = false,
     cover = true,
+    // 成片响度归一：默认开启（EBU R128 -16 LUFS）。传 false 可关，
+    // 或传 { i, lra, tp } 覆盖目标值——用于「母版要-14、预览要 -23」这类分级。
+    loudnorm = true,
     now,
 } = {}) {
     if (!Array.isArray(clips) || clips.length === 0) throw new Error("拼接清单为空：没有任何片段可拼接");
@@ -318,6 +355,7 @@ export function buildAssemblyPlan({
         includeClipAudio: clipAudio,
         warnings,
         cover: cover !== false,
+        loudnorm: loudnorm === false ? null : { ...LOUDNORM_DEFAULTS, ...(loudnorm || {}) },
     };
 }
 
@@ -328,7 +366,7 @@ const escapeFilterPath = (value) => String(value).replace(/\\/g, "\\\\").replace
  * 所有片段先统一到目标尺寸/帧率/pix_fmt 再拼接：cut 用 concat，转场用 xfade；
  * 外部音轨混流用 amix，字幕烧入接在最终视频标签后。
  */
-export function buildConcatArgs(plan, { inputPaths, audioPaths = [], outputPath } = {}) {
+export function buildConcatArgs(plan, { inputPaths, audioPaths = [], outputPath, normalizeClips = true } = {}) {
     if (!outputPath) throw new Error("缺少输出路径");
     if (!Array.isArray(inputPaths) || inputPaths.length !== plan.clips.length) throw new Error("输入文件数与清单片段数不一致");
 
@@ -342,8 +380,16 @@ export function buildConcatArgs(plan, { inputPaths, audioPaths = [], outputPath 
     const wantClipAudio = plan.includeClipAudio === true;
 
     // 片段自带音轨（H3 是音画联合模型）：先统一采样率/声道再随视频一起 concat/xfade，成片不丢原声。
+    //
+    // 逐段响度对齐（normalizeClips）：H3 每段独立生成，段间响度会漂（2026-10-06 实测
+    // 两段差 6.8dB）。**只在成片末端做一次 loudnorm 解决不了这个问题**——它把整片拉到
+    // 目标值，但段间相对差原样保留（实测归一后段间仍差 5.8dB）。必须在 concat/xfade
+    // **之前**逐段归一，拼接点两侧才是同一个基准。
+    // 段内不做淡入淡出：那会改音色，且H3 段首的静音本就该由成片节奏决定。
     const clipAudio = (index) => {
-        parts.push(`[${index}:a]aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo[ca${index}]`);
+        const chain = [`aresample=44100`, `aformat=sample_fmts=fltp:channel_layouts=stereo`];
+        if (normalizeClips) chain.push(...buildLoudnormChain(plan, "clip"));
+        parts.push(`[${index}:a]${chain.join(",")}[ca${index}]`);
         return `ca${index}`;
     };
 
@@ -407,13 +453,18 @@ export function buildConcatArgs(plan, { inputPaths, audioPaths = [], outputPath 
             audioLabels.push(`[${label}]`);
         });
     }
-    if (audioLabels.length === 1) {
-        // apad：把音轨补静音到与视频等长，否则 -shortest 会把「音频比视频短」的成片截短。
-        parts.push(`${audioLabels[0]}apad[aout]`);
-        maps.push("-map", "[aout]", "-shortest");
-    } else if (audioLabels.length > 1) {
-        parts.push(`${audioLabels.join("")}amix=inputs=${audioLabels.length}:duration=longest:normalize=0[amixed]`);
-        parts.push("[amixed]apad[aout]");
+    if (audioLabels.length) {
+        if (audioLabels.length === 1) {
+            // apad：把音轨补静音到与视频等长，否则 -shortest 会把「音频比视频短」的成片截短。
+            parts.push(`${audioLabels[0]}apad[apadded]`);
+        } else {
+            parts.push(`${audioLabels.join("")}amix=inputs=${audioLabels.length}:duration=longest:normalize=0[amixed]`);
+            parts.push("[amixed]apad[apadded]");
+        }
+        // 混音/补静音之后再做响度归一：顺序很关键——先归一再amix 会被amix 的
+        // 求和重新拉偏，先补静音再归一才不会把尾部静音算进测量。
+        const loudnorm = buildLoudnormChain(plan);
+        parts.push(loudnorm.length ? `[apadded]${loudnorm.join(",")}[aout]` : "[apadded][aout]");
         maps.push("-map", "[aout]", "-shortest");
     }
 
@@ -511,6 +562,7 @@ export async function assembleEpisode({
         order,
         transition,
         transitionDurationSec: options.transitionDurationSec,
+        loudnorm: options.loudnorm,
         width: options.width ?? config.pipeline?.videoWidth,
         height: options.height ?? config.pipeline?.videoHeight,
         fps: options.fps ?? config.pipeline?.videoFps,
