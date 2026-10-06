@@ -209,6 +209,21 @@ export function createComfyClient(config) {
     }
 
     const json = async (path, init) => (await request(path, init)).json();
+    /**
+     * 容忍空响应体：ComfyUI 的一些命令端点（如 POST /free）成功时返回 200 但
+     * `Content-Length: 0`，直接 .json() 会抛 `Unexpected end of JSON input`，
+     * 把「成功」误报成「失败」。这类端点只看状态码，故空体返回 null。
+     */
+    const jsonOrNull = async (path, init) => {
+        const response = await request(path, init);
+        const text = await response.text();
+        if (!text.trim()) return null;
+        try {
+            return JSON.parse(text);
+        } catch {
+            return null;
+        }
+    };
 
     async function probe() {
         try {
@@ -270,7 +285,7 @@ export function createComfyClient(config) {
 
     /** 释放显存/内存（POC 跑批 preflight 用）：段提交前清出 RAM，避免低内存换页拖慢整段。 */
     async function free({ unloadModels = false, freeMemory = true } = {}) {
-        return json("/free", {
+        return jsonOrNull("/free", {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ unload_models: unloadModels, free_memory: freeMemory }),
