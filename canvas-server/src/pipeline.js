@@ -2145,11 +2145,28 @@ ${JSON.stringify(partials, null, 2)}
     }
 
     /** 产物 URL 兜底：selectedArtifactId 在本项目里就是产物 URL；兼容 reference-lock 返回 url 或 artifactId。 */
+    /**
+     * 取参考图的可用地址。
+     *
+     * 2026-10-06 修的场景母版丢失问题：assetRef 里存的 `artifactId` 是**产物相对路径**
+     * （形如 `image-muv4viaa-lony6/img_qwen21_t2i_00001_.png`，jobId/文件名），
+     * 既不是 http(s) 也不以 `/` 开头，于是旧实现 `return ""` 把它判成「没有参考图」。
+     * 后果不是聚合视图少一组，而是**关键帧只注入角色定妆照、场景母版一张都没进参考图** ——
+     * 每镜的地点其实没锁住，21 张场景母版白跑。已跑的任务里只有 INPUT_IMAGE/REF_IMAGE_1，
+     * 且都指向角色定妆照。
+     *
+     * 补上裸相对路径这一形态：`<非空段>/<非空段>` 视为 `jobId/文件名`，补成 `/api/artifacts/...`。
+     * 该形态与 resolveMediaPath 认的 `/api/artifacts/<jobId>/<file>` 一致。
+     */
     const referenceUrlOf = (entry) => {
         const url = String(entry?.url ?? "").trim();
         if (url) return url;
         const artifactId = String(entry?.artifactId ?? "").trim();
-        return /^(https?:|\/)/.test(artifactId) ? artifactId : "";
+        if (/^(https?:|\/)/.test(artifactId)) return artifactId;
+        // 裸相对路径 `jobId/文件名` → 补成网关产物地址（与 delivery.resolveMediaPath 同规则）
+        const segments = artifactId.split("/").filter(Boolean);
+        if (segments.length >= 2) return `/api/artifacts/${segments.join("/")}`;
+        return "";
     };
 
     /**
@@ -2220,6 +2237,58 @@ ${JSON.stringify(partials, null, 2)}
         }
         const urls = infos.map((entry) => entry.url);
         return { shotBinding, report, needCount, urls, infos };
+    }
+
+    /**
+     * 按角色 / 场景 / 道具聚合关键帧条目（2026-10-06）。
+     *
+     * ## 为什么按「引用关系」而不是「提示词里出现名字」
+     *
+     * 最早我以为聚合 = 把提示词里出现「陈默」的镜头归到一起。但那是**字符串猜测**：
+     * 提示词可能被改、可能只写「他」，而真正决定画面一致性的，
+     * **是这一镜实际引用了哪张定妆照**。所以这里直接用 shotReferenceContext 算出的
+     * infos（role / bindingId / name / url）—— 那才是锁住身份的事实源。
+     *
+     * 用途：一眼看出「陈默在 68 镜里的定妆照引用是否始终一致」。
+     * 若某镜没引用定妆照，它会单独落在 groups.unbound 里 —— 这本身就是质量信号：
+     * 没锁脸的镜头，出图时角色长相会漂。
+     *
+     * 纯读，不改任何状态。
+     */
+    function groupFramesByReference(runId, stageId = "keyframe") {
+        const run = requireRun(runId);
+        const def = requireStageDef(stageId);
+        const stage = requireStage(run, def);
+        const frames = def.id === "keyframe" ? stage.output?.frames : stage.output?.clips;
+        const list = Array.isArray(frames) ? frames : [];
+        const shots = run.stages?.storyboard?.output?.shots || [];
+        const groups = new Map();
+        const unbound = [];
+
+        for (const frame of list) {
+            let infos = [];
+            try {
+                infos = shotReferenceContext(run, frame, shots).infos || [];
+            } catch {
+                // 上下文不全时按「未绑定」处理，不静默丢条目 —— 那会让人以为聚合是完整的。
+                infos = [];
+            }
+            if (!infos.length) {
+                unbound.push({ itemId: frame.id, shotId: frame.shotId ?? null, role: frame.role ?? null, status: frame.status ?? null });
+                continue;
+            }
+            for (const info of infos) {
+                const key = `${info.role}::${info.bindingId}`;
+                const bucket = groups.get(key) ?? { role: info.role, bindingId: info.bindingId, name: info.name || info.bindingId, referenceUrl: info.url, items: [] };
+                bucket.items.push({ itemId: frame.id, shotId: frame.shotId ?? null, role: frame.role ?? null, status: frame.status ?? null, artifactUrl: frame.artifactUrl ?? null, selected: frame.selected ?? null });
+                groups.set(key, bucket);
+            }
+        }
+
+        const grouped = [...groups.values()]
+            .map((bucket) => ({ ...bucket, count: bucket.items.length }))
+            .sort((a, b) => b.count - a.count || String(a.name).localeCompare(String(b.name)));
+        return { groups: grouped, unbound, total: list.length };
     }
 
     /** 取本镜的场景对象（分镜既有 scenes + 剧本回落），供编译器写「地点」。 */
@@ -3823,5 +3892,5 @@ ${JSON.stringify(partials, null, 2)}
         return fixed;
     }
 
-    return { stages, list, get, create, estimate: estimateFor, runStage, beginStage, executeStage, stageProgress, runLog, reconcileRunning, setStageInput, projectJob, bindJobs, cancelStage, beginAssemble, executeAssemble, assembleStage, beginRegenerate, executeRegenerate, retryFailedItems, stageGate, stageGates, patchStageShot, durationPolicy, skeletonOf, castingReadinessOf, enforceCastingGate, confirmCasting };
+    return { stages, list, get, create, estimate: estimateFor, runStage, beginStage, executeStage, stageProgress, runLog, reconcileRunning, setStageInput, projectJob, bindJobs, cancelStage, beginAssemble, executeAssemble, assembleStage, beginRegenerate, executeRegenerate, retryFailedItems, groupFramesByReference, stageGate, stageGates, patchStageShot, durationPolicy, skeletonOf, castingReadinessOf, enforceCastingGate, confirmCasting };
 }

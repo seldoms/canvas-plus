@@ -83,9 +83,12 @@ const DEFAULTS = {
         videoHeight: 1344,
         videoSeconds: 5,
         videoFps: 24,
-        // D3：单镜一次入队 ≥4 个关键帧候选（不达标由 retryFailedItem 自动重生成，预算见 maxItemRetries）。
-        // 同时也是 04-keyframes 提示词里的单镜帧数上限。
-        maxKeyframesPerShot: 4,
+        // 单镜一次入队几个关键帧候选。**默认 1（2026-10-06 改）**：
+        // 「一张图 → 人工看一眼 → 不行就改词重跑」比「一次出 4 张 → 人工挑一张」更顺，
+        // 也不会把候选栏变成挑图游戏——4 张里选 1 张的时间常常比重新生成一张还长，
+        // 而且挑出来的也不一定更好。多样性仍需保留时，用regenerate 逐条追加即可（追加不覆盖）。
+        // 它同时也是 04-keyframes 提示词里的单镜帧数上限。
+        maxKeyframesPerShot: 1,
         // 「01 剧本」阶段填入小说后的完整 prompt 超过该字符数时，自动分块改编（map-reduce）；
         // 小于等于阈值维持单次调用。针对整本长篇超出模型上下文的场景（如 156 万 token 超 DeepSeek 104 万上限）。
         // 默认 16000：对齐剧本工作室 skill 的「每批 8000 字以内」注意力策略并放宽一倍兼顾吞吐；

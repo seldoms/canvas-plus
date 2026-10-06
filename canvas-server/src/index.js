@@ -1182,6 +1182,24 @@ router.get("/api/pipeline/runs/:id/steps/assembly/export", (req, res, { params, 
  * 同步部分做门禁：参数/引用非法（item 不存在、文本阶段、模板非法）→ 400；
  * 阶段或条目正忙（防并发重复入队）→ 409。通过后入队（非阻塞）→ 202，真实生成在任务队列后台跑。
  */
+/**
+ * 按角色 / 场景 / 道具聚合关键帧条目（只读）。
+ *
+ * 用途：一眼看出「陈默在 68 镜里的定妆照引用是否始终一致」。
+ * 聚合依据是**实际引用关系**（这一镜引用了哪张定妆照），不是提示词里有没有出现名字 ——
+ * 后者是字符串猜测，提示词会被改、也可能只写「他」。
+ *
+ * `unbound` 是没引用任何参考图的条目，单列出来：这本身就是质量信号，
+ * 没锁脸的镜头出图时角色长相会漂。
+ */
+router.get("/api/pipeline/runs/:id/frames/by-reference", (req, res, { params, url }) => {
+    try {
+        sendJson(res, 200, pipeline.groupFramesByReference(params.id, url.searchParams.get("stage") || "keyframe"));
+    } catch (error) {
+        sendError(res, 400, error.message);
+    }
+});
+
 router.post("/api/pipeline/runs/:id/steps/:stage/retry-failed", async (req, res, { params }) => {
     try {
         const body = await readJson(req).catch(() => ({}));

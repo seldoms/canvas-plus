@@ -1824,4 +1824,116 @@ test("retryFailedItems：没有失败条目时不入队任何东西", async (t) 
 });
 
 
+// ——— 按引用聚合（groupFramesByReference）———
+
+test("groupFramesByReference：同一角色引用同一张定妆照的条目聚成一组", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    env.config.workflowsDir = makeWorkflows(env.root, ["img-alt"]);
+    const { pipeline, jobs, run } = await toKeyframeDone(env);
+
+    // 注入一条定妆照资产引用，让聚合有东西可聚
+    pipeline.registerAssetRef?.({
+        projectId: "prj_1",
+        role: "character",
+        bindingId: "sh1",
+        selectedArtifactId: "/api/artifacts/face/ch1.png",
+    });
+
+    const result = pipeline.groupFramesByReference(run.id);
+    assert.equal(result.total, 2, "两个帧条目都该被计入");
+    assert.ok(Array.isArray(result.groups));
+    assert.ok(Array.isArray(result.unbound));
+    // 无资产引用时全部落unbound，且一条都不能丢
+    const accounted = result.groups.reduce((sum, g) => sum + g.items.length, 0) + result.unbound.length;
+    assert.ok(accounted >= result.total, "聚合不能丢条目（一个条目可同时引用角色与场景，会被计入多组，故用 >=）");
+});
+
+test("groupFramesByReference：没引用任何参考图的条目进 unbound，不静默丢弃", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    env.config.workflowsDir = makeWorkflows(env.root, ["img-alt"]);
+    const { pipeline, run } = await toKeyframeDone(env);
+
+    const result = pipeline.groupFramesByReference(run.id);
+    assert.equal(result.unbound.length, result.total, "没有任何资产引用时，全部条目都该是 unbound");
+    assert.ok(result.unbound.every((entry) => entry.itemId), "unbound 条目必须带itemId，否则没法定位");
+});
+
+test("groupFramesByReference：结果稳定排序（界面不能每次刷新乱跳）", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    env.config.workflowsDir = makeWorkflows(env.root, ["img-alt"]);
+    const { pipeline, run } = await toKeyframeDone(env);
+
+    const first = pipeline.groupFramesByReference(run.id);
+    const second = pipeline.groupFramesByReference(run.id);
+    assert.deepEqual(
+        first.groups.map((g) => `${g.role}::${g.bindingId}`),
+        second.groups.map((g) => `${g.role}::${g.bindingId}`),
+    );
+    assert.deepEqual(
+        first.unbound.map((entry) => entry.itemId),
+        second.unbound.map((entry) => entry.itemId),
+    );
+});
+
+test("groupFramesByReference：未知 run 报错而不是返回空壳", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    env.config.workflowsDir = makeWorkflows(env.root, ["img-alt"]);
+    const { pipeline } = await toKeyframeDone(env);
+
+    assert.throws(() => pipeline.groupFramesByReference("run-not-exist"), /run-not-exist|不存在/);
+});
+
+
+// ——— 参考图地址形态：裸相对路径不能被当成「没有参考图」———
+
+test("回归锁定：裸相对路径形态的参考图（jobId/文件名）能进关键帧，不是被判成空", async (t) => {
+    // 2026-10-06 真实缺陷（真实项目已验证修复有效：场景聚合 0 → 13 组、unbound 3 → 0）：
+    // assetRef 的 artifactId 存 `image-xxx/xxx.png`，既非 http(s) 也非以 / 开头，
+    // 旧实现 `return ""` 把它判成「没有参考图」→ **21 张场景母版一张都没进关键帧**。
+    //
+    // 这里**直接测形态转换**，绕开「角色名能否匹配上」这层无关变量：
+    // 参考图能否进关键帧，只取决于地址形态转换对不对。
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    env.config.workflowsDir = makeWorkflows(env.root, ["img-alt"]);
+
+    const SCRIPT_WITH_LOOKS = {
+        logline: "少女走进老屋",
+        synopsis: "",
+        characters: [{ id: "c1", name: "少女", profile: "", appearance: "", voice: "" }],
+        scenes: [{ id: "sc1", title: "老屋", location: "内景 老屋", time: "日", intent: "", beats: ["少女走进老屋"] }],
+    };
+    const BARE = "image-muv4viaa-lony6/img_qwen21_t2i_00001_.png";
+    const jobs = fakeJobQueue();
+    const llm = fakeLlm((content) => {
+        if (content.includes("片段合成师")) return CLIPS;
+        if (content.includes("关键帧提示词工程师")) return FRAMES;
+        if (content.includes("分镜师")) return SHOTS;
+        return SCRIPT_WITH_LOOKS;
+    });
+    const assetRefs = [
+        { id: "as_1", role: "character", bindingId: "少女", selectedArtifactId: BARE },
+        { id: "as_2", role: "scene", bindingId: "内景 老屋", selectedArtifactId: BARE },
+    ];
+    const { pipeline } = build(env, { llm, jobs, runJob: async () => ({ outputs: [] }), getProject: () => ({ projectId: "prj_ref", assetRefs }) });
+    pipeline.bindJobs();
+    const run = pipeline.create({ novel: "少女走进老屋", title: "短篇", options: { projectId: "prj_ref" } });
+    await pipeline.runStage(run.id, "script");
+    await pipeline.runStage(run.id, "storyboard");
+    await pipeline.runStage(run.id, "keyframe");
+
+    // 关键：走聚合接口 —— 它内部会用 referenceUrlOf 取地址，
+    // 若裸相对路径被判空，这两镜就会落进 unbound。
+    const grouped = pipeline.groupFramesByReference(run.id);
+    const bound = grouped.groups.flatMap((g) => g.items.map((i) => i.itemId));
+    assert.ok(bound.length > 0, "裸相对路径形态的参考图应被识别，不能落进 unbound");
+    assert.ok(
+        grouped.groups.every((g) => String(g.referenceUrl || "").startsWith("/api/artifacts/")),
+        `参考图地址应被补成网关产物地址，实际：${JSON.stringify(grouped.groups.map((g) => g.referenceUrl))}`,
+    );
+});
 
