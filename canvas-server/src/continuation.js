@@ -24,6 +24,8 @@ import { dirname, join } from "node:path";
 import { ensureDir, sanitizeName } from "./files.js";
 import { createGenerationIntent } from "./generation-intent.js";
 import { resolveMediaPath } from "./delivery.js";
+import { presetForTemplate } from "./prompt-compiler.js";
+import { scanTemplateDir } from "./tool-adapter.js";
 
 /** 段模板默认：seg0 用 T2VA，seg≥1 用 I2VA（first_frame 续接），与 POC 验证的配方一致。 */
 const DEFAULT_TEMPLATES = { t2v: "video_minimax_h3_t2v", i2v: "video_h3_i2v" };
@@ -38,6 +40,22 @@ export const SEAM_THRESHOLDS = Object.freeze({ ssimMin: 0.85, audioStepMaxDb: 12
 const PREFLIGHT_DEFAULTS = { minRamFreeBytes: 4 * 1024 ** 3, maxWaitMs: 30 * 60_000, pollMs: 15_000 };
 
 const MAX_SEGMENTS = 8;
+
+/**
+ * 采样参数回填：**不硬编码** steps/cfg/sampler，与 pipeline.js的 `applyPresetParams` 同语义——
+ * 仅当模板真的声明了对应 token 且调用方未显式给值时才用规则表参数档回填。
+ * 续接链的段模板（seg0=T2VA、seg≥1=I2VA）各自需要的 token 不同，缺项会在渲染阶段报「缺少参数」。
+ */
+const PRESET_TOKEN_KEYS = Object.freeze({ STEPS: "steps", CFG: "cfg", SAMPLER: "sampler", SCHEDULER: "scheduler", SHIFT: "shift" });
+
+function applyPresetParams(params, template, tokens) {
+    const preset = presetForTemplate(template, "speed");
+    if (!preset || !Array.isArray(tokens)) return params;
+    for (const [token, key] of Object.entries(PRESET_TOKEN_KEYS)) {
+        if (tokens.includes(token) && params[token] === undefined && preset[key] !== undefined) params[token] = preset[key];
+    }
+    return params;
+}
 
 /** 契约错误：与 generation-intent.js / slot-candidates.js 同形（status + code + field）。 */
 function contractError(status, code, message, field) {
@@ -244,6 +262,8 @@ export function createContinuation(deps = {}) {
     if (typeof jobs?.get !== "function" || typeof jobs?.list !== "function") throw new Error("createContinuation 需要注入 jobs.get / jobs.list");
     if (typeof deps.submitIntent !== "function") throw new Error("createContinuation 需要注入 submitIntent（M1 提交链：能力校验+编译+入队）");
     const templates = { ...DEFAULT_TEMPLATES, ...(deps.templates || {}) };
+    // 模板 → 声明的 token（只认模板真实声明的，不猜）；缺项参数由参数档回填，避免「缺少参数」渲染失败。
+    const templateCatalog = scanTemplateDir(config?.workflowsDir);
     const segmentDefaults = { ...DEFAULT_SEGMENT_PARAMS, ...(deps.segmentDefaults || {}) };
     const preflight = typeof deps.preflight === "function" ? deps.preflight : async () => {};
     const seamQc = typeof deps.runSeamQc === "function" ? deps.runSeamQc : (input) => runSeamQc({ ffmpegPath: deps.ffmpegPath, ffprobePath: deps.ffprobePath, ...input });
@@ -346,14 +366,14 @@ export function createContinuation(deps = {}) {
             toolId: workflow,
             template: workflow,
             facts: { prompt },
-            params: {
+            params: applyPresetParams({
                 ...segmentDefaults,
                 ...segmentParams,
                 ...(seed !== null ? { SEED: seed } : {}),
                 OUTPUT_PREFIX: `continuation/${sanitizeName(chainId)}_seg${segmentIndex}`,
                 // ComfyUI 执行缓存命中时 history 无 outputs：允许按 OUTPUT_PREFIX 回落取回产物（同一段重跑语义=同一份产物）。
                 RECOVER_BY_PREFIX: true,
-            },
+            }, workflow, templateCatalog[workflow]?.tokens),
             options: {
                 jobId,
                 idempotencyKey,
