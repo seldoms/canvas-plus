@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
-import { chmodSync, existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { chmodSync, existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { basename, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Readable } from "node:stream";
 
@@ -12,6 +12,9 @@ import { createRouter, readJson, readBody, sendError, sendJson, serveFile, apply
 import { createJobQueue, waitForJob } from "./jobs.js";
 import { createPipeline } from "./pipeline.js";
 import { createProjects } from "./projects.js";
+// 自动粗剪 + 素材包导出（成片/原片/SRT/FCPXML/EDL/清单/说明 + zip）：
+// 此前只有 CLI 入口，Agent 与前端都拿不到；这里挂薄路由，业务全在 edit-export.js。
+import { exportDeliveryPackage } from "./edit-export.js";
 import { createBibleStore } from "./bible.js";
 import { deriveGates } from "./gates.js";
 import { loadRegistry } from "./skills.js";
@@ -1086,6 +1089,87 @@ router.post("/api/pipeline/runs/:id/steps/assembly/assemble", async (req, res, {
             .catch((error) => console.error(`[pipeline] 合成成片失败：${error.message}`))
             .finally(() => inflightStages.delete(key));
         sendJson(res, 202, { run: begun.run, inflight: true, assembly: begun.assembly });
+    } catch (error) {
+        sendError(res, 400, error.message);
+    }
+});
+
+/**
+ * 自动粗剪 + 素材包导出（M4 补齐：此前只有 CLI 入口，前端与 Agent 都拿不到包）。
+ * body `{ episodeId?, allowPartial?, transition?, transitionDurationSec?, steps?, options? }`：
+ *   - `episodeId` 缺省导出 run 下全部集；
+ *   - `allowPartial=true` 允许缺段出片（清单标 partial=true 并列出缺哪几段）；
+ *   - `steps` 支持 ["plan","assemble","package"] 子集，便于失败后单步重跑（前序结果从磁盘读回）。
+ *
+ * **202 立刻返回**：真实ffmpeg 拼接与打包是分钟级操作，不能让一个 HTTP 请求扛着
+ * （与 `/steps/:stage/run` 同理）。进度看 `GET /api/pipeline/runs/:id/progress`。
+ */
+router.post("/api/pipeline/runs/:id/steps/assembly/export", async (req, res, { params }) => {
+    const key = `${params.id}:assembly:export`;
+    try {
+        const body = await readJson(req).catch(() => ({}));
+        const options = body && typeof body === "object" ? body : {};
+        const run = pipeline.get(params.id);
+        if (!run) return sendError(res, 404, "流水线不存在");
+        if (inflightStages.has(key)) return sendError(res, 409, "该run 的导出已在进行中");
+
+        const controller = new AbortController();
+        inflightStages.set(key, { controller, startedAt: Date.now() });
+        sendJson(res, 202, { runId: params.id, inflight: true, episodeId: options.episodeId ?? null });
+        void exportDeliveryPackage({
+            config,
+            run,
+            episodeId: options.episodeId ?? null,
+            allowPartial: options.allowPartial === true,
+            transition: options.transition ?? null,
+            transitionDurationSec: options.transitionDurationSec,
+            options: options.options ?? {},
+            steps: Array.isArray(options.steps) && options.steps.length ? options.steps : ["plan", "assemble", "package"],
+        })
+            .then((result) => {
+                // 导出结果落在 run 的产物目录里，前端按 runId 读manifest 即可，不回传大对象。
+                console.log(`[export] ${params.id} 导出完成：${result?.package?.zipPath ?? "(无 zip)"}`);
+            })
+            .catch((error) => console.error(`[export] ${params.id} 导出失败：${error.message}`))
+            .finally(() => inflightStages.delete(key));
+    } catch (error) {
+        inflightStages.delete(key);
+        sendError(res, 400, error.message);
+    }
+});
+
+/**
+ * 查导出结果（manifest 摘要 + 素材包文件清单）。
+ * GET `/api/pipeline/runs/:id/steps/assembly/export[?packageId=xxx]`
+ *   - 带 `packageId`：读该包的 manifest；
+ *   - 不带：列出该 run 名下所有已导出的包（`edit-export-<runId>*`），并回传最近一次的 manifest 摘要。
+ *
+ * 落盘位置是 `data/artifacts/<packageId>/export-manifest.json`（**不在 runs 下**——
+ * 素材包是产物不是运行日志）。packageId 规则与 edit-export.js 一致：
+ * `options.id || edit-export-<runId>`。
+ */
+router.get("/api/pipeline/runs/:id/steps/assembly/export", (req, res, { params, url }) => {
+    try {
+        const artifactsDir = safeJoin(config.dataDir, "artifacts");
+        const requested = url.searchParams.get("packageId");
+        const defaultId = `edit-export-${params.id}`;
+        const pkgId = requested ? safeJoin(artifactsDir, sanitizeName(requested, "edit-export")) : safeJoin(artifactsDir, defaultId);
+        const manifestPath = safeJoin(pkgId, "export-manifest.json");
+        const response = {};
+        if (existsSync(manifestPath)) {
+            response.manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+            response.packageId = basename(pkgId);
+        } else {
+            // 没给 packageId 且默认包不存在时，列出该 run 名下所有已导出的包，供前端选择。
+            response.packageId = null;
+            response.packages = existsSync(artifactsDir)
+                ? readdirSync(artifactsDir)
+                      .filter((name) => name.startsWith("edit-export-") && name.includes(params.id))
+                      .filter((name) => existsSync(safeJoin(artifactsDir, name, "export-manifest.json")))
+                : [];
+            return sendJson(res, 200, response);
+        }
+        sendJson(res, 200, response);
     } catch (error) {
         sendError(res, 400, error.message);
     }
