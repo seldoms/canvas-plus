@@ -1845,11 +1845,29 @@ ${JSON.stringify(partials, null, 2)}
         return specs;
     }
 
+    /**
+     * 流水线生图尺寸：默认走**模型官方画质档**（sizeForRatio，按画幅匹配登记表）。
+     * `pipelineConfig.imageDraft === true` 时改用 config 里的 imageWidth/imageHeight（草稿档）。
+     *
+     * 为什么需要草稿档（2026-10-06 实测）：Qwen-Image-2.1 在 5060 Ti 上
+     * 768×1344 与官方 1536×2752 **耗时相同（约 21.5s）**——像素量差 4 倍、时间不变。
+     * 批量生产（70 镜 × N 候选）用草稿档，存储与上传成本降一个量级，画质换来的收益却接近 0。
+     * 交付成片时用 `imageDraft: false`（默认）走官方档。
+     */
+    function imageDimsFor(style, extra = {}) {
+        const baseW = Number(pipelineConfig.imageWidth) || 768;
+        const baseH = Number(pipelineConfig.imageHeight) || 1344;
+        if (pipelineConfig.imageDraft === true) {
+            return { width: baseW, height: baseH, size: baseW + "x" + baseH, ratio: style.ratio, source: "draft", matched: true, template: pipelineConfig.imageTemplate, model: null, warning: null, ...extra };
+        }
+        return sizeForRatio(pipelineConfig.imageTemplate, style.ratio, { base: Math.min(baseW, baseH), ...extra });
+    }
+
     /** 单条参考图条目的生图计划（纯文生图；参考图本身不需要参考图输入）。 */
     function designReferencePlan(run, item) {
         const style = productionDefaults(run);
         // 尺寸从「该生图模板的官方规格登记表」取（画幅匹配优先，否则回落默认 + warning），不再实时按比例推导。
-        const imageDims = sizeForRatio(pipelineConfig.imageTemplate, style.ratio, { base: Math.min(Number(pipelineConfig.imageWidth) || 768, Number(pipelineConfig.imageHeight) || 1344) });
+        const imageDims = imageDimsFor(style);
         const projectId = run?.options?.projectId;
         const params = {
             WIDTH: imageDims.width ?? (Number(pipelineConfig.imageWidth) || 768),

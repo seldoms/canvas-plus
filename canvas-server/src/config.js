@@ -74,6 +74,11 @@ const DEFAULTS = {
         imageWidth: 768,
         imageHeight: 1344,
         imageBatch: 1,
+        // 草稿档：true 时流水线**忽略模型官方 2K 档位**，直接用上面的 imageWidth/imageHeight
+        // （768×1344≈720p竖屏）。2026-10-06 实测：Qwen-Image-2.1 在 5060 Ti 上
+        // 768×1344 与官方 1536×2752 **耗时相同（约 21.5s）**，画幅小 4 倍像素却不多花时间，
+        // 批量生产的存储与上传成本却低得多。false = 走官方画质档（默认，成片交付用）。
+        imageDraft: false,
         videoWidth: 768,
         videoHeight: 1344,
         videoSeconds: 5,
