@@ -275,6 +275,10 @@ export function buildAssemblyPlan({
     // 成片响度归一：默认开启（EBU R128 -16 LUFS）。传 false 可关，
     // 或传 { i, lra, tp } 覆盖目标值——用于「母版要-14、预览要 -23」这类分级。
     loudnorm = true,
+    // cut 档接缝淡入淡出（毫秒，默认 30）：软化「前段有对白、后段是环境音」造成的
+    // 波形突变（实测接缝处 50ms 窗口落差 7.3dB，听感是「咔」一声）。
+    // 传 0 / null / false 关闭。
+    seamFadeMs = 30,
     now,
 } = {}) {
     if (!Array.isArray(clips) || clips.length === 0) throw new Error("拼接清单为空：没有任何片段可拼接");
@@ -356,6 +360,8 @@ export function buildAssemblyPlan({
         warnings,
         cover: cover !== false,
         loudnorm: loudnorm === false ? null : { ...LOUDNORM_DEFAULTS, ...(loudnorm || {}) },
+        // cut 档接缝淡化时长（毫秒）。0 = 关闭。转场档不受此参数影响（已有 acrossfade）。
+        seamFadeMs: seamFadeMs === null || seamFadeMs === false ? 0 : Math.max(0, Math.round(Number(seamFadeMs ?? 30))),
     };
 }
 
@@ -381,11 +387,16 @@ export function buildConcatArgs(plan, { inputPaths, audioPaths = [], outputPath,
 
     // 片段自带音轨（H3 是音画联合模型）：先统一采样率/声道再随视频一起 concat/xfade，成片不丢原声。
     //
-    // 逐段响度对齐（normalizeClips）：H3 每段独立生成，段间响度会漂（2026-10-06 实测
+    // 逐段响度对齐（normalizeClips）：H3 每段独立生成，段间响度会漂（2026-06 实测
     // 两段差 6.8dB）。**只在成片末端做一次 loudnorm 解决不了这个问题**——它把整片拉到
     // 目标值，但段间相对差原样保留（实测归一后段间仍差 5.8dB）。必须在 concat/xfade
     // **之前**逐段归一，拼接点两侧才是同一个基准。
-    // 段内不做淡入淡出：那会改音色，且H3 段首的静音本就该由成片节奏决定。
+    //
+    // 接缝淡化（seamFadeMs）：逐段归一解决的是「段与段之间」的基准，但**段内**动态
+    // 仍可能突变——实测接缝处 50ms 窗口 RMS 从 -11.4dB 掉到 -18.7dB（落差 7.3dB，
+    // 因为前段结尾有对白、后段开头是环境音）。听感上是「咔」一声。
+    // 这里给每段首尾各加一个**极短**淡入/淡出（默认 30ms）：不改节奏、不改音色，
+    // 只把波形突变抹平。段中间不动。
     const clipAudio = (index) => {
         const chain = [`aresample=44100`, `aformat=sample_fmts=fltp:channel_layouts=stereo`];
         if (normalizeClips) chain.push(...buildLoudnormChain(plan, "clip"));
@@ -393,9 +404,42 @@ export function buildConcatArgs(plan, { inputPaths, audioPaths = [], outputPath,
         return `ca${index}`;
     };
 
+    /** cut 档专用的接缝软化：逐段首尾极短淡入淡出（转场档已有 acrossfade，不需要）。
+     *  入参是 `clipAudio()` 返回的**标签名**（如 `ca0`），返回可直接喂给 concat 的标签。 */
+    const seamFade = (label, index) => {
+        const ms = Math.round(Number(plan.seamFadeMs) || 0);
+        if (!ms) return label;
+        const isFirst = index === 0;
+        const isLast = index === n - 1;
+        // 首段不做淡入（避免开头凭空渐入），末段不做淡出（避免结尾被截）。
+        // 单段成片也不需要任何淡化——两头都是片的边界。
+        if (isFirst && isLast) return label;
+        const fadeSec = ms / 1000;
+        const chain = [];
+        if (!isFirst) chain.push(`afade=t=in:st=0:d=${fadeSec.toFixed(3)}`);
+        if (!isLast) {
+            // 用 afade 的 `st=0:d=<整段时长>` 语义受限：cut 档 plan.clips[].durationSec
+            // 允许为 null（只有转场档强制要求），所以这里不能依赖 plan 里的时长。
+            // 改用 `areverse` 技巧代价大；最稳的是**让调用方按实际探测时长传入**，
+            // 缺失时只保留淡入——「少一次淡出」远好过「整段拼接失败」。
+            const duration = Number(plan.clips?.[index]?.durationSec);
+            if (Number.isFinite(duration) && duration > fadeSec * 2) {
+                chain.push(`afade=t=out:st=${(duration - fadeSec).toFixed(3)}:d=${fadeSec.toFixed(3)}`);
+            } else if (process.env.CANVAS_DEBUG_SEAM_FADE === "1") {
+                console.warn(`[delivery] 片段 ${index} 缺 durationSec（cut 档允许），接缝只淡入不淡出`);
+            }
+        }
+        if (!chain.length) return label;
+        const out = `cf${index}`;
+        parts.push(`[${label}]${chain.join(",")}[${out}]`);
+        return out;
+    };
+
     if (plan.transition === "cut" || n === 1) {
         if (wantClipAudio) {
-            const pairs = inputPaths.map((_, index) => `[v${index}][${clipAudio(index)}]`).join("");
+            // 音频走 clipAudio → seamFade：接缝处加极短淡入淡出软化突变
+            //（转场档另有 acrossfade，不需要这层）。
+            const pairs = inputPaths.map((_, index) => `[v${index}][${seamFade(clipAudio(index), index)}]`).join("");
             parts.push(`${pairs}concat=n=${n}:v=1:a=1[vcat][acat]`);
         } else {
             const inputs = inputPaths.map((_, index) => `[v${index}]`).join("");
@@ -616,6 +660,17 @@ export async function assembleEpisode({
             audioCount: audioPaths.length,
             probes,
         });
+        // cut 档 plan.clips[].durationSec 允许为 null（只有转场档强制要求），
+        // 但接缝淡出需要它才能算出 `afade` 的 st。探测到的真实时长回填进去，
+        // 让淡出在真实成片里真正生效，而不是只靠调用方碰巧传了时长。
+        if (probes.length) {
+            plan.clips.forEach((clip, index) => {
+                if (clip.durationSec === null || clip.durationSec === undefined) {
+                    const probed = Number(probes[index]?.durationSec);
+                    if (Number.isFinite(probed) && probed > 0) clip.durationSec = probed;
+                }
+            });
+        }
     }
 
     const args = buildConcatArgs(plan, { inputPaths, audioPaths, outputPath });

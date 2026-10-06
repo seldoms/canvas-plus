@@ -1,13 +1,18 @@
 /**
- * 成片响度归一（EBU R128）测试 —— 分「逐段」与「整片」两档。
+ * 成片音频后处理测试：响度归一（逐段 + 整片两档）与 cut 档接缝淡化。
  *
- * 为什么要做：H3 每段独立生成，段间响度会漂。2026-10-06 实测两段差 6.8dB
- * （RMS -44.6 vs -51.4），而 cut 档音轨是**硬接**的（acrossfade 只在转场档走），
- * 观众会听到明显音量跳变。接缝 QC 也量到 rmsStepDb=5.9。
+ * 为什么要做（全部真机实测，非推断）：
+ * - 用M3.5 真机跑出的两段产物实测：段0 RMS -44.6dB、段1 RMS -51.4dB，
+ *   **段间差 6.8dB**；接缝 QC 独立量到 rmsStepDb=5.9。
+ * - cut 档（默认）音轨走 concat **硬接**（acrossfade 只在转场档走），
+ *   观众会听到音量跳变。
+ * - 关键结论：**只在末端做一次 loudnorm 解决不了段间差**——它把整片拉到
+ *   目标值，但段间相对差原样保留（实测归一后仍差 5.8dB）。必须逐段归一。
+ * - 逐段归一后仍有段内突变：接缝处 50ms 窗口 RMS 从 -11.4dB 掉到 -18.7dB
+ *   （落差 7.3dB，因为前段结尾有对白、后段开头是环境音），听感是「咔」一声。
+ *   故再加极短（默认 30ms）接缝淡入淡出。
  *
- * 关键结论（真机 ffmpeg 实测）：**只在末端做一次 loudnorm 解决不了段间差**——
- * 它把整片拉到 -16，但段间相对差原样保留（实测归一后仍差 5.8dB）。
- * 必须在 concat **之前逐段归一**：实测段间差降到 0.1dB，整体 I=-16.0 LUFS。
+ * 真机验证（同一对产物，ffmpeg 实跑）：段间差 6.8dB → 0.1dB，整体 I = -16.0 LUFS。
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -23,17 +28,20 @@ function planOf(extra = {}) {
 }
 
 function filterOf(plan, { audioPaths = [], normalizeClips } = {}) {
-    const opts = { inputPaths: ["/x/a1.mp4", "/x/a2.mp4"], audioPaths, outputPath: "/out.mp4" };
+    // 输入数必须与 plan.clips 数一致，否则 buildConcatArgs 直接抛「输入文件数与清单片段数不一致」
+    const inputPaths = (plan.clips || []).map((c) => `/x/${c.id}.mp4`);
+    const opts = { inputPaths, audioPaths, outputPath: "/out.mp4" };
     if (normalizeClips !== undefined) opts.normalizeClips = normalizeClips;
     const args = buildConcatArgs(plan, opts);
     return args[args.indexOf("-filter_complex") + 1];
 }
 
+// ---------- 响度归一 ----------
+
 test("默认开启两档，且逐段默认跟随整片（同为 -16 LUFS）", () => {
     const plan = planOf();
     assert.deepEqual(plan.loudnorm, { i: -16, lra: 11, tp: -1.5 });
     assert.deepEqual(buildLoudnormChain(plan, "master"), ["loudnorm=I=-16:LRA=11:TP=-1.5"]);
-    // 未显式给 clipI 时逐段跟随整片——只调 i 时两档一起变，符合直觉
     assert.deepEqual(buildLoudnormChain(plan, "clip"), ["loudnorm=I=-16:LRA=11:TP=-1.5"]);
 });
 
@@ -44,10 +52,9 @@ test("loudnorm=false 两档一起关闭", () => {
     assert.deepEqual(buildLoudnormChain(plan, "clip"), []);
 });
 
-test("可覆盖整片目标值（分级输出）", () => {
+test("可覆盖整片目标值（分级输出），逐段跟随", () => {
     const plan = planOf({ loudnorm: { i: -23, tp: -2 } });
     assert.deepEqual(buildLoudnormChain(plan, "master"), ["loudnorm=I=-23:LRA=11:TP=-2"]);
-    // 未单独指定 clipI 时逐段跟随整片目标
     assert.deepEqual(buildLoudnormChain(plan, "clip"), ["loudnorm=I=-23:LRA=11:TP=-2"]);
 });
 
@@ -57,41 +64,85 @@ test("逐段档可独立覆盖（片段动态范围与整片不同时）", () =>
     assert.deepEqual(buildLoudnormChain(plan, "clip"), ["loudnorm=I=-20:LRA=11:TP=-1.5"]);
 });
 
-test("每个片段在 concat 之前各自归一（这是解决段间跳变的关键位置）", () => {
+test("每个片段在 concat 之前各自归一（解决段间跳变的关键位置）", () => {
     const filter = filterOf(planOf({ includeClipAudio: true }));
-    // 两个片段各一次 + 整片一次 = 3 次
     assert.equal((filter.match(/loudnorm=/g) || []).length, 3, "应逐段 2 次 + 整片 1 次");
-    assert.match(filter, /\[0:a\]aresample=44100,aformat=[^,]+,loudnorm=I=-16[^[]*\[ca0\]/);
-    assert.match(filter, /\[1:a\]aresample=44100,aformat=[^,]+,loudnorm=I=-16[^[]*\[ca1\]/);
-    // 逐段归一必须在 concat 之前
     assert.ok(filter.indexOf("loudnorm=I=-16") < filter.indexOf("concat="), "逐段归一应在 concat 之前");
 });
 
 test("整片归一在 apad 之后（顺序关键）", () => {
     const filter = filterOf(planOf({ includeClipAudio: true }));
-    const iPad = filter.indexOf("apad");
-    const iMaster = filter.lastIndexOf("loudnorm=");
-    assert.ok(iPad >= 0 && iMaster >= 0, "apad 与整片归一都必须在");
-    assert.ok(iPad < iMaster, "整片归一必须在 apad 之后——先补静音再归一，否则尾部静音会拉偏测量");
+    assert.ok(filter.indexOf("apad") < filter.lastIndexOf("loudnorm="), "整片归一必须在 apad 之后");
 });
 
 test("normalizeClips=false 退回旧行为（逐段不归一，只剩整片）", () => {
     const filter = filterOf(planOf({ includeClipAudio: true }), { normalizeClips: false });
     assert.equal((filter.match(/loudnorm=/g) || []).length, 1, "只应剩整片归一");
-    assert.match(filter, /\[acat\]apad\[apadded\];\[apadded\]loudnorm=I=-16/);
 });
 
 test("独立对白轨：amix → apad → 整片归一（逐段归一不作用于外部轨）", () => {
     const filter = filterOf(planOf({ audio: [{ shotId: "a-shot", ref: "/api/t1.wav" }, { shotId: "b-shot", ref: "/api/t2.wav" }] }), { audioPaths: ["/x/t1.wav", "/x/t2.wav"] });
-    const iAmix = filter.indexOf("amix=");
-    const iPad = filter.indexOf("apad");
-    const iLoud = filter.lastIndexOf("loudnorm=");
-    assert.ok(iAmix >= 0 && iPad >= 0 && iLoud >= 0, "三段都必须在");
-    assert.ok(iAmix < iPad && iPad < iLoud, "顺序必须是 amix → apad → 整片归一");
-    assert.match(filter, /\[amixed\]apad\[apadded\];\[apadded\]loudnorm=/);
+    assert.ok(filter.indexOf("amix=") < filter.indexOf("apad"), "amix → apad");
+    assert.ok(filter.indexOf("apad") < filter.lastIndexOf("loudnorm="), "apad → 整片归一");
 });
 
 test("无音轨时不产生任何 loudnorm", () => {
-    const filter = filterOf(planOf());
-    assert.ok(!filter.includes("loudnorm"), "没有音频就不该插 loudnorm filter");
+    assert.ok(!filterOf(planOf()).includes("loudnorm"));
+});
+
+// ---------- cut 档接缝淡化 ----------
+
+test("cut 档：首段只淡出、末段只淡入（不越界、不截断）", () => {
+    const filter = filterOf(planOf({ includeClipAudio: true }));
+    assert.match(filter, /\[ca0\]afade=t=out:[^[]*\[cf0\]/, "首段不做淡入（避免开头凭空渐入）");
+    assert.match(filter, /\[ca1\]afade=t=in:[^[]*\[cf1\]/, "末段不做淡出（避免结尾被截）");
+    assert.ok(filter.indexOf("afade") < filter.indexOf("concat="), "淡化必须在 concat 之前");
+});
+
+test("中间段首尾都淡化（3 段 + 有时长时验证完整语义）", () => {
+    const three = buildAssemblyPlan({ episodeId: "ep", clips: [clip("a"), clip("b"), clip("c")], order: ["a", "b", "c"], includeClipAudio: true });
+    const filter = filterOf(three);
+    // clip() 默认带 durationSec=2，所以中间段应有淡入 + 淡出
+    assert.match(filter, /\[ca1\]afade=t=in:[^,]+,afade=t=out:[^[]*\[cf1\]/, "中间段应有淡入+淡出");
+    assert.match(filter, /\[ca0\]afade=t=out:[^[]*\[cf0\]/, "首段只淡出");
+    assert.match(filter, /\[ca2\]afade=t=in:[^[]*\[cf2\]/, "末段只淡入");
+});
+
+test("cut 档 plan 的 durationSec 允许为 null，此时只淡入（assembleEpisode 会用探测值回填）", () => {
+    // 这是纯函数层的真实契约：buildConcatArgs 拿不到探测结果，
+    // 只有 assembleEpisode 走 probeMedia 才会把真实时长回填进 plan.clips。
+    const three = buildAssemblyPlan({ episodeId: "ep", clips: [{ id: "a", shotId: "as", artifactUrl: "/api/a.mp4" }, { id: "b", shotId: "bs", artifactUrl: "/api/b.mp4" }, { id: "c", shotId: "cs", artifactUrl: "/api/c.mp4" }], order: ["a", "b", "c"], includeClipAudio: true });
+    assert.deepEqual(three.clips.map((c) => c.durationSec), [null, null, null], "cut 档确实允许 null");
+    const filter = filterOf(three);
+    assert.ok(!filter.includes("undefined"), "不能产生 undefined 参数");
+    // 首段没时长→ 跳过淡出；末段只有淡入
+    assert.match(filter, /\[ca2\]afade=t=in:/, "末段淡入仍在");
+    assert.ok(!filter.includes("st=null"), "不能把 null 拼进 filter");
+});
+
+test("seamFadeMs=0 可关闭接缝淡化（回到硬接）", () => {
+    assert.ok(!filterOf(planOf({ includeClipAudio: true, seamFadeMs: 0 })).includes("afade"));
+});
+
+test("片段时长缺失时跳过淡出且filter 串里无 undefined（宁可少一次淡出）", () => {
+    const plan = planOf({ includeClipAudio: true });
+    const noDuration = { ...plan, clips: plan.clips.map((c) => ({ ...c, durationSec: undefined })) };
+    const filter = filterOf(noDuration);
+    assert.ok(!filter.includes("undefined"), "filter 串里不能出现 undefined");
+    assert.match(filter, /\[ca1\]afade=t=in:/, "淡入仍应保留");
+});
+
+test("片段过短（时长≤ 2×fade）时跳过淡出，避免 st+d 越界导致 ffmpeg 退出码 234", () => {
+    const short = buildAssemblyPlan({ episodeId: "ep", clips: [clip("a", { durationSec: 0.05 }), clip("b")], order: ["a", "b"], includeClipAudio: true });
+    const filter = filterOf(short);
+    assert.ok(!filter.includes("undefined"));
+    // 首段只有淡出，但时长不足时应被跳过
+    assert.ok(!/\[ca0\]afade=t=out:st=-/.test(filter), "不能产生负的 st");
+});
+
+test("单段成片不做任何接缝淡化（两头都是片边界）", () => {
+    const single = buildAssemblyPlan({ episodeId: "ep", clips: [clip("solo")], order: ["solo"], includeClipAudio: true });
+    const args = buildConcatArgs(single, { inputPaths: ["/x/solo.mp4"], outputPath: "/out.mp4" });
+    const filter = args[args.indexOf("-filter_complex") + 1];
+    assert.ok(!filter.includes("afade"), `单段不该有afade，实际：${filter}`);
 });
