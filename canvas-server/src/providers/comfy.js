@@ -268,7 +268,16 @@ export function createComfyClient(config) {
         await request("/interrupt", { method: "POST" });
     }
 
-    return { probe, objectInfo, systemStats, queueCounts, uploadFile, queuePrompt, history, view, interrupt };
+    /** 释放显存/内存（POC 跑批 preflight 用）：段提交前清出 RAM，避免低内存换页拖慢整段。 */
+    async function free({ unloadModels = false, freeMemory = true } = {}) {
+        return json("/free", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ unload_models: unloadModels, free_memory: freeMemory }),
+        });
+    }
+
+    return { probe, objectInfo, systemStats, queueCounts, uploadFile, queuePrompt, history, view, interrupt, free };
 }
 
 export async function probeComfy(config) {

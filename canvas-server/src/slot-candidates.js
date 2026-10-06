@@ -52,9 +52,25 @@ export function createSlotCandidates({ jobs, episodes } = {}) {
         return { slot };
     }
 
-    /** 采用候选：设 slot.selected = jobId；jobId 传 null 撤销采用（清空 selected，candidates 不动）；候选不存在 → 404 CANDIDATE_NOT_FOUND（存储层抛出）。 */
+    /**
+     * 采用候选：设 slot.selected = jobId；jobId 传 null 撤销采用（清空 selected，candidates 不动）；候选不存在 → 404 CANDIDATE_NOT_FOUND（存储层抛出）。
+     * M3.5 续接扩展（D35-7，追加式行为）：采用的候选属于某个 take 时，整链段 approvalStatus→approved、其它 take 段→superseded；
+     * 无 takeId 的候选（画布/普通候选）不受影响。
+     */
     function selectCandidate({ projectId, shotId, slotId, jobId } = {}) {
         const { slot } = episodes.selectSlotCandidate(projectId, shotId, slotId, jobId);
+        if (jobId !== null && typeof episodes.updateSlotCandidate === "function") {
+            const selected = (slot.candidates || []).find((candidate) => candidate.jobId === slot.selected);
+            if (selected?.takeId) {
+                for (const candidate of slot.candidates || []) {
+                    if (!candidate.takeId) continue;
+                    const next = candidate.takeId === selected.takeId ? "approved" : "superseded";
+                    if (candidate.approvalStatus !== next) {
+                        episodes.updateSlotCandidate(projectId, shotId, slotId, candidate.jobId, { approvalStatus: next });
+                    }
+                }
+            }
+        }
         return { slot };
     }
 

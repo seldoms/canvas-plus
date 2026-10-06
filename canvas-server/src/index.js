@@ -31,6 +31,7 @@ import { llmCall as promptLlmCall } from "./llm-client.js";
 import { createPromptApi } from "./prompt-api.js";
 import { compileWorkbenchPrompt, createImageEnqueue, filterJobs } from "./workbench-jobs.js";
 import { createGenerationIntent, submitGenerationIntent } from "./generation-intent.js";
+import { createContinuation, createComfyPreflight } from "./continuation.js";
 // M2 画布接入事实链：槽位候选业务（追加/采用/终态自动投影）与外部文件导入登记。
 import { createSlotCandidates } from "./slot-candidates.js";
 import { createArtifactImport } from "./artifact-import.js";
@@ -165,6 +166,20 @@ startupMark("jobs 队列加载");
 // 纯业务编排，存储走 projects.episodes / jobs.recordImport。
 const slotCandidates = createSlotCandidates({ jobs, episodes: projects.episodes });
 const artifactImport = createArtifactImport({ jobs, getProject: (id) => projects.get(id) });
+
+/**
+ * M3.5：H3 多段续接编排器（纯业务，见 continuation.js）。
+ * 段提交走 M1 链（能力校验+编译+入队+幂等键全在 submitGenerationIntent 内）；
+ * preflight 用 147 /free + ram_free 读数（POC 配方），ffmpeg 接缝 QC 与抽尾帧是 CPU 活，直接 spawn 不进 GPU 队列。
+ * compileIntentPrompt / runJob 是函数声明（提升），此处引用安全。
+ */
+const continuation = createContinuation({
+    config,
+    episodes: projects.episodes,
+    jobs,
+    submitIntent: (intent) => submitGenerationIntent(intent, { jobs, runner: runJob, getProject: (id) => projects.get(id), registry, promptCompiler: compileIntentPrompt }),
+    preflight: createComfyPreflight({ comfy }),
+});
 /** 后端分派：默认走本地 ComfyUI；只有显式指定 runninghub 且配置允许时才走云端。 */
 function backendOf(job) {
     return job.backend === "runninghub" ? "runninghub" : "local";
@@ -222,6 +237,14 @@ function wireJobProjection() {
             pipeline.projectJob(job);
         } catch (error) {
             console.error(`[pipeline] 任务回写失败 ${job?.id}：${error.message}`);
+        }
+        // M3.5：续接段编排的终态消费点，与 M2 自动投影同处（同一 change 事件流，互不回归）。
+        // 注意：历史重放（replayHistoricalJobs）刻意**不**喂给编排器——批量回放会重复触发接续；
+        // 重启恢复走 listen 后的 scanStalledChains（幂等键保证不重复入队）。
+        try {
+            continuation.handleTerminalJob(job);
+        } catch (error) {
+            console.error(`[continuation] 终态处理失败 ${job?.id}：${error.message}`);
         }
     });
 }
@@ -1244,8 +1267,39 @@ router.post("/api/projects/:id/shots/:shotId/slots/:slotId/candidates", slotRout
     slotCandidates.appendCandidate({ projectId: params.id, shotId: params.shotId, slotId: params.slotId, jobId: body.jobId })));
 
 // 采用候选：body { jobId } → { slot }；404 CANDIDATE_NOT_FOUND。
+// 采用 take（jobId = take 末段候选）时整链段 approved、其它 take 段 superseded（M3.5，扩展在 slot-candidates.js）。
 router.post("/api/projects/:id/shots/:shotId/slots/:slotId/select", slotRoute((params, body) =>
     slotCandidates.selectCandidate({ projectId: params.id, shotId: params.shotId, slotId: params.slotId, jobId: body.jobId })));
+
+// ——— M3.5 H3 续接链（契约 m35-implementation-plan §3，薄路由：业务全在 continuation.js） ———
+const continuationRoute = (status, run) => async (req, res, { params }) => {
+    try {
+        const body = await readJson(req).catch(() => ({}));
+        sendJson(res, status, await run(params, body && typeof body === "object" ? body : {}));
+    } catch (error) {
+        sendError(res, error.status || 400, error.message, error.code);
+    }
+};
+
+// 开新链：body { prompt, segments:1..8, seed?, template?, params? } → 201 { chainId, takeId, slotId, firstJob }。
+router.post("/api/projects/:id/shots/:shotId/continuation-chains", continuationRoute(201, (params, body) =>
+    continuation.startChain({ projectId: params.id, shotId: params.shotId, ...body })));
+
+// 分叉：body { parentCandidateId, prompt, segments, seed? } → 201；404 CANDIDATE_NOT_FOUND；409 PARENT_NOT_DONE。
+router.post("/api/projects/:id/shots/:shotId/continuation-branches", continuationRoute(201, (params, body) =>
+    continuation.startBranch({ projectId: params.id, shotId: params.shotId, ...body })));
+
+// 恢复：幂等（已完成段靠幂等键跳过；链已完成 job:null）→ 200 { chainId, resumedFromSegment, job }。
+router.post("/api/projects/:id/shots/:shotId/continuation-chains/:chainId/resume", continuationRoute(200, (params) =>
+    continuation.resumeChain({ projectId: params.id, shotId: params.shotId, chainId: params.chainId })));
+
+// 派生链视图（从 clip 槽位候选分组，链 → 段 → parent 可回溯）。
+router.get("/api/projects/:id/shots/:shotId/continuation-chains", continuationRoute(200, (params) =>
+    continuation.listChains({ projectId: params.id, shotId: params.shotId })));
+
+// 接缝人工复核：body { jobId, reviewed:"approved"|"rejected", note? } → 200 { candidate }。
+router.post("/api/projects/:id/shots/:shotId/continuation-reviews", continuationRoute(200, (params, body) =>
+    continuation.reviewSeam({ projectId: params.id, shotId: params.shotId, jobId: body.jobId, reviewed: body.reviewed, note: body.note })));
 
 // 源版本（不可变）
 router.get("/api/projects/:id/sources", routeHandler((req, res, { params }) => {
@@ -1564,6 +1618,10 @@ if (isMain) {
         healthProbe.warmAll();
         // 历史重放：后台分批执行（每条 setImmediate 让出事件循环），期间服务全程可应答。
         void replayHistoricalJobs().catch((error) => console.error(`[pipeline] 历史任务重放异常：${error?.message || error}`));
+        // M3.5：stalled 续接链启动扫描——「最后一段 done 但链未完成且无在跑段」的链自动续提交（幂等键保证不重复）。
+        void continuation.scanStalledChains().then(({ scanned, resumed }) => {
+            if (resumed) console.log(`[continuation] stalled 链扫描：${scanned} 条链，续提交 ${resumed} 条`);
+        }).catch((error) => console.error(`[continuation] stalled 链扫描异常：${error?.message || error}`));
     });
 }
 

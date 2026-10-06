@@ -260,6 +260,27 @@ export function createEpisodes(store) {
         return text.slice(prefix.length).trim();
     }
 
+    const CONTINUATION_APPROVALS = new Set(["pending", "approved", "rejected", "superseded"]);
+
+    /** 续接扩展字段（契约 §3.6 P1）：写入续接候选时九个字段必须完整（可空），非续接候选不带。 */
+    function normalizeContinuationFields(body) {
+        const chainId = body.continuationChainId === undefined || body.continuationChainId === null ? null : String(body.continuationChainId);
+        const takeId = body.takeId === undefined || body.takeId === null ? null : String(body.takeId);
+        if (chainId === null && takeId === null) return {};
+        const asNullableId = (value) => (value === undefined || value === null ? null : String(value));
+        return {
+            takeId,
+            parentCandidateId: asNullableId(body.parentCandidateId),
+            approvalStatus: CONTINUATION_APPROVALS.has(body.approvalStatus) ? body.approvalStatus : "pending",
+            continuationChainId: chainId,
+            segmentIndex: Number.isInteger(body.segmentIndex) ? body.segmentIndex : null,
+            parentArtifactId: asNullableId(body.parentArtifactId),
+            contextArtifactId: asNullableId(body.contextArtifactId),
+            latentArtifactId: asNullableId(body.latentArtifactId),
+            continuation: body.continuation && typeof body.continuation === "object" ? body.continuation : null,
+        };
+    }
+
     /** 候选字段完整性（契约 §3.5）：jobId 必填，形状归一，来源 source 有值才带。 */
     function normalizeSlotCandidate(input) {
         const body = input && typeof input === "object" ? input : {};
@@ -272,6 +293,7 @@ export function createEpisodes(store) {
             status: String(body.status ?? ""),
             ...(body.source ? { source: String(body.source) } : {}),
             createdAt: String(body.createdAt ?? nowIso()),
+            ...normalizeContinuationFields(body),
         };
     }
 
@@ -329,6 +351,33 @@ export function createEpisodes(store) {
         return { slot, episode };
     }
 
+    /**
+     * 候选字段修补（M3.5）：续接编排回写状态/产物/接缝 QC、采用时回写 approvalStatus 走这里。
+     * 字段完整性仍归存储层：patch 只允许改已有键或续接扩展键，jobId 不可改；无实际变化不写盘（幂等）。
+     */
+    function updateSlotCandidate(projectId, shotId, slotId, jobId, patch) {
+        const found = findShot(projectId, shotId);
+        if (!found) throw badRequest(`镜头不存在：${shotId}`);
+        const { project, dir, episode, shot } = found;
+        const slot = (shot.generationSlots || []).find((item) => item.id === String(slotId ?? ""));
+        const id = String(jobId ?? "").trim();
+        if (!id) throw badRequest("缺少 jobId");
+        const candidate = slot && (slot.candidates || []).find((item) => item.jobId === id);
+        if (!slot || !candidate) throw Object.assign(httpError(404, `候选不存在：${id}`), { code: "CANDIDATE_NOT_FOUND", field: "jobId" });
+        let changed = false;
+        for (const [key, value] of Object.entries(patch && typeof patch === "object" ? patch : {})) {
+            if (key === "jobId") continue;
+            if (JSON.stringify(candidate[key] ?? null) === JSON.stringify(value ?? null)) continue;
+            candidate[key] = value;
+            changed = true;
+        }
+        if (changed) {
+            writeJsonAtomic(episodeFile(dir, episode.id), episode);
+            syncIndex(dir, project, episode);
+        }
+        return { slot, candidate, episode };
+    }
+
     /** 遍历项目所有集，找场/镜所属的集（跨集引用由此可被识别为不在本集）。 */
     function findScene(projectId, sceneId) {
         const { project, dir } = requireProject(projectId);
@@ -376,5 +425,5 @@ export function createEpisodes(store) {
         return { episode };
     }
 
-    return { save, get, list, listDetails, update, addScene, updateScene, addShot, updateShot, reorder, findScene, findShot, requireEpisode, appendSlotCandidate, selectSlotCandidate };
+    return { save, get, list, listDetails, update, addScene, updateScene, addShot, updateShot, reorder, findScene, findShot, requireEpisode, appendSlotCandidate, selectSlotCandidate, updateSlotCandidate };
 }
