@@ -43,6 +43,39 @@
 | M5 Agent 批量生产与恢复 | ⬜ 未开工（canvas-agent 33 个工具无 `project_*` 作用域） | — |
 | M6 60–90 秒真实闭环 | ⬜ 未开工（历史最远：keyframe 全 done + assembly partial，6 镜 OOM） | — |
 
+### M4 音频后处理（2026-06 上午推进，成片阻断项已解一半）
+
+用 M3.5 真机跑出的两段产物实测，发现**段间响度漂移**：
+段0 RMS -44.6dB、段1 RMS -51.4dB，**段间差 6.8dB**（接缝 QC 独立量到
+`rmsStepDb=5.9`，因< 12 门槛故 `needsReview=false` **不告警**，属静默问题）。
+cut 档（默认）音轨走 concat **硬接**（acrossfade 只在转场档走），观众会听到音量跳变。
+
+**关键结论：只在成片末端做一次 loudnorm 解决不了这个问题。**
+它把整片拉到目标值，但**段间相对差原样保留**——实测归一后段间仍差 5.8dB。
+必须逐段归一（在 concat **之前**）。真机 ffmpeg 实跑：
+
+| 方案 | 段间差 | 整体 LUFS |
+|---|---|---|
+| 修复前 | 6.8dB | — |
+| 只做整片归一 | 5.8dB | -16.0 |
+| **逐段 + 整片** | **0.1dB** | **-16.0** |
+
+随后又测出**段内**突变：接缝处 50ms 窗口 RMS 从 -11.4dB 掉到 -18.7dB
+（落差 7.3dB，因前段结尾有对白、后段开头是环境音），听感是「咔」一声。
+故再加**极短（30ms）接缝淡入淡出**：首段只淡出、末段只淡入、中间段两者都有，
+单段成片不淡化。真机验证接缝处 RMS 平滑过零（-34.3 → -64.6 → -26.4dB），无咔哒。
+
+**接口**：`buildAssemblyPlan({ loudnorm, seamFadeMs })`；
+`buildConcatArgs(plan, { normalizeClips })`；`assembleEpisode({ loudnorm, normalizeClips })`。
+默认全开，`loudnorm: false` / `seamFadeMs: 0` 关闭。逐段档默认跟随整片档
+（`clipI ?? i`），需要独立设定才显式给 `clipI/clipLra/clipTp`。
+
+**踩坑**：`afade` 的 `st+d` 超过片段时长会让 ffmpeg **退出码 234**、整个拼接失败。
+cut 档 `plan.clips[].durationSec` 允许为 null（只有转场档强制要求），现由
+`assembleEpisode` 用 `probeMedia` 的探测结果**回填**；仍不可用时只保留淡入。
+
+**M4 剩余**：交付包导出只有 CLI 无 HTTP/UI；M&E / 多语言音轨 / 视频超分未做。
+
 ### 本轮真机验证发现并修掉的三个缺陷（单测全绿也测不出来）
 
 M3.5 部署后跑了一条真实 2 段链（`prj_01M3ZZ2MJVQ2TJBRY1K3B0HBXF` / `sh_01M4087HE9FY4KKZ6G9K7ZP1Q0`，seed 20261007），**两段都真的产出 mp4**。过程中挖出三个缺陷，均已修复并加回归测试：
