@@ -44,6 +44,7 @@ import { probeRunningHub, listRunningHubModels, runRunningHubJob } from "./provi
 import { createProbeCache } from "./probe-cache.js";
 import { plan as impactPlan } from "./impact.js";
 import { createModelRegistry } from "./model-registry.js";
+import { checkAssetConsistency, summarizeConsistency } from "./asset-consistency.js";
 // 产物归档 / 彻底删除内核（索引落 data/artifacts-index.json，从 jobs.outputs[] 懒构建）。
 import { createArtifacts } from "./artifacts.js";
 // 产物**真缩略图**：列表/卡片用的小图（按需 ffmpeg 生成 + 落盘缓存），复用平台已有的外部 ffmpeg，不引新依赖。
@@ -1246,6 +1247,44 @@ router.get("/api/projects/:id", (req, res, { params }) => {
     const project = projects.get(params.id);
     if (!project) return sendError(res, 404, "项目不存在");
     sendJson(res, 200, { project });
+});
+
+/**
+ * 素材口径体检（只读）：把「资产引用 ↔ 剧本场次 ↔ 设计锚点 ↔ 镜头」四层的一致性问题一次摆出来。
+ *
+ * 为什么要它（2026-10-06 实测）：关键帧门禁报 `scene:内景（no-ref）` 时，
+ * 追下去发现四处数据源口径不一致 —— 而这类不一致**不会报错、不告警**，
+ * 每条数据单看都合法，系统自己发现不了，只能靠人看出来。
+ * 同一项目里还实测到「同一角色两条引用（名字/ id 两种key）」，选参考图会随机命中。
+ *
+ * 刻意**只读、只报、不改**：诊断与处置必须分开。若这个端点顺手改数据，
+ * 它自己就成了新的写入源，下次别的 Agent 照样会乱，且失去可追溯性。
+ * 修复走各阶段正规入口（asset-refs/:refId/select、steps/:stage/input 等）。
+ *
+ * 数据取自项目最新一个 run 的各阶段产物；没 run 时只查项目内的 assetRefs。
+ */
+router.get("/api/projects/:id/asset-consistency", (req, res, { params, url }) => {
+    try {
+        const project = projects.get(params.id);
+        if (!project) return sendError(res, 404, "项目不存在");
+        const runIds = Array.isArray(project.runIds) ? project.runIds : [];
+        const runId = url.searchParams.get("runId") || runIds.at(-1) || null;
+        const run = runId ? pipeline.get(runId) : null;
+        const stageOutput = (stageId) => (run?.stages?.[stageId]?.output ?? null);
+        const scriptOut = stageOutput("script");
+        const designOut = stageOutput("design");
+        const storyboardOut = stageOutput("storyboard");
+        const issues = checkAssetConsistency({
+            assetRefs: Array.isArray(project.assetRefs) ? project.assetRefs : [],
+            scenes: Array.isArray(scriptOut?.scenes) ? scriptOut.scenes : [],
+            locations: Array.isArray(designOut?.locations) ? designOut.locations : [],
+            shots: Array.isArray(storyboardOut?.shots) ? storyboardOut.shots : [],
+            characters: Array.isArray(scriptOut?.characters) ? scriptOut.characters : [],
+        });
+        sendJson(res, 200, { runId, ...summarizeConsistency(issues), issues });
+    } catch (error) {
+        sendError(res, 400, error.message);
+    }
 });
 
 router.add("PATCH", "/api/projects/:id", async (req, res, { params }) => {

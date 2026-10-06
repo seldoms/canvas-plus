@@ -1614,3 +1614,109 @@ test("时长注入：buildContext 把推荐档 / 训练区间 / 单集目标时�
     assert.match(unknownSent, /单镜推荐档：null/);
     assert.match(unknownSent, /待查证/);
 });
+
+
+// ——— 人工提示词覆盖（promptOverride）：人工质量兜底的能力底座 ———
+//
+// 为什么必须有这条（2026-10-06）：
+//   界面上能看到提示词、能改词重跑，是「素材质量可控」的前提。但原实现
+//   executeRegenerate 里无条件 `plan.params = { ..., PROMPT: compiled.prompt }`，
+//   人工写的词会被编译器产物**静默覆盖** —— 界面显示改成功了，实际跑的还是旧词。
+//   这种「假成功」比没有功能更糟，所以必须锁死。
+//
+// 断言全部落在**入队 Job 的真实 params** 上：编译 → 入队链路中间任何一步
+// 把词改回来，这里都会红。
+
+/** 取某条目最后一个候选对应的 Job。 */
+function lastJobOf(pipeline, jobs, runId, itemId) {
+    const frame = pipeline.get(runId).stages.keyframe.output.frames.find((entry) => entry.id === itemId);
+    return jobs.get(frame.candidates.at(-1).jobId);
+}
+
+test("promptOverride：人工写的提示词真的进了入队 Job 的 params.PROMPT", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    env.config.workflowsDir = makeWorkflows(env.root, ["img-alt"]);
+    const { pipeline, jobs, run } = await toKeyframeDone(env);
+
+    const MANUAL = "少女走进老屋，中景；改为背影，暖黄侧逆光，浅景深";
+    await pipeline.executeRegenerate(pipeline.beginRegenerate(run.id, "keyframe", { itemId: "sh1-start", promptOverride: MANUAL }));
+
+    const job = lastJobOf(pipeline, jobs, run.id, "sh1-start");
+    assert.equal(job.params.PROMPT, MANUAL, "人工提示词必须原样入队，不能被编译器覆盖");
+});
+
+test("promptOverride：只覆盖 PROMPT，尺寸等参数仍走规则表（改词不破坏引用锁定）", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    env.config.workflowsDir = makeWorkflows(env.root, ["img-alt"]);
+    const { pipeline, jobs, run, startJob } = await toKeyframeDone(env);
+
+    // 基线用**阶段原本那批**候选的 Job（不额外重跑——重跑会让阶段回到 running，
+    // 第二次 beginRegenerate 会被门禁正确拦下，那是预期行为不是缺陷）。
+    const baseline = jobs.get(startJob.id);
+
+    await pipeline.executeRegenerate(pipeline.beginRegenerate(run.id, "keyframe", { itemId: "sh1-start", promptOverride: "只改这句词" }));
+    const manual = lastJobOf(pipeline, jobs, run.id, "sh1-start");
+
+    for (const key of ["WIDTH", "HEIGHT", "BATCH"]) {
+        assert.deepEqual(manual.params[key], baseline.params[key], `${key} 不该被人工提示词带偏`);
+    }
+    assert.equal(manual.params.PROMPT, "只改这句词");
+    assert.notEqual(manual.params.PROMPT, baseline.params.PROMPT);
+});
+
+test("promptOverride：空白提示词被拒（清空输入框不该静默丢整条提示词）", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    env.config.workflowsDir = makeWorkflows(env.root, ["img-alt"]);
+    const { pipeline, run } = await toKeyframeDone(env);
+
+    for (const bad of ["", "   ", "\n\t "]) {
+        assert.throws(
+            () => pipeline.beginRegenerate(run.id, "keyframe", { itemId: "sh1-start", promptOverride: bad }),
+            (error) => error.status === 400 && /提示词不能为空/.test(error.message),
+            `空白提示词 ${JSON.stringify(bad)} 应被拒`,
+        );
+    }
+});
+
+test("promptOverride：超长提示词被拒（防误粘整篇剧本）", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    env.config.workflowsDir = makeWorkflows(env.root, ["img-alt"]);
+    const { pipeline, run } = await toKeyframeDone(env);
+
+    assert.throws(
+        () => pipeline.beginRegenerate(run.id, "keyframe", { itemId: "sh1-start", promptOverride: "字".repeat(4001) }),
+        (error) => error.status === 400 && /提示词过长/.test(error.message),
+    );
+});
+
+test("不传 promptOverride 时行为不变：仍走编译器产物", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    env.config.workflowsDir = makeWorkflows(env.root, ["img-alt"]);
+    const { pipeline, jobs, run } = await toKeyframeDone(env);
+
+    const begun = pipeline.beginRegenerate(run.id, "keyframe", { itemId: "sh1-start" });
+    assert.equal(begun.plan.promptOverride, undefined, "不传就不该有 override");
+    await pipeline.executeRegenerate(begun);
+
+    assert.equal(lastJobOf(pipeline, jobs, run.id, "sh1-start").params.PROMPT, "少女走进老屋，中景");
+});
+
+test("promptOverride：重跑仍是追加候选，旧候选与 selected 语义不变", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    env.config.workflowsDir = makeWorkflows(env.root, ["img-alt"]);
+    const { pipeline, run } = await toKeyframeDone(env);
+
+    const before = structuredClone(pipeline.get(run.id).stages.keyframe.output.frames.find((entry) => entry.id === "sh1-start"));
+    await pipeline.executeRegenerate(pipeline.beginRegenerate(run.id, "keyframe", { itemId: "sh1-start", promptOverride: "人工修正版" }));
+    const after = pipeline.get(run.id).stages.keyframe.output.frames.find((entry) => entry.id === "sh1-start");
+
+    assert.equal(after.candidates.length, before.candidates.length + 1, "应追加而非覆盖候选");
+    assert.deepEqual(after.candidates[0], before.candidates[0], "旧候选一条不少、内容原样保留");
+    assert.equal(after.selected, after.candidates.at(-1).jobId, "新候选成为 selected");
+});

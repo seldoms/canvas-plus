@@ -9,6 +9,8 @@ import { MediaPreviewGroup, PreviewableMedia } from "@/components/workbench";
 import type { KeyframeShot } from "../keyframes-model";
 import { artifactThumbSrc } from "@/lib/artifact-thumb";
 
+import { PromptInspector } from "./prompt-inspector";
+
 /** 镜头状态 → AntD Tag 颜色；文案统一走 pipeline.candidates.status.*。 */
 const STATUS_COLORS: Record<GatewayGenerationStatus, string> = {
     queued: "default",
@@ -27,11 +29,14 @@ const STATUS_COLORS: Record<GatewayGenerationStatus, string> = {
  */
 export function KeyframeBoard({
     shots,
+    runId,
     loading,
     error,
     onRetry,
 }: {
     shots: KeyframeShot[];
+    /** 当前 run 的 id：改词重跑要它调后端 regenerate（202 异步，新候选追加不覆盖旧的）。 */
+    runId: string;
     loading: boolean;
     error: string;
     onRetry: () => void;
@@ -81,7 +86,7 @@ export function KeyframeBoard({
             <MediaPreviewGroup>
                 <div className="space-y-3">
                     {shots.map((shot) => (
-                        <ShotGroup key={shot.id} shot={shot} onChanged={onRetry} />
+                        <ShotGroup key={shot.id} shot={shot} runId={runId} onChanged={onRetry} />
                     ))}
                 </div>
             </MediaPreviewGroup>
@@ -89,7 +94,7 @@ export function KeyframeBoard({
     );
 }
 
-function ShotGroup({ shot, onChanged }: { shot: KeyframeShot; onChanged: () => void }) {
+function ShotGroup({ shot, runId, onChanged }: { shot: KeyframeShot; runId: string; onChanged: () => void }) {
     const { t } = useTranslation();
     const none = t("projects.keyframes.none");
 
@@ -136,6 +141,9 @@ function ShotGroup({ shot, onChanged }: { shot: KeyframeShot; onChanged: () => v
                 </span>
                 <span>{t("projects.keyframes.images", { count: shot.images.length })}</span>
             </div>
+
+            {/* 提示词可见 + 可改后重跑：人工质量兜底。默认折叠——70 镜时全展开没法看。 */}
+            <PromptInspector shot={shot} runId={runId} onRegenerated={onChanged} />
 
             {shot.images.length ? (
                 <div className="mt-2 flex flex-wrap gap-1.5">

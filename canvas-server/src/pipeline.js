@@ -2754,7 +2754,7 @@ ${JSON.stringify(partials, null, 2)}
      * 语义：给一个 item 换模板再追加一个候选，不动其它 item、不删旧候选；慢的真实生成由任务队列后台跑。
      * 门禁失败抛 gateError：参数/引用非法 400，阶段或条目正忙（防并发重复入队）409。
      */
-    function beginRegenerate(runId, stageId, { itemId, template, params } = {}) {
+    function beginRegenerate(runId, stageId, { itemId, template, params, promptOverride } = {}) {
         const run = requireRun(runId);
         const def = requireStageDef(stageId);
         const stage = requireStage(run, def);
@@ -2783,6 +2783,14 @@ ${JSON.stringify(partials, null, 2)}
         if (!plan.ready) throw gateError(`条目「${item.id}」的前置产物还没就绪，不能重跑`);
         plan.template = chosen || plan.template;
         if (params && typeof params === "object") plan.params = { ...plan.params, ...params };
+        // 人工修正的提示词（2026-10-06）：非空字符串则优先于编译器产物，供界面「改词重跑」。
+        // 空串/空白视为「不改」，走原编译路径——避免用户清空输入框就静默丢掉整条提示词。
+        if (promptOverride !== undefined && promptOverride !== null) {
+            const text = String(promptOverride).trim();
+            if (!text) throw gateError("提示词不能为空：想保留原提示词就别传 promptOverride，或传undefined");
+            if (text.length > 4000) throw gateError(`提示词过长（${text.length} 字，上限 4000）`);
+            plan.promptOverride = text;
+        }
         return { run, def, stage, item, plan };
     }
 
@@ -2803,8 +2811,19 @@ ${JSON.stringify(partials, null, 2)}
             Object.assign(plan, refreshed);
             // 重新生成的模板可能未触发语言改写，确保最终 params 取本次快照而非旧快照。
             const compiled = promptFor(run, item, plan.template, plan.compileInput);
-            plan.params = { ...(plan.params || {}), PROMPT: compiled.prompt };
-            plan.warning = untranslatedWarning(compiled.raw);
+            // promptOverride：人工修正的提示词**优先于编译器产物**（2026-10-06）。
+            //
+            // 为什么需要这条口子：界面上能看到提示词、能改，是人工质量兜底的基础。
+            // 但原实现无条件用 compiled.prompt 覆盖 params.PROMPT，人工写的词会被静默丢掉
+            // —— 界面显示改成功了，实际跑的还是旧词，这种「假成功」比没有功能更糟。
+            //
+            // 只覆盖 PROMPT 一个 token：尺寸、参考图槽位、采样参数仍走编译器/规则表，
+            // 避免人工改词时顺带破坏引用锁定。
+            plan.params = plan.promptOverride
+                ? { ...(plan.params || {}), PROMPT: String(plan.promptOverride) }
+                : { ...(plan.params || {}), PROMPT: compiled.prompt };
+            if (!plan.promptOverride) plan.warning = untranslatedWarning(compiled.raw);
+            else plan.warning = null;
         }
         const jobId = enqueueAttempt(run, def, item, plan);
         if (!jobId) throw gateError("生成任务入队失败");

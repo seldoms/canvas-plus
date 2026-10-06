@@ -19,7 +19,7 @@ export default function KeyframesWorkspacePage() {
 
     return (
         <WorkspaceLayout projectId={projectId} workspace={getWorkspace("keyframes")} {...workspace}>
-            <KeyframeBoard shots={shots} loading={loading} error={error} onRetry={() => void workspace.refresh()} />
+            <KeyframeBoard shots={shots} runId={workspace.activeRunId} loading={loading} error={error} onRetry={() => void workspace.refresh()} />
         </WorkspaceLayout>
     );
 }

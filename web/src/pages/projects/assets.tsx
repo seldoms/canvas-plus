@@ -1,6 +1,7 @@
 import { useParams } from "react-router-dom";
 
 import { AssetRefPanel } from "./components/asset-ref-panel";
+import { ConsistencyPanel } from "./components/consistency-panel";
 import { WorkspaceLayout } from "./components/workspace-layout";
 import { useProjectAssets } from "./hooks/use-project-assets";
 import { useProjectWorkspace } from "./hooks/use-project-workspace";
@@ -18,6 +19,8 @@ export default function AssetsWorkspacePage() {
 
     return (
         <WorkspaceLayout projectId={projectId} workspace={getWorkspace("assets")} {...workspace}>
+            {/* 口径体检放最前：改资产之前先看清「现在改会踩到什么」。只读，不代劳修复。 */}
+            <ConsistencyPanel projectId={projectId} />
             <AssetRefPanel
                 refs={assets.refs}
                 script={workspace.context?.project.script}

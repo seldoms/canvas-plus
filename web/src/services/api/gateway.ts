@@ -431,7 +431,17 @@ export async function updatePipelineStageInput(runId: string, stageId: string, p
     return data.run;
 }
 
-export type GatewayRegenerateBody = { itemId: string; template?: string; params?: Record<string, unknown> };
+export type GatewayRegenerateBody = {
+    itemId: string;
+    template?: string;
+    params?: Record<string, unknown>;
+    /**
+     * 人工修正的提示词（2026-10-06）。给了就**优先于编译器产物**，只覆盖 PROMPT 一个 token——
+     * 尺寸、参考图槽位、采样参数仍走规则表，不会因为改词破坏身份锁定。
+     * 空串会被后端拒（400）：想保留原提示词就别传这个字段。
+     */
+    promptOverride?: string;
+};
 
 /**
  * 为单个条目追加一个候选（换模型再出一张）。后端 202 立刻返回整个 run，新候选已是 queued 且 selected 指向它；
