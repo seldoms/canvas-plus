@@ -2,6 +2,8 @@
 
 ## Unreleased
 
++ [新增] **H3 多段续接链（M3.5）——服务端编排 + 视频工作区面板**：新增纯业务模块 `canvas-server/src/continuation.js`，把「父段尾帧 → 子段 I2VA `first_frame`」接成可恢复的链。链不建注册表，状态从 `slot_<shotId>_clip` 槽位候选派生（`takeId == continuationChainId`，契约 §3.6 九个续接字段完整写入）；每段 Job 用 `meta.continuation` 自描述，幂等键 `continuation:<chainId>:seg<N>`（重试段追加 `:r<K>`）让重跑同段命中原 Job，编排器因此无状态。段 done 后自动：接缝 QC（ffmpeg 算边界帧 SSIM/PSNR、接缝窗冻结帧、父尾/子首 0.5s RMS 落差、接缝 ebur128 响度与真峰值，写入子段候选 `continuation.seam`，超门槛标 `needsReview`，**只标记不阻断**）→ preflight（`/free` + `ram_free≥4GB`，带等待上限，探测不可达按放行）→ 抽尾帧 → 提交下一段。新增五条端点：开链、分叉（父候选必须 done，否则 409）、resume（已完成段幂等跳过、只补缺失段）、派生链视图、接缝人工复核；`select` 采用 take 时整链段 `approvalStatus→approved`、其它 take 段 `→superseded`（无 `takeId` 的普通候选不受影响）。服务重启时扫 stalled 链续提交。「视频·后期」工作区新增续接链面板：集/镜头级联（复用共用选择器，新增 `clip` 槽位角色）→ 开链（提示词 / 段数 1..8 / 可选种子）→ 按链铺开各段（状态、产物预览、接缝指标与复核状态）→ 续跑 / 从此段分叉 / 接缝复核 / 采用整条 take；有段在跑时轮询、闲时停。**本轮明确不宣称「无限续接」**：>4 段漂移、跨段台词与口型接续、Ref2VA 续接、`MiniMaxH3AddGuide` 锚定均未验证；POC 实测的音频接缝 17~26dB 段首响度塌陷**本轮只标记不改写**，拼接层交叉淡化/响度归一仍是后续工作。
+
 + [文档] **H3 续接 POC 跑通（限定验证范围，不宣称无限续接）**：「父段尾帧 → 子段 I2VA first_frame」机制在 147 实测成立——1 条 4 段主链（T2VA + 3×I2VA）+ 1 条中间段分叉链全部生成成功，原链产物分叉后 md5 不变；中断（POST /interrupt）后同 seed/同尾帧重跑即恢复，恢复语义 = 驱动侧按 (chainId, segmentIndex) 跳过已完成段。画面接缝 4/4 合格（SSIM 0.929~0.952、无冻结帧）；**音频接缝 4/4 出现 17~26dB 段首响度塌陷，M3.5 拼接层必须做音频接缝后处理**。另登记：跑批每段前需 RAM preflight（低内存使单段 90s→698s）；产物定位只能信 history.outputs。报告与工具链元数据见 `research/win147-comfyui/h3-continuation-poc.md` 与 `h3-continuation-poc/`。
 
 + [新增] **工作台与项目互通（M3）**：生图工作台结果卡片（含历史记录中有已完成 Job 的卡片）新增「加入项目候选…」——经共用级联选择器（项目→集→镜头→关键帧槽位，从画布槽位对话框抽取核心、画布/工作台两个壳复用，无复制粘贴）把已完成 Job 直接追加为槽位候选（复用 M2 候选端点，不建第二套 Job/Artifact 状态机）；采用支持撤销——`POST .../slots/:slotId/select { jobId: null }` 清空 `slot.selected`（幂等、不动候选数组），画布槽位对话框候选列表同步提供「撤销采用」。视频工作台本轮不接（clip 槽位属 M3.5 范围）。
