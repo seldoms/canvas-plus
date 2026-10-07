@@ -50,6 +50,128 @@ function jobsOf(payload: Json): unknown[] {
     return Array.isArray(jobs) ? jobs : [];
 }
 
+/** 裁剪长文本，避免撑爆 Agent 上下文。 */
+function cut(value: unknown, max = 120): string | null {
+    if (typeof value !== "string" || !value) return null;
+    return value.length > max ? `${value.slice(0, max)}…` : value;
+}
+
+/** run.stages 映射成 { stageId: status } 的速览。 */
+function stageStatusMap(stages: unknown): Record<string, unknown> {
+    const out: Record<string, unknown> = {};
+    if (!stages || typeof stages !== "object") return out;
+    for (const [id, stage] of Object.entries(stages as Json)) {
+        const s = stage as Json;
+        out[id] = { status: s?.status ?? null, error: cut(s?.error, 200) };
+    }
+    return out;
+}
+
+/** 数组字段安全取值。 */
+function listOf(obj: Json | null, key: string): Json[] {
+    const value = obj?.[key];
+    return Array.isArray(value) ? (value as Json[]) : [];
+}
+
+/**
+ * 从整个 run 里抽出某阶段的**条目清单**（精调定位用）。
+ * run 内嵌整本小说（MB 级），这里只回 Agent 决策所需字段。
+ */
+function stageItemsSummary(run: Json, stage: string): Json {
+    const stages = (run.stages ?? {}) as Json;
+    const s = stages[stage] as Json | undefined;
+    if (!s) return { stage, found: false, items: [], note: `run 里没有阶段 ${stage}` };
+    const output = (s.output ?? null) as Json | null;
+    const base: Json = { stage, status: s.status ?? null, error: cut(s.error, 300) };
+    if (!output || typeof output !== "object") return { ...base, items: [], note: "阶段尚无产物" };
+    switch (stage) {
+        case "script":
+            return {
+                ...base,
+                logline: cut(output.logline, 200),
+                characters: listOf(output, "characters").map((c) => ({ id: c.id, name: c.name })),
+                scenes: listOf(output, "scenes").map((sc) => ({ id: sc.id, title: sc.title ?? null })),
+                episodes: listOf(output, "episodes").map((e) => ({ id: e.id, index: e.index ?? null, title: e.title ?? null, durationSec: e.durationSec ?? null })),
+            };
+        case "storyboard":
+            return {
+                ...base,
+                items: listOf(output, "shots").map((shot) => ({
+                    shotId: shot.id,
+                    episodeId: shot.episodeId ?? null,
+                    sceneId: shot.sceneId ?? null,
+                    index: shot.index ?? null,
+                    shotSize: shot.shotSize ?? null,
+                    camera: shot.camera ?? null,
+                    action: cut(shot.action),
+                    dialogue: cut(shot.dialogue),
+                    durationSec: shot.durationSec ?? null,
+                })),
+            };
+        case "design":
+            return {
+                ...base,
+                characters: listOf(output, "characters").map((c) => ({ id: c.id, name: c.name ?? null })),
+                locations: listOf(output, "locations").map((l) => ({ id: l.id, name: l.name ?? null })),
+                items: listOf(output, "references").map((r) => ({ itemId: r.id, role: r.role ?? null, kind: r.kind ?? null, name: r.name ?? null })),
+            };
+        case "casting":
+            return {
+                ...base,
+                items: listOf(output, "characters").map((c) => {
+                    const face = (c.face ?? {}) as Json;
+                    const voice = (c.voice ?? {}) as Json;
+                    return {
+                        characterId: c.characterId,
+                        name: c.name ?? null,
+                        faceConfirmed: face.confirmed === true,
+                        voiceConfirmed: voice.confirmed === true,
+                        speaker: voice.speaker ?? null,
+                        confirmed: c.confirmed === true,
+                    };
+                }),
+            };
+        case "keyframe":
+            return {
+                ...base,
+                items: listOf(output, "frames").map((f) => ({
+                    itemId: f.id,
+                    shotId: f.shotId ?? null,
+                    role: f.role ?? null,
+                    status: f.status ?? null,
+                    candidateCount: Array.isArray(f.candidates) ? f.candidates.length : 0,
+                    selected: f.selected ?? null,
+                    artifactUrl: f.artifactUrl ?? null,
+                })),
+            };
+        case "audio":
+            return {
+                ...base,
+                items: listOf(output, "audio").map((a) => ({
+                    itemId: a.id,
+                    shotId: a.shotId ?? null,
+                    characterId: a.characterId ?? null,
+                    type: a.type ?? null,
+                    text: cut(a.text, 80),
+                    speed: a.speed ?? null,
+                    status: a.status ?? null,
+                    durationSec: a.durationSec ?? null,
+                    candidateCount: Array.isArray(a.candidates) ? a.candidates.length : 0,
+                })),
+            };
+        case "assembly": {
+            const assembly = (output.assembly ?? {}) as Json;
+            return {
+                ...base,
+                items: listOf(output, "clips").map((c) => ({ itemId: c.id, shotId: c.shotId ?? null, status: c.status ?? null, durationSec: c.durationSec ?? null })),
+                assembly: { transition: assembly.transition ?? null, status: assembly.status ?? null, url: assembly.url ?? null, orderCount: Array.isArray(assembly.order) ? assembly.order.length : 0 },
+            };
+        }
+        default:
+            return { ...base, note: "未特化的阶段，只回产物键名", outputKeys: Object.keys(output) };
+    }
+}
+
 export async function callProjectTool(name: ToolName, input: Json) {
     switch (name) {
         case "project_context": {
@@ -103,6 +225,48 @@ export async function callProjectTool(name: ToolName, input: Json) {
                 }),
             };
         }
+        case "project_list_runs": {
+            const payload = await gateway("/api/pipeline/runs");
+            const runs = Array.isArray(payload.runs) ? payload.runs : [];
+            const projectId = input.projectId ? String(input.projectId) : "";
+            const limit = Math.max(1, Number(input.limit) || 50);
+            const trimmed = runs
+                .map((r) => {
+                    const run = r as Json;
+                    const options = (run.options ?? {}) as Json;
+                    return {
+                        id: run.id,
+                        title: run.title ?? null,
+                        projectId: options.projectId ?? null,
+                        createdAt: run.createdAt ?? null,
+                        updatedAt: run.updatedAt ?? null,
+                        stages: stageStatusMap(run.stages),
+                    };
+                })
+                .filter((run) => !projectId || run.projectId === projectId);
+            return { total: trimmed.length, runs: trimmed.slice(0, limit) };
+        }
+        case "project_run_status": {
+            const runId = String(input.runId || "").trim();
+            if (!runId) throw new Error("缺少 runId");
+            const payload = await gateway(`/api/pipeline/runs/${encodeURIComponent(runId)}/progress`);
+            return { runId, inflight: payload.inflight === true, progress: payload.progress ?? null };
+        }
+        case "project_run_qc": {
+            const runId = String(input.runId || "").trim();
+            if (!runId) throw new Error("缺少 runId");
+            const payload = await gateway(`/api/pipeline/runs/${encodeURIComponent(runId)}/qc`);
+            return { runId, report: payload.report ?? null };
+        }
+        case "project_stage_items": {
+            const runId = String(input.runId || "").trim();
+            const stage = String(input.stage || "").trim();
+            if (!runId) throw new Error("缺少 runId");
+            if (!stage) throw new Error("缺少 stage");
+            const payload = await gateway(`/api/pipeline/runs/${encodeURIComponent(runId)}`);
+            const run = (payload.run ?? payload) as Json;
+            return { runId, ...stageItemsSummary(run, stage) };
+        }
         case "project_run_stage": {
             const runId = String(input.runId || "").trim();
             const stage = String(input.stage || "").trim();
@@ -119,6 +283,69 @@ export async function callProjectTool(name: ToolName, input: Json) {
             if (!stage) throw new Error("缺少 stage");
             const payload = await gateway(`/api/pipeline/runs/${encodeURIComponent(runId)}/steps/${encodeURIComponent(stage)}/cancel`, { method: "POST", body: {} });
             return { runId, stage, canceled: payload.canceled !== false };
+        }
+        case "project_retry_failed": {
+            const runId = String(input.runId || "").trim();
+            const stage = String(input.stage || "").trim();
+            if (!runId) throw new Error("缺少 runId");
+            if (!stage) throw new Error("缺少 stage");
+            await gateway(`/api/pipeline/runs/${encodeURIComponent(runId)}/steps/${encodeURIComponent(stage)}/retry-failed`, { method: "POST", body: {} });
+            return { runId, stage, retried: true };
+        }
+        case "project_update_stage_input": {
+            const runId = String(input.runId || "").trim();
+            const stage = String(input.stage || "").trim();
+            if (!runId) throw new Error("缺少 runId");
+            if (!stage) throw new Error("缺少 stage");
+            const patch = input.patch && typeof input.patch === "object" ? (input.patch as Json) : {};
+            if (!Object.keys(patch).length) throw new Error("patch 不能为空");
+            await gateway(`/api/pipeline/runs/${encodeURIComponent(runId)}/steps/${encodeURIComponent(stage)}/input`, { method: "POST", body: patch });
+            return { runId, stage, patched: Object.keys(patch), hint: "输入已更新；调 project_run_stage 重跑该阶段才生效" };
+        }
+        case "project_regenerate_item": {
+            const runId = String(input.runId || "").trim();
+            const stage = String(input.stage || "").trim();
+            const itemId = String(input.itemId || "").trim();
+            if (!runId) throw new Error("缺少 runId");
+            if (!stage) throw new Error("缺少 stage");
+            if (!itemId) throw new Error("缺少 itemId（先用 project_stage_items 拿）");
+            const body: Json = { itemId };
+            if (input.template) body.template = String(input.template);
+            if (input.params && typeof input.params === "object") body.params = input.params;
+            if (typeof input.promptOverride === "string" && input.promptOverride.trim()) body.promptOverride = input.promptOverride;
+            await gateway(`/api/pipeline/runs/${encodeURIComponent(runId)}/steps/${encodeURIComponent(stage)}/regenerate`, { method: "POST", body });
+            return { runId, stage, itemId, regenerating: true, hint: "202 已受理，新候选自动选中；用 project_run_status 等终态" };
+        }
+        case "project_patch_shot": {
+            const runId = String(input.runId || "").trim();
+            const shotId = String(input.shotId || "").trim();
+            const stage = String(input.stage || "storyboard").trim() || "storyboard";
+            if (!runId) throw new Error("缺少 runId");
+            if (!shotId) throw new Error("缺少 shotId（先用 project_stage_items 拿）");
+            const patch = input.patch && typeof input.patch === "object" ? (input.patch as Json) : {};
+            if (!Object.keys(patch).length) throw new Error("patch 不能为空");
+            const payload = await gateway(`/api/pipeline/runs/${encodeURIComponent(runId)}/steps/${encodeURIComponent(stage)}/shots/${encodeURIComponent(shotId)}`, { method: "PATCH", body: patch });
+            return { runId, stage, shotId, patched: Object.keys(patch), shot: payload.shot ?? null };
+        }
+        case "project_confirm_casting": {
+            const runId = String(input.runId || "").trim();
+            const characterId = String(input.characterId || "").trim();
+            if (!runId) throw new Error("缺少 runId");
+            if (!characterId) throw new Error("缺少 characterId（先用 project_stage_items 拿）");
+            const body: Json = { characterId };
+            for (const key of ["face", "voice", "speaker", "design", "language", "speed", "previewArtifactId"] as const) {
+                if (input[key] !== undefined) body[key] = input[key];
+            }
+            if (input.face !== true && input.voice !== true) throw new Error("face / voice 至少确认一个");
+            await gateway(`/api/pipeline/runs/${encodeURIComponent(runId)}/steps/casting/confirm`, { method: "POST", body });
+            return { runId, characterId, face: input.face === true, voice: input.voice === true, confirmed: true };
+        }
+        case "project_assemble": {
+            const runId = String(input.runId || "").trim();
+            if (!runId) throw new Error("缺少 runId");
+            const body = input.options && typeof input.options === "object" ? input.options : {};
+            const payload = await gateway(`/api/pipeline/runs/${encodeURIComponent(runId)}/steps/assembly/assemble`, { method: "POST", body });
+            return { runId, inflight: payload.inflight !== false, hint: "ffmpeg 是分钟级；用 project_run_status 等终态，完成后 project_export_package 取交付包" };
         }
         case "project_adopt_candidate": {
             const projectId = String(input.projectId || "").trim();
@@ -152,8 +379,18 @@ export const PROJECT_TOOL_NAMES: readonly ToolName[] = [
     "project_context",
     "project_gates",
     "project_list_jobs",
+    "project_list_runs",
+    "project_run_status",
+    "project_run_qc",
+    "project_stage_items",
     "project_run_stage",
     "project_cancel_stage",
+    "project_retry_failed",
+    "project_update_stage_input",
+    "project_regenerate_item",
+    "project_patch_shot",
+    "project_confirm_casting",
+    "project_assemble",
     "project_adopt_candidate",
     "project_export_package",
 ];
