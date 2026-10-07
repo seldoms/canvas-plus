@@ -263,6 +263,77 @@ export async function updateShot(projectId: string, shotId: string, patch: ShotP
     return unwrapEntity<Shot>(data, "shot");
 }
 
+/* ---- 单镜参考清单（refs）：这一镜引用了谁、模型实收图序 ---- */
+
+/** 一条参考。`tag` 为展示用编号（`@image#N`），音色等非图类参考为 null —— 模型那边没有这个号。 */
+export type ShotRef = {
+    kind: "character" | "scene" | "prop" | "voice";
+    bindingId: string;
+    label: string;
+    /** 这一项在本镜里的用法：形象 / 环境 / 道具 / 音色。 */
+    role: string;
+    stableKey: string;
+    index: number | null;
+    tag: string | null;
+    ordinal: number;
+    artifactId: string | null;
+    /** 模型实收那张图的可访问地址；没有则为 null（缩略图不显示，不拿相邻的凑）。 */
+    url: string | null;
+    assetRefId: string | null;
+};
+
+/** 编号与模型实收顺序的对齐结论。`aligned=false` 时不得照编号显示「对应关系」。 */
+export type RefAlignment = {
+    aligned: boolean;
+    mismatches: Array<{ index: number; ref: ShotRef | null; injected: { index: number; kind: string; bindingId: string } | null }>;
+};
+
+export type ShotRefs = {
+    /** false = 查不到这一镜（与「这一镜没有参考」是两件事，UI 要分开显示）。 */
+    found: boolean;
+    shotId: string;
+    runId?: string | null;
+    source?: "episode" | "storyboard" | null;
+    refs: ShotRef[];
+    /** 模型真正收到的图序（角色 → 场景 → 道具），与 refs 的图类编号逐项对应。 */
+    images: Array<{ index: number; kind: string; bindingId: string; artifactId: string | null; assetRefId: string | null; url: string | null }>;
+    summary: string;
+    /** 剧本/场次声明了但本镜没引用的角色。 */
+    gaps: string[];
+    /** 未解析出参考图的绑定项（缺料是事实，不是失败）。 */
+    missingRefs: Array<{ role: string; bindingId: string; reason: string }>;
+    complete: boolean;
+    alignment: RefAlignment | null;
+};
+
+/**
+ * 读单镜参考清单。
+ *
+ * 只读：引用关系由后端从角色名/token 推导（单一事实源），改引用要改那些真源。
+ * `alignment` 为 null 表示后端没有可核对的解析结果 —— 此时**不要**显示编号对应关系。
+ */
+export async function getShotRefs(projectId: string, shotId: string): Promise<ShotRefs | null> {
+    const data = await projectRequest<unknown>({
+        method: "get",
+        url: `/api/projects/${encodeURIComponent(projectId)}/shots/${encodeURIComponent(shotId)}/refs`,
+    });
+    if (!data || typeof data !== "object") return null;
+    const body = data as Record<string, unknown>;
+    return {
+        found: Boolean(body.found),
+        shotId: String(body.shotId ?? shotId),
+        runId: (body.runId as string | null) ?? null,
+        source: (body.source as ShotRefs["source"]) ?? null,
+        refs: Array.isArray(body.refs) ? (body.refs as ShotRef[]) : [],
+        images: Array.isArray(body.images) ? (body.images as ShotRefs["images"]) : [],
+        summary: String(body.summary ?? ""),
+        gaps: Array.isArray(body.gaps) ? body.gaps.map(String) : [],
+        missingRefs: Array.isArray(body.missingRefs) ? (body.missingRefs as ShotRefs["missingRefs"]) : [],
+        complete: Boolean(body.complete),
+        alignment: (body.alignment as RefAlignment | null) ?? null,
+    };
+}
+
 export async function listAssetRefs(projectId: string): Promise<AssetRef[]> {
     const data = await projectRequest<unknown>({ method: "get", url: `/api/projects/${encodeURIComponent(projectId)}/asset-refs` });
     return unwrapList<AssetRef>(data, "assetRefs");

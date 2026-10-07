@@ -13,6 +13,7 @@ import { durationsForTemplate, durationMetaForTemplate, frameCountForDuration, s
 import { artifactUrl, ensureDir, safeJoin } from "./files.js";
 import { listTemplates } from "./providers/comfy.js";
 import { buildShotBinding, missingRefsReport, resolveSelectedArtifacts, stableSeed } from "./reference-lock.js";
+import { composeShotRefs } from "./shot-refs.js";
 // 运行审计日志（追加式 log.jsonl）：谁、何时、对哪个阶段做了什么、产物指纹是什么。
 import { appendRunLog, readRunLog } from "./run-log.js";
 // 阶段产物契约校验（P0-g）：结构 + 引用完整性，纯函数。
@@ -366,7 +367,7 @@ function fillTemplate(text, context) {
  * assemble 是「片段 → 成片」的后期执行体，默认用 delivery.js 的 assembleEpisode；
  * 编排器只负责判定何时拼接、把清单与参数交给它，ffmpeg 命令构造与执行都留在 delivery.js。
  */
-export function createPipeline({ config, skillsDir, jobs, comfy, llm, llmCall, runJob, assemble = assembleEpisode, getProject, applyPlanSuggestion, applyScriptProjection, applyEpisodeProjection, attachProjectRun, registerAssetRef, updateAssetRef, projectCanvasJob } = {}) {
+export function createPipeline({ config, skillsDir, jobs, comfy, llm, llmCall, runJob, assemble = assembleEpisode, getProject, findProjectShot, applyPlanSuggestion, applyScriptProjection, applyEpisodeProjection, attachProjectRun, registerAssetRef, updateAssetRef, projectCanvasJob } = {}) {
     const pipelineConfig = config?.pipeline || {};
     // 半自动总开关：注入 getProject（项目化模式）时才启用「单镜失败自动重试」。
     // 未注入时一律保持旧的「失败即止」行为；plan 驱动参数靠 projectOf 返回 null 自然回落，不需要额外开关。
@@ -2591,6 +2592,115 @@ ${JSON.stringify(partials, null, 2)}
         return { groups: grouped, unbound, total: list.length };
     }
 
+    /**
+     * 单镜参考清单（只读）：这一镜**实际引用**了哪些角色/场景/道具/音色，以及模型真正收到的图序。
+     *
+     * 为什么要它（这是 shot-refs 落地时查出的结构缺口）：
+     *   镜头权威形状里根本没有「引用哪个资产」这个位置，引用关系一直由 buildShotBinding 在
+     *   生那一刻隐式推导 —— 分镜页看不见、也改不了。资料包换了一张脸，分镜页不会告诉你哪几镜受影响。
+     *
+     * 复用 shotReferenceContext（而不是在这里重推导一遍）是硬要求：
+     *   注入顺序、scenes 回落、缺参考判定都是生成链的事实源，复制一份必然漂 ——
+     *   而漂了不会报错，只会让界面上的 @image#N 指向另一张图。
+     *
+     * 镜头来源两处都试：项目侧 episodes（分镜页编辑的就是它）→ run 的分镜产物（生成链用的）。
+     * 两处都没有时返回 found=false，让调用方如实报「查不到这一镜」，不返回空清单冒充「无参考」。
+     */
+    function shotRefsOf(projectId, shotId, options = {}) {
+        const project = projectById(projectId);
+        const wanted = String(shotId ?? "").trim();
+        if (!project || !wanted) return { found: false, shotId: wanted, refs: [], images: [], gaps: [], alignment: null };
+
+        // 生成链事实源：项目最近一个 run（可显式指定）。没有 run 也能算清单 —— 推导只依赖
+        // design / storyboard 产物，而这些来自 run；没有 run 时如实标出 alignment 无法核对。
+        const runIds = Array.isArray(project.runIds) ? project.runIds : [];
+        const runId = options.runId || runIds.at(-1) || null;
+        const run = runId ? get(runId) : null;
+        if (options.runId && !run) {
+            const error = new Error(`流水线不存在：${options.runId}`);
+            error.status = 404;
+            throw error;
+        }
+        const storyboard = run?.stages?.storyboard?.output && typeof run.stages.storyboard.output === "object" ? run.stages.storyboard.output : {};
+        const design = run?.stages?.design?.output && typeof run.stages.design.output === "object" ? run.stages.design.output : {};
+        const scenes = sceneContextForBinding(run, storyboard);
+
+        // 镜头本体：先项目侧（分镜页编辑的权威），再回落到 run 的分镜产物。
+        const runShots = Array.isArray(storyboard.shots) ? storyboard.shots : [];
+        let shot = null;
+        let source = null;
+        try {
+            const found = typeof findProjectShot === "function" ? findProjectShot(projectId, wanted) : null;
+            if (found) { shot = found; source = "episode"; }
+        } catch {
+            shot = null; // 项目侧查不到不是错误，继续找 run 侧
+        }
+        if (!shot) {
+            shot = runShots.find((entry) => String(entry?.id) === wanted) || null;
+            if (shot) source = "storyboard";
+        }
+        if (!shot) return { found: false, shotId: wanted, refs: [], images: [], gaps: [], alignment: null };
+
+        const assetRefs = mergedAssetRefs(project?.assetRefs);
+        const shotForBinding = {
+            ...shot,
+            id: String(shot?.id ?? wanted),
+            prompt: [shot?.prompt, shot?.storyboard?.prompt].filter(Boolean).join("\n"),
+        };
+        const shotBinding = buildShotBinding({ shot: shotForBinding, storyboard: { ...storyboard, scenes }, design, assetRefs });
+        const resolved = resolveSelectedArtifacts({ shotBinding, assetRefs });
+        const report = missingRefsReport({ shotBinding, assetRefs });
+        const composed = composeShotRefs({ binding: shotBinding, design, resolved, expectedCharacterIds: expectedCharactersForShot(run, shot, storyboard) });
+
+        // 每条 ref 补上模型实收的那张图（前端缩略图要地址）；对不上的如实标 null，不拿相邻的图凑数。
+        // ⚠️ 必须走 referenceUrlOf 兜底：resolveSelectedArtifacts 在**没传 artifacts 目录**时 url恒为 null
+        // （它只在有 catalog 时才解析真实地址），裸形态的 selectedArtifactId（`jobId/文件名`）要靠这里
+        // 补成 `/api/artifacts/...`。漏了这一步，界面上的缩略图会**全是空的**——
+        // 而「参考清单列出来了但没图」看起来完全像「还没生成」，排查方向会整个跑偏。
+        // images 也要补url 兜底 —— 否则同一个响应里 refs[] 有地址、images[] 是 null，
+        // 前端 whichever 改读哪边都会踩空（真机验证实测到的就是这个不一致）。
+        const images = composed.images.map((image) => ({ ...image, url: referenceUrlOf(image) || null }));
+        const imageByKey = new Map(images.map((image) => [`${image.kind}:${image.bindingId}`, image]));
+        const refs = composed.refs.map((ref) => {
+            const image = imageByKey.get(ref.stableKey) || null;
+            return {
+                ...ref,
+                artifactId: image?.artifactId ?? null,
+                url: image ? referenceUrlOf(image) || null : null,
+                assetRefId: image?.assetRefId ?? null,
+            };
+        });
+        return {
+            found: true,
+            shotId: wanted,
+            runId,
+            source,
+            shotBinding,
+            refs,
+            images,
+            summary: composed.summary,
+            gaps: composed.gaps,
+            alignment: composed.alignment,
+            missingRefs: report.missing,
+            complete: report.complete,
+        };
+    }
+
+    /**
+     * 本镜「应该出现」的角色：优先镜头显式声明，其次场次在场角色。
+     * 只用于如实报缺口（refsGaps），推不出就返回空数组 —— 不知道该有什么就不猜。
+     */
+    function expectedCharactersForShot(run, shot, storyboard) {
+        const explicit = shot?.characterIds || shot?.storyboard?.characterIds;
+        if (Array.isArray(explicit) && explicit.length) return explicit.map((id) => String(id ?? "").trim()).filter(Boolean);
+        const sceneId = String(shot?.sceneId ?? "").trim();
+        if (!sceneId) return [];
+        const scenes = sceneContextForBinding(run, storyboard);
+        const scene = scenes.find((entry) => String(entry?.id ?? "") === sceneId);
+        const list = scene?.characterIds || scene?.characters;
+        return Array.isArray(list) ? list.map((id) => String(id ?? "").trim()).filter(Boolean) : [];
+    }
+
     /** 取本镜的场景对象（分镜既有 scenes + 剧本回落），供编译器写「地点」。 */
     function sceneForShot(run, shot) {
         const id = String(shot?.sceneId ?? "").trim();
@@ -4271,5 +4381,5 @@ ${JSON.stringify(partials, null, 2)}
         return fixed;
     }
 
-    return { stages, list, get, create, fork, estimate: estimateFor, runStage, beginStage, executeStage, stageProgress, runLog, qualityCheck, latestQualityCheck, reconcileRunning, setStageInput, projectJob, bindJobs, cancelStage, beginAssemble, executeAssemble, assembleStage, beginRegenerate, executeRegenerate, retryFailedItems, groupFramesByReference, stageGate, stageGates, patchStageShot, durationPolicy, skeletonOf, castingReadinessOf, castingPack, enforceCastingGate, confirmCasting };
+    return { stages, list, get, create, fork, estimate: estimateFor, runStage, beginStage, executeStage, stageProgress, runLog, qualityCheck, latestQualityCheck, reconcileRunning, setStageInput, projectJob, bindJobs, cancelStage, beginAssemble, executeAssemble, assembleStage, beginRegenerate, executeRegenerate, retryFailedItems, groupFramesByReference, shotRefsOf, stageGate, stageGates, patchStageShot, durationPolicy, skeletonOf, castingReadinessOf, castingPack, enforceCastingGate, confirmCasting };
 }

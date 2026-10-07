@@ -18,6 +18,7 @@ import { ShotEditorDrawer } from "./shot-editor-drawer";
  * 与上方「节奏条」共享：点节奏条某格 / 点镜行都会让对应镜高亮并打开同一个镜头抽屉。
  */
 export function StoryboardBoard({
+    projectId,
     episodes,
     episodeId,
     onSelectEpisode,
@@ -36,6 +37,7 @@ export function StoryboardBoard({
     onOpenShotDetail,
     onCloseShotDetail,
 }: {
+    projectId: string;
     episodes: Episode[];
     episodeId: string;
     onSelectEpisode: (id: string) => void;
@@ -158,6 +160,7 @@ export function StoryboardBoard({
 
             <ShotEditorDrawer
                 open={Boolean(detail)}
+                projectId={projectId}
                 shot={detail?.shot ?? null}
                 scene={detail?.scene ?? null}
                 assets={assets}

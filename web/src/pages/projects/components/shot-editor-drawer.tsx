@@ -7,6 +7,7 @@ import type { AssetRef, Scene, Shot } from "@/types/domain";
 import type { ShotPatchInput } from "@/services/api/projects";
 
 import { buildShotPatch, readCameraSpec, readShotFields, readTextOverlays, sceneLabel, SHOT_DURATION_MAX, SHOT_DURATION_MIN, SHOT_SIZES, shotRelation, type ShotFields } from "../storyboard-model";
+import { ShotRefsPanel } from "./shot-refs-panel";
 
 const EMPTY_FIELDS: ShotFields = { durationSec: 0, shotSize: "", camera: "", action: "", dialogue: "", audio: "", prompt: "", negativePrompt: "" };
 
@@ -17,6 +18,7 @@ const EMPTY_FIELDS: ShotFields = { durationSec: 0, shotSize: "", camera: "", act
  */
 export function ShotEditorDrawer({
     open,
+    projectId,
     shot,
     scene,
     assets,
@@ -25,6 +27,7 @@ export function ShotEditorDrawer({
     onSave,
 }: {
     open: boolean;
+    projectId: string;
     shot: Shot | null;
     scene: Scene | null;
     assets: AssetRef[];
@@ -126,6 +129,8 @@ export function ShotEditorDrawer({
                         <dd>{relation?.clipSlots ? relation.clipSlots : none}</dd>
                     </dl>
                 </div>
+
+                {shot?.id ? <ShotRefsPanel projectId={projectId} shotId={shot.id} /> : null}
 
                 <div className="rounded-lg border border-stone-200 p-3 dark:border-stone-700">
                     <Typography.Text type="secondary" className="!text-xs">

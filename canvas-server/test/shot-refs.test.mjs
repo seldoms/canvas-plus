@@ -7,8 +7,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { buildShotBinding } from "../src/reference-lock.js";
-import { buildShotRefs, composeShotRefs, describeShotRefs, numberShotRefs, refsGaps } from "../src/shot-refs.js";
+import { buildShotBinding, resolveSelectedArtifacts } from "../src/reference-lock.js";
+import { buildShotRefs, checkRefNumbering, composeShotRefs, describeShotRefs, injectedImageOrder, numberShotRefs, refsGaps } from "../src/shot-refs.js";
 
 /* 形状照 03 服化道真实产物（characters/locations/props），不是想当然的字段名。 */
 const DESIGN = {
@@ -165,3 +165,105 @@ test("参考清单：纯函数层的边界（空输入不炸、去重、空 bind
     assert.deepEqual(refsGaps(["a", "b"], ["a", "c"]), ["c"], "缺口= 期望里有、现有里没有");
     assert.deepEqual(refsGaps(null, ["a"]), ["a"], "现有为空时全部算缺口");
 });
+
+/* ------------------------------------------------------------------ *
+ * 编号 ↔ 模型实收顺序：这条不变量 2026-10-08 实测被破过，必须锁死
+ * ------------------------------------------------------------------ */
+
+/** 两位角色各带音色 + 一个场景 + 一个道具 —— 音色插在中间，最容易把后面编号顶偏。 */
+const DESIGN_WITH_VOICE = {
+    characters: [
+        { id: "c_ling", name: "林灵", voiceProfileId: "vp_female_warm" },
+        { id: "c_mother", name: "母亲", voiceProfileId: "vp_female_low" },
+    ],
+    locations: [{ id: "sc_stop", name: "老城南路公交站" }],
+    props: [{ id: "pr_ticket", name: "末班车票" }],
+};
+const ASSET_REFS = [
+    { id: "r1", role: "character", bindingId: "c_ling", artifactIds: ["a1"], selectedArtifactId: "a1" },
+    { id: "r2", role: "character", bindingId: "c_mother", artifactIds: ["a2"], selectedArtifactId: "a2" },
+    { id: "r3", role: "scene", bindingId: "sc_stop", artifactIds: ["a3"], selectedArtifactId: "a3" },
+    { id: "r4", role: "prop", bindingId: "pr_ticket", artifactIds: ["a4"], selectedArtifactId: "a4" },
+];
+
+test("参考清单：音色不占图位编号（否则后面每一项的编号都会错位）", () => {
+    const binding = buildShotBinding({ shot: SHOT, storyboard: STORYBOARD, design: DESIGN_WITH_VOICE });
+    const { refs } = composeShotRefs({ binding, design: DESIGN_WITH_VOICE });
+
+    const voices = refs.filter((ref) => ref.kind === "voice");
+    assert.equal(voices.length, 2, "两个角色各有一条音色");
+    for (const voice of voices) {
+        // 音色是音频 profileId，模型收不到「图」；给它编号就是在编造一个不存在的对应关系。
+        assert.equal(voice.index, null, "音色没有图位编号");
+        assert.equal(voice.tag, null, "音色不显示 @image#N —— 那个号在模型那边并不存在");
+    }
+
+    // 真实踩过的坑：音色参与编号时，母亲被标成 @image#3，而模型那边的 <image3> 已是场景。
+    const numbered = refs.filter((ref) => ref.index !== null);
+    assert.deepEqual(
+        numbered.map((ref) => `${ref.index}:${ref.bindingId}`),
+        ["1:c_ling", "2:c_mother", "3:sc_stop", "4:pr_ticket"],
+        "图位编号必须连续且与「角色→场景→道具」一致，不能被音色顶偏",
+    );
+});
+
+test("参考清单：编号与 pipeline 实际注入顺序逐项一致（对齐不变量）", () => {
+    const binding = buildShotBinding({ shot: SHOT, storyboard: STORYBOARD, design: DESIGN_WITH_VOICE, assetRefs: ASSET_REFS });
+    const resolved = resolveSelectedArtifacts({ shotBinding: binding, assetRefs: ASSET_REFS });
+    const { refs, alignment, images } = composeShotRefs({ binding, design: DESIGN_WITH_VOICE, resolved });
+
+    // 注入顺序是 pipeline 的事实源（角色→场景→道具），这里用 reference-lock 的真实解析结果。
+    assert.deepEqual(
+        images.map((image) => `${image.index}:${image.kind}:${image.bindingId}`),
+        ["1:character:c_ling", "2:character:c_mother", "3:scene:sc_stop", "4:prop:pr_ticket"],
+    );
+    assert.equal(alignment.aligned, true, `编号与实收顺序应对齐，实际错位：${JSON.stringify(alignment.mismatches)}`);
+
+    // 前端要靠 artifactId 取缩略图，所以产物地址必须跟着一起来。
+    const first = images[0];
+    assert.equal(first.artifactId, "a1", "要带得出模型实收的那张产物");
+});
+
+test("对齐检查：注入顺序与清单不一致时必须报出错位项（不能静默通过）", () => {
+    const refs = [
+        { kind: "character", bindingId: "c_ling", index: 1 },
+        { kind: "character", bindingId: "c_mother", index: 2 },
+    ];
+    // 注入顺序里第 2 项换成了别人 —— 正是「界面编号指向另一张图」的静默故障。
+    const swapped = {
+        character: [{ bindingId: "c_ling" }, { bindingId: "c_stranger" }],
+        scene: [],
+        prop: [],
+    };
+    const result = checkRefNumbering(refs, swapped);
+    assert.equal(result.aligned, false, "顺序不一致不能报通过");
+    assert.equal(result.mismatches.length, 1);
+    assert.equal(result.mismatches[0].index, 2);
+    assert.equal(result.mismatches[0].ref.bindingId, "c_mother");
+    assert.equal(result.mismatches[0].injected.bindingId, "c_stranger");
+
+    // 少注入 / 多注入也要能看出来，不能只比重叠部分。
+    assert.equal(checkRefNumbering(refs, { character: [{ bindingId: "c_ling" }], scene: [], prop: [] }).aligned, false, "注入少了一张要报错位");
+    assert.equal(
+        checkRefNumbering([{ kind: "character", bindingId: "c_ling", index: 1 }], { character: [{ bindingId: "c_ling" }, { bindingId: "c_x" }], scene: [], prop: [] })
+            .aligned,
+        false,
+        "多注入一张也要报错位",
+    );
+});
+
+test("对齐检查：没有 resolved 时不假装已核对（alignment 为 null）", () => {
+    const binding = buildShotBinding({ shot: SHOT, storyboard: STORYBOARD, design: DESIGN_WITH_VOICE });
+    const { alignment, images } = composeShotRefs({ binding, design: DESIGN_WITH_VOICE });
+    assert.equal(alignment, null, "没给解析结果就不能声称核对过");
+    assert.deepEqual(images, [], "同理也不给产物地址");
+});
+
+test("注入顺序：缺 url 的条目照样计入顺序（编号是槽位，不是「有图的条数」）", () => {
+    const order = injectedImageOrder({ character: [{ bindingId: "c_ling", artifactId: "a1", url: null }], scene: [], prop: [] });
+    assert.equal(order.length, 1);
+    assert.equal(order[0].url, null, "没有可用地址就如实为 null");
+    assert.equal(order[0].artifactId, "a1", "产物 id 仍带出来，便于定位");
+    assert.deepEqual(injectedImageOrder(null), [], "无输入返回空，不抛");
+});
+

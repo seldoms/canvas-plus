@@ -218,6 +218,8 @@ const pipeline = createPipeline({
     applyEpisodeProjection: (projectId, output) => projects.applyEpisodeProjection(projectId, output),
     // 建 run 时按 options.projectId 幂等把 runId 追加进项目 runIds（覆盖「从流水线页建的 run」）。
     attachProjectRun: (projectId, runId) => projects.attachRun(projectId, runId),
+    // 分镜页 refs 端点要读项目侧镜头（episodes/<id>.json 是编辑权威，与 run 的分镜产物可能是两份）。
+    findProjectShot: (projectId, shotId) => projects.episodes.findShot(projectId, shotId)?.shot ?? null,
     // 生成型阶段（关键帧/片段合成）产物自动登记为项目 AssetRef：幂等、解耦、失败不拖垮阶段。
     registerAssetRef: (projectId, input) => projects.assets.create(projectId, input),
     // 就地更新已存在的资产引用（参考图绑定走这条路：空引用自愈为已绑定，不产生重复引用）。
@@ -1445,6 +1447,29 @@ const updateShot = routeHandler(async (req, res, { params }) => {
 });
 router.add("PATCH", "/api/projects/:id/shots/:shotId", updateShot);
 router.post("/api/projects/:id/shots/:shotId", updateShot);
+
+/**
+ * 单镜参考清单（只读）：这一镜引用了哪些角色/场景/道具/音色，模型真正收到的图序是什么。
+ *
+ * 为什么必须有这个端点（2026-10-08 查证）：
+ *   镜头权威形状（skills/02-storyboard/SKILL.md）里**没有「引用哪个资产」这个位置**，
+ *   引用关系一直由 buildShotBinding 在生成那一刻隐式推导 —— 用户看不见、也改不了。
+ *   于是「资料包换了一张脸，分镜页会不会告诉我」这件事，答案是不会。
+ *
+ * 三条硬约束：
+ *   1. **只读**：改引用关系要改角色名/token 等真源（走既有 updateShot），refs 随之更新。
+ *      这里若顺手写数据，它自己就成了第二份可编辑真相，锁脸与 QC 全要开始对账。
+ *   2. **复用生产推导**：走 pipeline.shotRefsOf（内部即 shotReferenceContext），
+ *      复制一份推导必然漂，而漂了不报错 —— 只会让界面上的 @image#N 指向另一张图。
+ *   3. **alignment 如实回传**：编号与模型实收顺序是否一致由后端判定并返回；
+ *      前端 alignment.aligned=false 时必须显示警示而不是照着编号显示「对应关系」。
+ *
+ * 查不到镜头时 found=false（HTTP 200 + 空清单），不返回 404 空体 ——
+ * 「这一镜没有参考」与「没有这一镜」是两件事，调用方要能分开。
+ */
+router.get("/api/projects/:id/shots/:shotId/refs", routeHandler((req, res, { params, url }) => {
+    sendJson(res, 200, pipeline.shotRefsOf(params.id, params.shotId, { runId: url.searchParams.get("runId") || undefined }));
+}));
 
 // ——— M2 槽位候选：追加 / 采用（契约 §3，薄路由：解析请求、调业务、回响应） ———
 // 错误形状沿用 generation-intent.js（status + code + field），body 里一并回 code 供前端分支。

@@ -41,6 +41,7 @@ export default function StoryboardWorkspacePage() {
                 onOpenShotDetail={openShotDetail}
             />
             <StoryboardBoard
+                projectId={projectId}
                 episodes={storyboard.episodes}
                 episodeId={storyboard.episodeId}
                 onSelectEpisode={storyboard.setEpisodeId}
