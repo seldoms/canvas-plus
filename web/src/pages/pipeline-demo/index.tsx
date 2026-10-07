@@ -1,6 +1,6 @@
-import { Button } from "antd";
+import { Button, Tooltip } from "antd";
 import { Ban, Lock, Play, RotateCcw, Wrench } from "lucide-react";
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { cn } from "@/lib/utils";
 
@@ -55,9 +55,11 @@ function StageActions({ status }: { status: StageStatus }) {
             {running ? (
                 <Button size="small" danger icon={<Ban className="size-3.5" />}>取消</Button>
             ) : (
-                <Button size="small" type="primary" icon={<Play className="size-3.5" />}>
-                    {status === "pending" ? "运行" : "继续生产"}
-                </Button>
+                <Tooltip title={status === "pending" ? "从头运行本阶段" : "接着上次进度继续：只生成还没做完的项，已完成的不重做"}>
+                    <Button size="small" type="primary" icon={<Play className="size-3.5" />}>
+                        {status === "pending" ? "运行" : "继续生成"}
+                    </Button>
+                </Tooltip>
             )}
             {status === "error" || status === "partial" ? (
                 <Button size="small" icon={<Wrench className="size-3.5" />}>重试失败项</Button>
@@ -73,6 +75,11 @@ export default function PipelineDemoPage() {
     const [episodeId, setEpisodeId] = useState(EPISODES[0].id);
     const [runId, setRunId] = useState<string | null>(RUNS[1].id);
     const [activeStage, setActiveStage] = useState<StageId>("storyboard");
+    const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("pipeline-demo.sidebar-collapsed") === "1");
+
+    useEffect(() => {
+        localStorage.setItem("pipeline-demo.sidebar-collapsed", sidebarCollapsed ? "1" : "0");
+    }, [sidebarCollapsed]);
 
     const run = useMemo(() => RUNS.find((item) => item.id === runId) || null, [runId]);
     const episode = useMemo(() => EPISODES.find((item) => item.id === episodeId) || EPISODES[0], [episodeId]);
@@ -90,7 +97,14 @@ export default function PipelineDemoPage() {
 
     return (
         <div className="flex h-full gap-2.5 overflow-hidden bg-background p-2.5 text-stone-800 dark:text-stone-100">
-            <PipelineSidebar episodeId={episodeId} runId={runId} onSelectEpisode={selectEpisode} onSelectRun={setRunId} />
+            <PipelineSidebar
+                episodeId={episodeId}
+                runId={runId}
+                collapsed={sidebarCollapsed}
+                onSelectEpisode={selectEpisode}
+                onSelectRun={setRunId}
+                onToggleCollapsed={() => setSidebarCollapsed((v) => !v)}
+            />
 
             <div className="flex min-w-0 flex-1 flex-col gap-2">
                 {/* 步骤条行：阶段切换 + 当前阶段模型与操作，一行收完（原阶段卡头并入）。

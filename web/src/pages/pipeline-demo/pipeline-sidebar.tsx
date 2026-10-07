@@ -1,5 +1,5 @@
 import { Button, Tag, Tooltip } from "antd";
-import { BookOpen, GitBranch, History, Plus, ShieldCheck } from "lucide-react";
+import { BookOpen, GitBranch, History, PanelLeftClose, PanelLeftOpen, Plus, ShieldCheck } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
@@ -9,26 +9,83 @@ import { EPISODES, PROJECT, RUNS } from "./mock-data";
  * 生产侧栏 —— 项目 → 集 → 执行记录三级上下文收进左栏（原上下文条的纵向化）：
  * - 集即全局唯一的集选择入口，各阶段面板不再各自带集导航；
  * - 执行记录按选中集过滤，分支 run 带分叉图标；
- * - 打开 run 后左栏即锁定态的视觉锚点（快照设置明细在「剧本」阶段的制作设定里展示）。
+ * - 打开 run 后左栏即锁定态的视觉锚点（快照设置明细在「剧本」阶段的制作设定里展示）；
+ * - 可收起为窄轨：只留展开钮 + 集序号，把主体让给创作窗口。
  */
 export function PipelineSidebar({
     episodeId,
     runId,
+    collapsed,
     onSelectEpisode,
     onSelectRun,
+    onToggleCollapsed,
 }: {
     episodeId: string;
     runId: string | null;
+    collapsed: boolean;
     onSelectEpisode: (id: string) => void;
     onSelectRun: (id: string) => void;
+    onToggleCollapsed: () => void;
 }) {
     const episodeRuns = RUNS.filter((run) => run.episodeId === episodeId);
+
+    if (collapsed) {
+        return (
+            <aside className="flex w-10 shrink-0 flex-col items-center overflow-y-auto rounded-xl border border-stone-200 bg-white py-2 dark:border-stone-800 dark:bg-transparent">
+                <Tooltip title="展开侧栏" placement="right">
+                    <button
+                        type="button"
+                        onClick={onToggleCollapsed}
+                        className="inline-flex size-7 items-center justify-center rounded-md text-stone-500 transition hover:bg-black/5 hover:text-stone-900 dark:text-stone-400 dark:hover:bg-white/10 dark:hover:text-white"
+                        aria-label="展开侧栏"
+                    >
+                        <PanelLeftOpen className="size-4" />
+                    </button>
+                </Tooltip>
+                <div className="mt-2 flex flex-col items-center gap-1 border-t border-stone-200/60 pt-2 dark:border-stone-800/60">
+                    {EPISODES.map((ep) => {
+                        const active = ep.id === episodeId;
+                        return (
+                            <Tooltip key={ep.id} title={`第 ${ep.index} 集 · ${ep.title}`} placement="right">
+                                <button
+                                    type="button"
+                                    onClick={() => onSelectEpisode(ep.id)}
+                                    className={cn(
+                                        "inline-flex size-7 items-center justify-center rounded-md text-[11px] tabular-nums transition",
+                                        active
+                                            ? "bg-stone-950 font-medium text-white dark:bg-white dark:text-stone-900"
+                                            : "text-stone-500 hover:bg-black/5 dark:text-stone-400 dark:hover:bg-white/10",
+                                    )}
+                                >
+                                    {String(ep.index).padStart(2, "0")}
+                                </button>
+                            </Tooltip>
+                        );
+                    })}
+                </div>
+                <Tooltip title="QC 通过" placement="right">
+                    <span className="mt-auto mb-1 size-1.5 rounded-full bg-emerald-500" />
+                </Tooltip>
+            </aside>
+        );
+    }
+
     return (
         <aside className="flex w-52 shrink-0 flex-col overflow-y-auto rounded-xl border border-stone-200 bg-white dark:border-stone-800 dark:bg-transparent">
             {/* 项目 */}
             <div className="flex items-center gap-2 px-3.5 pb-2 pt-3.5">
                 <BookOpen className="size-4 shrink-0 text-stone-400" />
                 <span className="truncate text-sm font-semibold text-stone-900 dark:text-stone-100">《{PROJECT.title}》</span>
+                <Tooltip title="收起侧栏">
+                    <button
+                        type="button"
+                        onClick={onToggleCollapsed}
+                        className="ml-auto inline-flex size-6 shrink-0 items-center justify-center rounded-md text-stone-400 transition hover:bg-black/5 hover:text-stone-700 dark:hover:bg-white/10 dark:hover:text-stone-200"
+                        aria-label="收起侧栏"
+                    >
+                        <PanelLeftClose className="size-3.5" />
+                    </button>
+                </Tooltip>
             </div>
 
             {/* 集 */}
