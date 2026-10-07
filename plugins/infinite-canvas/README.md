@@ -1,6 +1,10 @@
-# Infinite Canvas Plugin
+# Canvas Plus 插件
 
-让 Codex / ZCode 可以打开并操作 Infinite Canvas。
+让 Codex / ZCode 打开并操作 **Canvas Plus**——本地化的 AI 短剧生产平台
+（画布 + 七段式流水线 + 20 个 `project_*` 项目工具）。
+
+> **注册名是 `canvas-plus`，不是 `infinite-canvas`。** 那是上游开源项目的名字；
+> 照旧名安装会报「找不到插件」。
 
 ## 安装
 
@@ -9,19 +13,19 @@
 macOS / Linux：
 
 ```bash
-git clone https://github.com/basketikun/infinite-canvas.git
-cd infinite-canvas
+git clone <你们的 canvas-plus 仓库地址>
+cd canvas-plus
 codex plugin marketplace add "$(pwd)"
-codex plugin add infinite-canvas@infinite-canvas-local
+codex plugin add canvas-plus@canvas-plus-local
 ```
 
 Windows PowerShell：
 
 ```powershell
-git clone https://github.com/basketikun/infinite-canvas.git
-cd infinite-canvas
+git clone <你们的 canvas-plus 仓库地址>
+cd canvas-plus
 codex plugin marketplace add "$PWD"
-codex plugin add infinite-canvas@infinite-canvas-local
+codex plugin add canvas-plus@canvas-plus-local
 ```
 
 Windows CMD 将 `$PWD` 替换为 `%cd%`。
@@ -35,5 +39,7 @@ Windows CMD 将 `$PWD` 替换为 `%cd%`。
 安装后新建一个任务，然后输入：
 
 ```text
-帮我打开并连接到 Infinite Canvas
+帮我打开画布，连接站点网关
+# 项目类请求直接说：
+# 把《喜宴之外》第 1 集第 3 镜发到画布 / 这一镜的下游要不要重跑
 ```

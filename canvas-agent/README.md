@@ -98,8 +98,14 @@ npx -y @sobey/canvas-agent@latest mcp
 
 Canvas Agent 启动后，给 Codex 添加 MCP：
 
+给 Codex 添加 MCP：
+
+> ⚠️ **包名是 `@sobey/canvas-agent`，不是上游的 `@basketikun/canvas-agent`。**
+> 装上游包能用，但**没有 20 个 `project_*` 项目工具**（建项目 / 发镜头到画布 / 回写分镜
+> / 查阶段状态…全都缺）。看到 `@basketikun` 就是旧版。
+
 ```bash
-codex mcp add infinite-canvas -- npx -y @basketikun/canvas-agent@latest mcp
+codex mcp add infinite-canvas -- npx -y @sobey/canvas-agent@latest mcp
 ```
 
 本仓库开发时可以改成，实际使用建议替换为本机绝对路径：
@@ -115,7 +121,7 @@ Canvas Agent 源码使用 TypeScript 编写，MCP 协议层使用官方 `@modelc
 ```toml
 [mcp_servers.infinite-canvas]
 command = "npx"
-args = ["-y", "@basketikun/canvas-agent@latest", "mcp"]
+args = ["-y", "@sobey/canvas-agent@latest", "mcp"]
 default_tools_approval_mode = "approve"
 ```
 
@@ -162,7 +168,7 @@ Claude Code Adapter 代码暂时保留，但当前网页侧边栏只开放 Codex
 如果希望 Claude Code 也能操作画布，需要给 Claude Code 添加同一个 MCP。建议用 user scope，避免 Canvas Agent 从不同目录启动时找不到配置：
 
 ```bash
-claude mcp add --scope user --transport stdio infinite-canvas -- npx -y @basketikun/canvas-agent@latest mcp
+claude mcp add --scope user --transport stdio infinite-canvas -- npx -y @sobey/canvas-agent@latest mcp
 ```
 
 本仓库开发时可以改成：

@@ -7,7 +7,7 @@
     "url": "https://canvas.wbsyb.cloud/"
   },
   "homepage": "https://canvas.wbsyb.cloud/",
-  "repository": "https://github.com/sobey/canvas-plus",
+  "repository": "REPO_URL_PLACEHOLDER",
   "license": "MIT",
   "keywords": ["canvas-plus", "canvas", "mcp", "agent", "pipeline", "short-drama"],
   "skills": "./skills/",

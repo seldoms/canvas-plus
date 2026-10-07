@@ -14,10 +14,19 @@ import { canvasThemes } from "@/lib/canvas-theme";
  * `CANVAS_PLUS_REPO` 改成实际仓库地址、`AGENT_PACKAGE` 改成发布后的包名，全站引导即生效
  * （所有出现处都引用这两个常量，不要再散落硬编码）。
  *
- * 站点侧边栏的 Agent 由服务端托管，51 个工具天然生效——不想折腾本地 Codex 的工友
+ * 站点侧边栏的 Agent 由服务端托管，54 个工具天然生效——不想折腾本地 Codex 的工友
  * 直接用侧边栏即可，无需任何安装动作。
  */
-const CANVAS_PLUS_REPO = "https://github.com/sobey/canvas-plus";
+
+/**
+ * 仓库地址。**发布前必须替换成真实地址** —— 下面这个占位符不是可用的地址。
+ *
+ * 为什么不给一个「看起来能用」的默认地址：填一个并不存在的 GitHub 地址，
+ * 工友会照着敲、`marketplace add` 静默失败或报 404，然后卡在「到底装没装上」。
+ * 一个显眼的占位符至少能让人立刻知道「这里还没配」。
+ * 替换时只改这一处，全站引导（插件安装 / 移除命令）都引用它。
+ */
+const CANVAS_PLUS_REPO = "REPO_URL_PLACEHOLDER";
 const AGENT_PACKAGE = "@sobey/canvas-agent";
 const AGENT_RUN_COMMAND = `npx -y ${AGENT_PACKAGE}@latest`;
 const AGENT_MARKETPLACE_COMMAND = `codex plugin marketplace add ${CANVAS_PLUS_REPO}`;
@@ -49,10 +58,13 @@ export function AgentConnectView({
 }) {
     const { t } = useTranslation();
     const { message } = App.useApp();
+    // 命令里带占位符的步骤不给可复制命令 —— 让工友复制一条必然跑不通的命令，
+    // 比不给命令更糟：他会以为装好了，然后卡在「工具怎么还是旧的」。
+    const isReady = (command: string) => !command.includes("REPO_URL_PLACEHOLDER");
     const steps = [
         { title: t("agent.connect.builtinTitle"), text: t("agent.connect.builtinText") },
-        { title: t("agent.connect.pluginTitle"), text: t("agent.connect.pluginText"), command: AGENT_MARKETPLACE_COMMAND },
-        { title: t("agent.connect.directTitle"), text: t("agent.connect.directText"), command: AGENT_RUN_COMMAND },
+        { title: t("agent.connect.pluginTitle"), text: t("agent.connect.pluginText"), command: AGENT_MARKETPLACE_COMMAND, ready: isReady(AGENT_MARKETPLACE_COMMAND) },
+        { title: t("agent.connect.directTitle"), text: t("agent.connect.directText"), command: AGENT_RUN_COMMAND, ready: true },
     ];
     const statusText = connectError ? t("agent.status.failed") : connected ? activity : enabled ? t("agent.status.connecting") : t("agent.status.disconnected");
     const statusColor = connectError ? "#dc2626" : connected ? "#16a34a" : enabled ? "#d97706" : theme.node.muted;
@@ -103,12 +115,17 @@ export function AgentConnectView({
                                     <div className="mt-1 text-xs leading-5" style={{ color: theme.node.muted }}>
                                         {step.text}
                                     </div>
-                                    {command ? (
+                                    {command && step.ready !== false ? (
                                         <div className="mt-2 flex items-center gap-2 rounded-md border bg-transparent px-2 py-1.5" style={{ borderColor: theme.node.stroke, color: theme.node.text }}>
                                             <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap text-[11px] leading-5">{command}</code>
                                             <Tooltip title={t("agent.connect.copyCommand")}>
                                                 <Button size="small" type="text" className="!h-6 !w-6 !min-w-6" icon={<Copy className="size-3.5" />} onClick={() => copyCommand(command)} />
                                             </Tooltip>
+                                        </div>
+                                    ) : null}
+                                    {command && step.ready === false ? (
+                                        <div className="mt-2 rounded-md border px-2 py-1.5 text-[11px] leading-5" style={{ borderColor: theme.node.stroke, color: theme.node.muted }}>
+                                            {t("agent.connect.commandNotConfigured")}
                                         </div>
                                     ) : null}
                                 </div>
