@@ -24,21 +24,25 @@
 
 ## 当前状态
 
+**2026-10-07 晚（先读这段）**
 
-**2026-10-07 本轮复核**：后端全量 `npm test` **1079/1079 通过**，前端 `tsc --noEmit` 通过。新增分支重跑与可重放 QC API/UI；独立配音路线在 H3 同步、英文改写、Ref2VA 三条路径均禁止 `<d>` 原生对白；TTS 产物回写 ffprobe 实测时长并串行生成同镜 Cue；H3 Talk 按固定 VoiceProfile 注入 `TTS_TEXT/SPEAKER/VOICE_DESIGN/LANGUAGE`，多主动说话人、画外音和独立配音路线明确阻断；后期页面显示实测对白时间及口型覆盖数量。隔离 CDP 页面已打开新建项目表单并确认前端入口可用。
+> 基线：`canvas-plus` @ `2362aac`+（工作区干净）。后端 `node --test` **1079/1079**（10-07 上午复核口径）；canvas-agent `tsx --test` **150/150**（10-07 晚实测）；前端 `tsc --noEmit` 通过（10-07 晚实测）。
+> 服务：canvas-server / canvas-agent / infinite-canvas-web 均 active（canvas-agent 19:25 重启加载新 instructions；web dev 19:30 清 `.vite` 缓存重启）。
 
-真实项目 `run-muwj5llv-y15o6` 的旧服务实例仍在生成后续片段，前两段属于修复部署前样本（第一段提示词仍含 `<d>`），保留用于对照；不能作为修复版声音验收证据。待旧服务队列结束后再重启服务加载本轮代码，通过独立 CDP 页面重新跑验收。
+**本周已上线（10-06 晚 ~ 10-07）**：
+- 流水线页面重做：`/pipeline` 新页（旧版挪 `/pipeline-old`）——项目/集/run 三合一可收起侧栏 + 七面板全量真实产物 + 条目级动作（镜头编辑、定妆确认、单句重录、单项重跑、拼接导出）全真接口。
+- Agent 三层视角：`project_*` 7→17（项目级 list_runs/run_status/run_qc/stage_items；阶段级 retry_failed/update_stage_input/assemble；条目级 regenerate_item/patch_shot/confirm_casting），总工具 51。文档三面同步：agent-instructions.md（Codex 线程注入）、README（51 分组目录）、插件新增 `skills/pipeline`。
+- 页面标注工具升级为全局悬浮窗（所有页面可用，标注模式下再点一次取消标记）。
+- **产品方向拍板**：以项目为中心但不绑死——目标形态与断点清单见 `docs/content/docs/progress/project-centric-skeleton.md`，执行序列以其 §6 的 P0–P3 为准；**下一步 = P0 串联引导**。
+- **GitHub 发布决策（待用户执行）**：发布后插件分发走 `marketplace add <github 地址>`；届时**必须**改 `agent-connect-view` 引导文案（现指上游官方 npm）并把插件改名 `canvas-plus`。仓库含内网环境信息，公开范围需用户确认。
 
-**最新质量审查（2026-10-06）**：用户已确认最终两段存在跨镜音色不一致、电话场景抢台词、音画不同步。M6 保留为**功能性成片里程碑**，**声音质量验收未通过**；下一轮按 [`audio-video-quality-audit-2026-10-06.md`](./docs/content/docs/progress/audio-video-quality-audit-2026-10-06.md) 先处理声音事实源分流、实际 TTS 时长时间轴、H3 Talk/口型 A/B 和前端 QC。不要依据下面的“七段全 done”宣称音色或嘴型已经闭环。
+**声音质量警告（仍然有效，勿删）**：M6 是功能性成片里程碑，**声音质量验收未通过**（跨镜音色不一致 / 电话场景抢台词 / 音画不同步），按 [`audio-video-quality-audit-2026-10-06.md`](./docs/content/docs/progress/audio-video-quality-audit-2026-10-06.md) 处理。不要依据"七段全 done"宣称音色或嘴型闭环。
 
-**最后更新**：2026-10-06（代码与文档已更新；M6 的功能性成片可复现，但声音质量验收重开，不能以历史段落宣称闭环）
+**历史记录（2026-10-06 及之前，归档口径）**
 
-**2026-10-06 下午 本轮结论（先读这段，再看下面的历史表格）**
-
-> 基线：`canvas-plus` @ `595ca32`（工作区干净，领先 origin 20 个提交）；后端 `node --test` → **1061/1061 pass / 0 fail**（实测 21.1s）。
-> 服务 active（15:11 重启，uptime 29min）；ComfyUI 0.38.2 @ `192.168.123.147:8188`，显存 17.1G 总 / 11.0G 空闲。
-> `web/dist/index.html` 建于 13:18，此后只有后端与docs 改动 → **前端产物不落后**。
-> **《喜宴之外》项目已拆 10 集 70 镜**；主 run `run-muw3op80-j5uhl` **七段全 done**。
+> M6 达成：主 run `run-muw3op80-j5uhl` 七段全 done、20.25s 成片（详见下方「M6 达成记录」）。
+> 《喜宴之外》项目已拆 10 集 70 镜。
+> 10-07 上午复核：后端 1079/1079；分支重跑与可重放 QC API/UI 落地；独立配音三线禁止 `<d>` 原生对白；TTS 回写 ffprobe 实测时长；H3 Talk 固定 VoiceProfile 注入。
 
 ### 里程碑进度（M0–M6，权威定义见 `m0-m1-implementation-plan.md` §2）
 
@@ -292,8 +296,9 @@ M3.5 部署后跑了一条真实 2 段链（`prj_01M3ZZ2MJVQ2TJBRY1K3B0HBXF` / `
 
 ## 下一步（按优先级）
 
-> **2026-10-06 15:50 重排**（M6 达成后）。**M0–M4 已部署、M6 已闭环**，原1–4 条全部落地。
-> 现在的头号任务只剩两条：**1（M5 真机验收）** 与 **2（人耳验接缝）**；3–7 是产能与可选后端，不阻断收官。
+> **2026-10-07 晚 重排**：产品主线以 `project-centric-skeleton.md` §6 的 **P0–P3** 为准（P0 串联引导 + Agent 引导文案先行；P1 资料包；P2 画布↔流水线双向；P3 GitHub 分发）。
+> 下列 1–8 是「生产质量与产能」维度的未闭环项，与主线并行；**1（M5 验收动线）与 2（人耳验接缝）仍是最重要两条**。
+> 注：project_* 工具已于 10-07 晚扩充到 17 个并对真网关冒烟通过（list_runs/run_status/stage_items），但「Agent 批量生产全流程走一遍」的 M5 验收动线仍未做。
 
 1. **M5 真机验收（唯一剩下的里程碑缺口）**：七个 `project_*` 工具代码与测试已齐，真机一次没跑过。
    验收动线：Agent 走「读项目→ 计划 → 确认 → 批量入队 → 等终态 → 只重试失败 → 采用 → 导出」，
