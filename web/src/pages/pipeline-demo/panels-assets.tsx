@@ -1,10 +1,33 @@
 import { Button, Input, Select, Slider, Tabs, Tag, Tooltip } from "antd";
-import { Check, ImagePlus, Play, RefreshCw, Volume2 } from "lucide-react";
+import { Check, ImagePlus, RefreshCw, Volume2 } from "lucide-react";
 import { useState } from "react";
 
 import { cn } from "@/lib/utils";
-import { CHARACTERS, MODEL_GROUPS, SHOTS, type MockCharacter, type StageStatus } from "./mock-data";
-import { InlineError, PanelSection, StageShell } from "./stage-shell";
+
+import { DemoModelPicker } from "./demo-model-picker";
+import { CHARACTERS, SHOTS, type MockCharacter, type StageStatus } from "./mock-data";
+import { InlineError, StageShell } from "./stage-shell";
+
+/** 真实定妆照缩略图（demo 用，真实环境是 artifact 缩略图） */
+function PhotoThumb({ name, label, selected, small }: { name: string; label?: string; selected?: boolean; small?: boolean }) {
+    return (
+        <div
+            className={cn(
+                "relative overflow-hidden rounded-lg bg-stone-100 dark:bg-white/5",
+                small ? "h-24 w-16" : "h-32 w-24",
+                selected ? "ring-2 ring-emerald-500 ring-offset-2 dark:ring-offset-stone-950" : "ring-1 ring-black/10 dark:ring-white/15",
+            )}
+        >
+            <img src={`/demo-assets/cast/${encodeURIComponent(name)}.png`} alt={name} className="size-full object-cover object-top" loading="lazy" />
+            {label ? <span className="absolute bottom-0 left-0 bg-black/45 px-1.5 py-0.5 text-[10px] leading-tight text-white/90">{label}</span> : null}
+            {selected ? (
+                <span className="absolute right-1 top-1 flex size-4 items-center justify-center rounded-full bg-emerald-500 text-white">
+                    <Check className="size-2.5" />
+                </span>
+            ) : null}
+        </div>
+    );
+}
 
 /** 渐变占位图（demo 用，真实环境是 artifact 缩略图） */
 function Thumb({ label, gradient, selected, small }: { label: string; gradient: string; selected?: boolean; small?: boolean }) {
@@ -47,12 +70,12 @@ function DesignCharacterCard({ character }: { character: MockCharacter }) {
                 className="mt-2 text-xs leading-5 text-stone-600"
             />
             <div className="mt-3 flex items-start gap-2">
-                {[0, 1, 2].map((i) => (
-                    <Thumb key={i} small label={`候选 ${i + 1}`} gradient={character.gradient} selected={i === 0} />
+                <PhotoThumb small name={character.name} label="候选 1 · 已采用" selected />
+                {[1, 2].map((i) => (
+                    <Thumb key={i} small label={`候选 ${i + 1}`} gradient={character.gradient} />
                 ))}
                 <div className="flex flex-col gap-1.5 self-center">
                     <Button size="small" icon={<ImagePlus className="size-3.5" />}>再出一张</Button>
-                    <span className="text-[11px] text-stone-400">参考图模型：img_qwen21_t2i</span>
                 </div>
             </div>
         </div>
@@ -67,12 +90,14 @@ export function DesignPanel({ status }: { status: StageStatus }) {
             status={status}
             modelSlot={
                 <>
-                    <Tooltip title="文字设定由文本模型生成">
-                        <Select size="small" className="min-w-48" defaultValue={MODEL_GROUPS.text[0]} options={MODEL_GROUPS.text.map((m) => ({ value: m, label: `设定 · ${m}` }))} />
-                    </Tooltip>
-                    <Tooltip title="参考图由图像模板生成">
-                        <Select size="small" className="min-w-56" defaultValue={MODEL_GROUPS.image[0]} options={MODEL_GROUPS.image.map((m) => ({ value: m, label: `参考图 · ${m}` }))} />
-                    </Tooltip>
+                    <span className="flex items-center gap-1.5">
+                        <span className="text-xs text-stone-400">文字设定</span>
+                        <DemoModelPicker domain="text" />
+                    </span>
+                    <span className="flex items-center gap-1.5">
+                        <span className="text-xs text-stone-400">参考图</span>
+                        <DemoModelPicker domain="image" />
+                    </span>
                 </>
             }
         >
@@ -130,7 +155,7 @@ function CastingCard({ character }: { character: MockCharacter }) {
     return (
         <div className="rounded-lg border border-stone-200/80 p-3.5 dark:border-stone-800">
             <div className="flex gap-3">
-                <Thumb label={character.name} gradient={character.gradient} selected={character.faceConfirmed} />
+                <PhotoThumb name={character.name} label={character.faceConfirmed ? "定妆照" : "候选"} selected={character.faceConfirmed} />
                 <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                         <span className="text-sm font-medium text-stone-900 dark:text-stone-100">{character.name}</span>
@@ -209,9 +234,7 @@ export function KeyframePanel({ status }: { status: StageStatus }) {
             index={4}
             title="关键帧"
             status={status}
-            modelSlot={
-                <Select size="small" className="min-w-56" defaultValue={MODEL_GROUPS.image[1]} options={MODEL_GROUPS.image.map((m) => ({ value: m, label: m }))} />
-            }
+            modelSlot={<DemoModelPicker domain="image" value="img_qwen21_t2i_1080" />}
         >
             <div className="space-y-3">
                 {SHOTS.slice(0, 4).map((shot) => (

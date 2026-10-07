@@ -1,8 +1,10 @@
-import { Alert, Button, InputNumber, Select, Tag, Tooltip } from "antd";
-import { Download, FileArchive, FileText, Film, Mic, Play, RefreshCw, Scissors, Volume2 } from "lucide-react";
+import { Alert, Button, InputNumber, Tag, Tooltip } from "antd";
+import { Download, FileArchive, FileText, Film, Mic, Scissors, Volume2 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import { AUDIO_LINES, MODEL_GROUPS, SHOTS, type MockAudioLine, type StageStatus } from "./mock-data";
+
+import { DemoModelPicker } from "./demo-model-picker";
+import { AUDIO_LINES, SHOTS, type MockAudioLine, type StageStatus } from "./mock-data";
 import { InlineError, RunningDot, StageShell, StatusBadge } from "./stage-shell";
 
 /* ------------------------------------------------------------------ */
@@ -94,9 +96,7 @@ export function AssemblyPanel({ status }: { status: StageStatus }) {
             index={6}
             title="成片交付"
             status={status}
-            modelSlot={
-                <Select size="small" className="min-w-56" defaultValue={MODEL_GROUPS.video[1]} options={MODEL_GROUPS.video.map((m) => ({ value: m, label: m }))} />
-            }
+            modelSlot={<DemoModelPicker domain="video" value="vid_wan22_i2v" />}
         >
             <div className="mb-2 flex items-center gap-2 text-xs text-stone-500 dark:text-stone-400">
                 <Film className="size-3.5" />
@@ -124,17 +124,21 @@ export function AssemblyPanel({ status }: { status: StageStatus }) {
             </div>
 
             <div className="mt-4 grid gap-4 lg:grid-cols-[16rem_1fr]">
-                <div className="flex aspect-[9/16] max-h-72 items-center justify-center rounded-xl bg-gradient-to-br from-stone-800 to-stone-600 text-white/80">
-                    <div className="flex flex-col items-center gap-2">
-                        <Play className="size-8" />
-                        <span className="text-xs">第 1 集成片 · 20.3s（预览）</span>
-                    </div>
+                <div>
+                    <video
+                        controls
+                        preload="metadata"
+                        poster={`/demo-assets/${encodeURIComponent("喜宴之外_封面.jpg")}`}
+                        src={`/demo-assets/${encodeURIComponent("喜宴之外_第1集_试片_v1.mp4")}`}
+                        className="aspect-[9/16] max-h-80 w-auto rounded-xl bg-black"
+                    />
+                    <div className="mt-1.5 text-center text-[11px] text-stone-400">第 1 集成片 · 20.3s · 768×1344 · -16.2 LUFS</div>
                 </div>
                 <div>
                     <div className="text-xs font-medium uppercase tracking-wider text-stone-500 dark:text-stone-400">导出与交付（按集或全部集）</div>
                     <div className="mt-2 flex flex-wrap gap-2">
-                        <Button icon={<Download className="size-3.5" />}>成片 MP4</Button>
-                        <Button icon={<FileText className="size-3.5" />}>字幕 SRT</Button>
+                        <Button icon={<Download className="size-3.5" />} href={`/demo-assets/${encodeURIComponent("喜宴之外_第1集_试片_v1.mp4")}`} download>成片 MP4</Button>
+                        <Button icon={<FileText className="size-3.5" />} href={`/demo-assets/${encodeURIComponent("喜宴之外_第1集_字幕.srt")}`} download>字幕 SRT</Button>
                         <Button icon={<Scissors className="size-3.5" />}>FCPXML / EDL</Button>
                         <Button icon={<FileArchive className="size-3.5" />}>素材包 ZIP</Button>
                     </div>
