@@ -3,6 +3,7 @@ import { useMemo, useState } from "react";
 
 import { cn } from "@/lib/utils";
 import { ContextBar } from "./context-bar";
+import { FeedbackLayer } from "./feedback-layer";
 import { RUNS, STAGES, type StageId, type StageStatus } from "./mock-data";
 import { ScriptPanel, StoryboardPanel } from "./panels-story";
 import { CastingPanel, DesignPanel, KeyframePanel } from "./panels-assets";
@@ -91,10 +92,11 @@ export default function PipelineDemoPage() {
                     <ActivePanel status={stageStatus(activeStage)} />
 
                     <p className="pb-4 text-center text-xs text-stone-400 dark:text-stone-500">
-                        本页为改版设计稿（演示数据）：确认布局与交互后，再替换 /pipeline 真实接线。
+                        本页为改版设计稿（演示数据）：点右下角「标注」可在任意元素上钉意见，导出后贴回对话。
                     </p>
                 </div>
             </main>
+            <FeedbackLayer />
         </div>
     );
 }
