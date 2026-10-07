@@ -71,6 +71,8 @@ export type AudioLine = {
     performance?: string;
     speed?: number;
     characterId?: string;
+    /** 该句实际使用的 VoiceProfile；跨镜音色是否一致就看这里（声音质量审计的核心字段）。 */
+    voiceProfileId?: string;
     artifactUrl?: string;
     status?: string;
     candidates?: FrameCandidate[];

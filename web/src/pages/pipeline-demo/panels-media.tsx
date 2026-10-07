@@ -36,16 +36,21 @@ function AudioLineRow({
     line,
     shotLabel,
     characterName,
+    voiceLabel,
 }: {
     production: Production;
     line: AudioLine;
     shotLabel: string;
     characterName: string;
+    /** 该句实际用的 VoiceProfile 名；与角色对不上说明音色串了（跨镜音色不一致的现场证据）。 */
+    voiceLabel?: string;
 }) {
     const [speed, setSpeed] = useState(line.speed ?? 1);
     const [redoing, setRedoing] = useState(false);
     const overtime = line.actualDurationSec != null && line.durationSec != null && line.actualDurationSec > line.durationSec;
     const audioUrl = production.artifactUrl(line.artifactUrl);
+    /** 音色串了：有音色名但它不属于这句的角色 —— 直接标红提示，不等 QC 报告才发现。 */
+    const voiceMismatch = Boolean(voiceLabel && line.voiceProfileId && voiceLabel !== line.voiceProfileId);
     const redo = async () => {
         setRedoing(true);
         /** 语速写进 TTS params（清单 §4.9）：重录时覆盖 speed，其余参数后端沿用身份卡。 */
@@ -55,13 +60,22 @@ function AudioLineRow({
     return (
         <div className={cn(
             "grid items-center gap-3 rounded-lg border border-stone-200/70 px-3.5 py-2.5 md:grid-cols-[4rem_5rem_1fr_5.5rem_6.5rem_9rem] dark:border-stone-800",
-            (line.status === "error" || overtime) && "border-red-200 bg-red-50/40 dark:border-red-900/50 dark:bg-red-950/20",
+            (line.status === "error" || overtime || voiceMismatch) && "border-red-200 bg-red-50/40 dark:border-red-900/50 dark:bg-red-950/20",
         )}>
             <div className="text-xs tabular-nums text-stone-500 dark:text-stone-400">{shotLabel}</div>
             <Tag className="mr-0 w-fit">{characterName}</Tag>
             <div className="min-w-0">
                 <div className="truncate text-sm text-stone-800 dark:text-stone-200">{line.text || "（无台词）"}</div>
                 <div className="truncate text-xs italic text-stone-400">{line.performance}</div>
+                {voiceMismatch ? (
+                    <div className="mt-0.5 text-[11px] text-red-600 dark:text-red-400">
+                        音色串了：本句用的是 {line.voiceProfileId}，而 {characterName} 绑定的是 {voiceLabel}
+                    </div>
+                ) : line.voiceProfileId ? (
+                    <div className="truncate text-[11px] text-stone-400">音色 {line.voiceProfileId}</div>
+                ) : (
+                    <div className="text-[11px] text-amber-600 dark:text-amber-400">没有 VoiceProfile —— 这句音色不受控</div>
+                )}
                 {overtime ? (
                     <div className="mt-0.5 text-[11px] text-red-600 dark:text-red-400">
                         实测 {line.actualDurationSec}s 超出计划 {line.durationSec}s —— 放慢语速重录，或回分镜调整该镜时长
@@ -110,19 +124,44 @@ export function AudioPanel({ production }: { production: Production }) {
     const lines = audio.audio ?? [];
     const shotIndexOf = new Map((board?.shots ?? []).map((s) => [s.id, s.index]));
     const characterNameOf = new Map((casting?.characters ?? []).map((c) => [c.characterId, c.name || c.characterId]));
+    /** 角色 → 它在定妆阶段绑定的 VoiceProfile；用于逐句核对音色有没有串（声音质量审计 §音色一致性）。 */
+    const voiceProfileOf = new Map((casting?.characters ?? []).map((c) => [c.characterId, c.voice?.voiceProfileId || ""]));
     const dialogue = lines.filter((line) => line.type !== "ambience");
     const overtimeCount = dialogue.filter((line) => line.actualDurationSec != null && line.durationSec != null && line.actualDurationSec > line.durationSec).length;
+    const mismatchCount = dialogue.filter((line) => {
+        const expected = voiceProfileOf.get(line.characterId || "");
+        return Boolean(expected && line.voiceProfileId && expected !== line.voiceProfileId);
+    }).length;
+    const unboundCount = dialogue.filter((line) => !line.voiceProfileId).length;
     return (
         <StageShell
             alerts={
-                overtimeCount ? (
-                    <Alert
-                        type="warning"
-                        showIcon
-                        message={`${overtimeCount} 句对白实测时长超出镜头计划时长`}
-                        description="可放慢语速后单句重录，或回到分镜调整该镜计划时长。"
-                    />
-                ) : undefined
+                <>
+                    {mismatchCount ? (
+                        <Alert
+                            type="error"
+                            showIcon
+                            message={`${mismatchCount} 句对白的音色与角色绑定不一致`}
+                            description="这些句子用的 VoiceProfile 不是该角色在定妆阶段确认的那个 —— 跨镜音色不一致的直接证据，请回定妆阶段核对绑定或单句重录。"
+                        />
+                    ) : null}
+                    {unboundCount ? (
+                        <Alert
+                            type="warning"
+                            showIcon
+                            message={`${unboundCount} 句对白没有绑定 VoiceProfile`}
+                            description="没有 VoiceProfile 的句子音色不受控，容易出现同角色多音色。请先在角色定妆阶段锁声。"
+                        />
+                    ) : null}
+                    {overtimeCount ? (
+                        <Alert
+                            type="warning"
+                            showIcon
+                            message={`${overtimeCount} 句对白实测时长超出镜头计划时长`}
+                            description="可放慢语速后单句重录，或回到分镜调整该镜计划时长。"
+                        />
+                    ) : null}
+                </>
             }
         >
             <div className="mb-2 hidden gap-3 px-3.5 text-[11px] uppercase tracking-wider text-stone-400 md:grid md:grid-cols-[4rem_5rem_1fr_5.5rem_6.5rem_9rem]">
@@ -136,6 +175,7 @@ export function AudioPanel({ production }: { production: Production }) {
                         line={line}
                         shotLabel={shotIndexOf.has(line.shotId || "") ? `镜 ${shotIndexOf.get(line.shotId || "")}` : line.shotId || "—"}
                         characterName={characterNameOf.get(line.characterId || "") || line.characterId || "旁白"}
+                        voiceLabel={voiceProfileOf.get(line.characterId || "") || undefined}
                     />
                 ))}
             </div>
