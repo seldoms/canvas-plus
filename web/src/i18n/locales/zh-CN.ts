@@ -407,8 +407,8 @@ export default {
         },
     },
     navigation: {
-        projects: "项目画布",
-        canvas: "我的画布",
+        projects: "项目",
+        canvas: "画布",
         pipeline: "流水线",
         image: "AI 图片",
         video: "AI 视频",

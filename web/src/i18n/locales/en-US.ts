@@ -419,7 +419,7 @@ export default {
     },
     navigation: {
         projects: "Projects",
-        canvas: "My Canvases",
+        canvas: "Canvases",
         pipeline: "Pipeline",
         image: "AI Image",
         video: "AI Video",
