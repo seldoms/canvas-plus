@@ -27,7 +27,7 @@
 | 画布→项目 | M2 事实链：画布节点可绑定项目事实；项目能列出关联画布 | M2 已验收 |
 | 工作台→项目 | M3 互通：工作台产物可 `registerAssetRef` 进项目 | M3 已验收 |
 | 流水线 | 七段（剧本→分镜→服化道→定妆→关键帧→配音→成片）真实闭环已通 | M6 已验收（20.25s 成片） |
-| Agent | 51 工具：画布 25 + 工作台/素材 7 + 项目流水线 17 + 站点 2，三层视角齐 | 2026-10-07 落地 |
+| Agent | 53 工具：画布 25 + 工作台/素材 7 + 项目流水线 19 + 站点 2，三层视角齐 | 2026-10-08 更新 |
 
 ## 3. 断点清单（"没有机结合"的具体位置）
 
@@ -36,7 +36,7 @@
 3. **B3 资料包不是一等公民**：角色包/场景包/道具包目前散在 assetRefs 里，没有"这个项目的资料包"聚合视图，也没有"资料包 → 定妆/服化道阶段直接消费"的显式通道（定妆照项目沉淀的"一个 job 一个主体一个视角"铁律还没产品化）。
 4. **B4 归因不可见**：生图/生视频任务虽然能带 projectId/shotId，但工作台 UI 上没有"归属到项目/镜头"的选择器，归因靠流水线内部写，用户手工作品回不去项目。
 5. **B5 流水线↔画布双向不通**：分镜镜头不能"发到画布"做视觉排布，画布上的调整也不能回写镜头（patchShot 只有 API，没有画布入口）。
-6. **B6 插件分发是上游**：Agent 面板"安装插件"引导指向官方 `@basketikun/canvas-agent`，工友装到的是没有 51 工具、没有 pipeline 技能的旧版（详见 §5）。
+6. **B6 插件分发是上游**：Agent 面板"安装插件"引导指向官方 `@basketikun/canvas-agent`，工友装到的是没有 53 工具、没有 pipeline 技能的旧版（详见 §5）。
 
 ## 4. 目标形态：一条主线，三种进入方式
 
@@ -61,11 +61,11 @@
 
 ## 5. 插件分发：我们的改动怎么送达工友
 
-现状：面板"安装插件"引导 = 上游官方 npm 包（`@basketikun/canvas-agent@latest`）+ 官方 marketplace。我们的 51 工具、pipeline 技能、中文 instructions **只存在于服务器本地 fork**。
+现状：面板"安装插件"引导 = 上游官方 npm 包（`@basketikun/canvas-agent@latest`）+ 官方 marketplace。我们的 53 工具、pipeline 技能、中文 instructions **只存在于服务器本地 fork**。
 
 | 路径 | 做法 | 成本 | 适用 |
 |---|---|---|---|
-| **A. 站点内置 Agent**（已是我们的构建） | 工友直接用网页侧边栏 Agent——服务器 `canvas-agent.service` 跑的就是我们的 dist，51 工具天然生效，**无需安装任何东西** | 0 | 所有工友的日常使用 ✅ 主推荐 |
+| **A. 站点内置 Agent**（已是我们的构建） | 工友直接用网页侧边栏 Agent——服务器 `canvas-agent.service` 跑的就是我们的 dist，53 工具天然生效，**无需安装任何东西** | 0 | 所有工友的日常使用 ✅ 主推荐 |
 | **B. 内部 marketplace** | `codex plugin marketplace add /sobey/canvas-plus`（或挂内网 git 地址让工友 add URL）→ 装到的插件含 pipeline 技能与新引导 | 低：把仓库推到一个工友可访问的 git 地址 | 想在 Codex app/CLI 里用的人 |
 | **C. 私有 npm** | 起 Verdaccio，发 `@sobey/canvas-agent`，引导文案换成内网包名 | 中：多一个服务要养 | 长期、多人、多机 |
 | **D. 手动 MCP** | `codex mcp add infinite-canvas -- node <服务器>/canvas-agent/dist/index.js mcp` | 0 但不可复制 | 临时调试 |

@@ -1,5 +1,6 @@
 import { useParams } from "react-router-dom";
 
+import { AssetPackOverview } from "./components/asset-pack-overview";
 import { AssetRefPanel } from "./components/asset-ref-panel";
 import { ConsistencyPanel } from "./components/consistency-panel";
 import { WorkspaceLayout } from "./components/workspace-layout";
@@ -8,8 +9,8 @@ import { useProjectWorkspace } from "./hooks/use-project-workspace";
 import { getWorkspace } from "./workspaces";
 
 /**
- * 资产工作区（P0-a）：按 role 分组展示**项目 AssetRef（服务端上下文）**，可登记新引用、改绑定对象、切换采用的产物。
- * 每条带产物缩略图，点缩略图站内弹窗预览。
+ * 资产工作区（P0-a）：两层视图 —— **资料包总览（按剧本实体）** + **引用清单（按条目）**。
+ * 上层回答「还差谁」，下层回答「怎么改」；两者同一个数据源（服务端项目上下文的 assetRefs）。
  */
 export default function AssetsWorkspacePage() {
     const { projectId = "" } = useParams();
@@ -21,6 +22,7 @@ export default function AssetsWorkspacePage() {
         <WorkspaceLayout projectId={projectId} workspace={getWorkspace("assets")} {...workspace}>
             {/* 口径体检放最前：改资产之前先看清「现在改会踩到什么」。只读，不代劳修复。 */}
             <ConsistencyPanel projectId={projectId} />
+            <AssetPackOverview refs={assets.refs} script={workspace.context?.project.script} loading={workspace.loading} />
             <AssetRefPanel
                 refs={assets.refs}
                 script={workspace.context?.project.script}

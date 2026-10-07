@@ -58,6 +58,8 @@ export const toolNames = [
     "project_confirm_casting",
     "project_assemble",
     "project_adopt_candidate",
+    "project_asset_pack",
+    "project_attach_asset",
     "project_export_package",
 ] as const;
 export type ToolName = (typeof toolNames)[number];
@@ -161,6 +163,22 @@ export const toolInputSchemas = {
     project_assemble: z.object({ runId: z.string(), options: recordSchema.optional() }),
     /** 采用某个候选：jobId 传 null 表示撤销采用（与 M3 的 select 语义一致）。 */
     project_adopt_candidate: z.object({ projectId: z.string(), shotId: z.string(), slotId: z.string(), jobId: z.string().nullable() }),
+    project_asset_pack: z.object({ projectId: z.string(), role: z.string().optional() }),
+    project_attach_asset: z.object({
+        projectId: z.string(),
+        role: z.string(),
+        bindingId: z.string(),
+        artifactId: z.string(),
+        artifactIds: z.array(z.string()).optional(),
+        selectedArtifactId: z.string().nullable().optional(),
+        select: z.boolean().optional(),
+        sourceJobId: z.string().optional(),
+        stageId: z.string().optional(),
+        name: z.string().optional(),
+        episodeId: z.string().optional(),
+        sceneId: z.string().optional(),
+        shotId: z.string().optional(),
+    }),
     project_export_package: z.object({ runId: z.string(), episodeId: z.string().optional(), allowPartial: z.boolean().optional(), steps: z.array(z.string()).optional() }),
 } satisfies Record<ToolName, z.AnyZodObject>;
 
@@ -215,5 +233,7 @@ export const toolDescriptions: Record<ToolName, string> = {
     project_confirm_casting: "角色定妆确认（锁脸/锁声音的人工动作）：characterId + face/voice 确认位，可带 speaker/design/language/speed。确认后自动解除 keyframe/audio 的 casting 阻断。批量生产前必须全部确认。",
     project_assemble: "触发「片段 → 成片」合成（assembly 阶段的执行体）：按 assembly.order 拼接、逐段响度归一、接缝淡化。202 立刻返回，ffmpeg 是分钟级，用 project_run_status 等终态。合成完用 project_export_package 取交付包。",
     project_adopt_candidate: "采用/撤销采用某个槽位候选。传 jobId 采用（写入 slot.selected），传 **null 撤销采用**（幂等、不动候选数组）。这是「批量生成后由 Agent 逐个确认采用」的关键动作。",
+    project_asset_pack: "读取项目资料包现状：每个角色的/场景/道具绑定了哪些参考图、几个候选、有没有选定（status: adopted/candidates/missing）。想推进定妆或关键帧前先调它，missing 的实体就是必须先补的缺口。",
+    project_attach_asset: "把一个产物归入项目资料包，挂到某个实体上（role + bindingId），之后它就是该实体的参考图。artifactId 必须是网关产物地址 /api/artifacts/<jobId>/<file>。**幂等**：同 role+bindingId 重复调用只会追加候选，不会造出重复引用。",
     project_export_package: "导出完整交付包：自动粗剪成片 + clips/ 分集原片 + SRT + FCPXML + EDL + 清单 + 说明，打成 zip。**202 立刻返回**（真实 ffmpeg 是分钟级），完成后用 GET 同路径读 manifest。与浏览器端的「成片+字幕」下载不同，这个含剪辑工程文件，可直接导入剪映继续剪。",
 };

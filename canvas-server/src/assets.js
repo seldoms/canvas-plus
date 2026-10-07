@@ -61,6 +61,91 @@ export function createAssets(store) {
         return assetRef;
     }
 
+    /**
+     * 归入资料包（upsert 语义）——「把一个产物挂到某个实体上」的第一等入口。
+     *
+     * 为什么必须有它，而不是让调用方自己 create：
+     *   - `create` 每调一次就**新增一条** AssetRef。同一个角色归入三张图会得到三条同 bindingId 的引用，
+     *     而 reference-lock 的 findAssetRef 只取第一条 —— 这就是 asset-consistency.js 里
+     *     duplicate-binding 检查对应的那个坑（选参考图随机命中）。
+     *   - 换句话说，「归入」被写成了「新增」，幂等性被推给每个调用方（前端、Agent、流水线），
+     *     实际上谁都没做好。upsert 必须收在存储层，否则重复引用会持续产生。
+     *
+     * 语义：同 role + 同 bindingId 视为同一条引用，产物**追加**进 artifactIds（去重、保时序）；
+     * 没有已采用的产物时自动采用本次归入的那个（除非显式 select:false）。
+     * 不同 bindingId / 不同 role 一律新建 —— 不同实体就是不同条目，不合并。
+     */
+    function attach(projectId, input = {}) {
+        const { project, dir } = requireProject(projectId);
+        const body = input && typeof input === "object" ? input : {};
+        assertRole(body.role);
+        const role = String(body.role);
+        const bindingId = String(body.bindingId ?? "").trim();
+        if (!bindingId) throw badRequest("归入资料包缺少绑定锚点 bindingId");
+        const artifactId = String(body.artifactId ?? "").trim();
+        if (!artifactId) throw badRequest("归入资料包缺少产物 artifactId");
+
+        const incoming = [artifactId];
+        for (const extra of requireArray(body.artifactIds ?? [], "artifactIds")) {
+            const value = String(extra ?? "").trim();
+            if (value && !incoming.includes(value)) incoming.push(value);
+        }
+
+        // 归因元数据：让「这个产物是哪次生成、哪个阶段产出的」在资料包里查得到，
+        // 而不是只剩一条孤零零的 URL。这是「产物带归因即被项目看见」的落点。
+        const meta = body.metadata && typeof body.metadata === "object" ? { ...body.metadata } : {};
+        for (const key of ["sourceJobId", "stageId", "kind", "name"]) {
+            const value = String(body[key] ?? "").trim();
+            if (value) meta[key] = value;
+        }
+
+        const existing = refsOf(project).find((ref) => ref.role === role && String(ref.bindingId ?? "").trim() === bindingId);
+        if (existing) {
+            const merged = Array.isArray(existing.artifactIds) ? [...existing.artifactIds] : [];
+            let added = 0;
+            for (const id of incoming) {
+                if (merged.includes(id)) continue;
+                merged.push(id);
+                added += 1;
+            }
+            existing.artifactIds = merged;
+            if (!existing.metadata || typeof existing.metadata !== "object") existing.metadata = {};
+            // metadata 只补空、不覆盖：后一次归入不该把先前的来源信息抹掉。
+            for (const [key, value] of Object.entries(meta)) {
+                if (existing.metadata[key] === undefined || existing.metadata[key] === "") existing.metadata[key] = value;
+            }
+            for (const key of ["episodeId", "sceneId", "shotId"]) if (body[key]) existing[key] = String(body[key]);
+
+            if (body.select === false) {
+                // 显式不采用：只进候选池等人工选，不猜、不覆盖已有采用。
+            } else if (body.selectedArtifactId !== undefined && body.selectedArtifactId !== null && String(body.selectedArtifactId).trim()) {
+                const wanted = String(body.selectedArtifactId).trim();
+                if (!merged.includes(wanted)) throw badRequest(`selectedArtifactId 不在 artifactIds 内：${wanted}`);
+                existing.selectedArtifactId = wanted;
+            } else if (!existing.selectedArtifactId && incoming.length) {
+                existing.selectedArtifactId = incoming[0];
+            }
+            assertSelection(existing);
+            persistProject(dir, project);
+            return { assetRef: existing, created: false, addedArtifactIds: added };
+        }
+
+        const assetRef = {
+            id: `as_${ulid()}`,
+            projectId: project.id,
+            role,
+            bindingId,
+            artifactIds: incoming,
+            selectedArtifactId: null,
+            metadata: meta,
+        };
+        if (body.select !== false) assetRef.selectedArtifactId = incoming[0];
+        for (const key of ["episodeId", "sceneId", "shotId"]) if (body[key]) assetRef[key] = String(body[key]);
+        project.assetRefs = [...refsOf(project), assetRef];
+        persistProject(dir, project);
+        return { assetRef, created: true, addedArtifactIds: incoming.length };
+    }
+
     function update(projectId, assetRefId, patch = {}) {
         const { project, dir } = requireProject(projectId);
         const ref = requireRef(project, assetRefId);
@@ -205,5 +290,5 @@ export function createAssets(store) {
         return { assetRefs: rows, counts: { total: rows.length, byRole, byProject }, warnings };
     }
 
-    return { list, create, update, select, unlink, overview };
+    return { list, create, attach, update, select, unlink, overview };
 }

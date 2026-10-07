@@ -23,12 +23,12 @@
 
 **GitHub 发布决策（2026-10-07 用户拍板；配套项 2026-10-08 已执行）**：
 
-- 插件分发统一走 `codex plugin marketplace add <github 地址>`（skeleton §5 路径 B），工友装到的即含 51 工具说明与 pipeline 技能的版本；
+- 插件分发统一走 `codex plugin marketplace add <github 地址>`（skeleton §5 路径 B），工友装到的即含 53 工具说明与 pipeline 技能的版本；
 - ✅ 配套①：`agent-connect-view` 引导文案已改（新增「方式一：直接用侧边栏（推荐，无需安装）」，`plugin*` 不再指向上游 `npx @basketikun/canvas-agent`，命令与仓库地址集中为 `CANVAS_PLUS_REPO` / `AGENT_PACKAGE` 两个常量，发布时改这一处即可）；
 - ✅ 配套②：插件注册名已改 `canvas-plus`（`.codex-plugin`、`.zcode-plugin`、`.mcp.json`、`marketplace.json`、`.agents/plugins/marketplace.json` 五份同步），`canvas-agent` 包名改 `@sobey/canvas-agent`、版本 0.6.0 → 0.7.0，避免与官方插件在工友机器上互踩。目录名保留 `plugins/infinite-canvas`（改名会牵动路径引用，收益不大）；
 - ⬜ 待用户执行：① 创建 GitHub 仓库并推送；② 按发布出的真实地址把 `CANVAS_PLUS_REPO` 改成实值；③ 确认公开范围（仓库含内网地址/端口/主机别名）。若走 npm，还需在 CI 里把发布包名从 `@basketikun/canvas-agent` 改为 `@sobey/canvas-agent`（本仓库当前无发布该包的工作流，工作流在上游）。
 
-**本周已落地（10-06 晚 ~ 10-08）**：流水线新页 `/pipeline` 全量真实数据（七面板 + 条目级动作全真接口）；Agent `project_*` 7→17（总 51 工具，项目/阶段/条目三层视角）；agent-instructions / README / 插件 pipeline 技能三面文档同步；页面标注工具全局悬浮窗化；**P0 五步主线引导 + Agent 安装引导改向自研版**。
+**本周已落地（10-06 晚 ~ 10-08）**：流水线新页 `/pipeline` 全量真实数据（七面板 + 条目级动作全真接口）；Agent `project_*` 7→19（总 53 工具，项目/阶段/条目/资料包四层视角）；agent-instructions / README / 插件 pipeline 技能三面文档同步；页面标注工具全局悬浮窗化；**P0 五步主线引导 + Agent 安装引导改向自研版**。
 
 ---
 

@@ -1,4 +1,4 @@
-import { ArrowLeft, ArrowRight, BookOpen, ClipboardPaste, Download, FolderPlus, History, ImagePlus, ListPlus, PenLine, SlidersHorizontal, Sparkles, Trash2, Upload, XCircle } from "lucide-react";
+import { ArrowLeft, ArrowRight, BookOpen, ClipboardPaste, Download, FolderPlus, History, ImagePlus, ListPlus, PackagePlus, PenLine, SlidersHorizontal, Sparkles, Trash2, Upload, XCircle } from "lucide-react";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { App, Button, Drawer, Empty, Image, Input, Modal, Progress, Tag, Tooltip, Typography } from "antd";
 import localforage from "localforage";
@@ -10,6 +10,7 @@ import { ArtifactActions, type ArtifactTarget } from "@/components/artifact-acti
 import { ModelPicker } from "@/components/model-picker";
 import { PromptSelectDialog } from "@/components/prompts/prompt-select-dialog";
 import { SlotCandidateDialog } from "./slot-candidate-dialog";
+import { AttachAssetModal } from "@/components/attach-asset-modal";
 import { AssetPickerModal, type InsertAssetPayload } from "@/components/canvas/asset-picker-modal";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { formatTaskTime } from "@/lib/task-time";
@@ -116,11 +117,25 @@ function jobOutputToImage(job: ImageJob, output: ImageJobOutput): GeneratedImage
     };
 }
 
-/** 历史记录图片反查已完成的后端 Job（条目 id 形如 `<jobId>-<文件名>`）；仅 done 且有产物地址才可加入项目候选。 */
+/** 历史记录图片反查已完成的后端 Job（条目 id 形如`<jobId>-<文件名>`）；仅 done 且有产物地址才可加入项目候选。 */
 function candidateJobIdFor(image: GeneratedImage, jobs: Record<string, ImageJob>): string | null {
     if (!image.artifactUrl) return null;
     const jobId = jobIdsForItemIds([image.id], jobs)[0];
     return jobId && jobs[jobId]?.status === "done" ? jobId : null;
+}
+
+/**
+ * 产物绝对地址 → 网关相对路径（`/api/artifacts/...`）。
+ * AssetRef.artifactIds 里存的是相对路径（真实项目数据即如此），绝对地址存进去会让
+ * 换一个网关地址就全部失效，所以归入资料包前必须还原成相对路径。
+ * 认不出来（data:/blob: 等本地临时地址）返回空串 —— 这类产物根本不该进资料包。
+ */
+function gatewayArtifactPath(url: string | undefined): string {
+    if (!url) return "";
+    if (/^(data:|blob:)/i.test(url)) return "";
+    const marker = "/api/artifacts/";
+    const at = url.indexOf(marker);
+    return at >= 0 ? url.slice(at) : url;
 }
 
 /** 队列里一条任务的缩略图（从后端 job 产物取，最多 4 张）；生图专有，交给共享队列面板渲染。 */
@@ -225,6 +240,9 @@ export default function ImagePage() {
     const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
     // 「加入项目候选…」对话框当前携带的后端 jobId（M3）；null = 关闭。
     const [candidateJobId, setCandidateJobId] = useState<string | null>(null);
+    // 「归入项目资料包」当前携带的产物（null = 关闭）。产物地址必须是本网关的 /api/artifacts/…，
+    // 本地副本地址归档不了，跨进程也取不到。
+    const [attachTarget, setAttachTarget] = useState<{ url: string; jobId?: string | null; name?: string } | null>(null);
     const [isReferenceDragActive, setIsReferenceDragActive] = useState(false);
     const [autoRunToken, setAutoRunToken] = useState(0);
     // 生图模型的官方规格清单（后端 /api/providers 下发，前端不硬编码）——「选模型 → 再选规格」。
@@ -479,6 +497,19 @@ export default function ImagePage() {
             metadata: { source: "image-page", prompt },
         });
         message.success(t("common.addedToAssets"));
+    };
+
+    /**
+     * 打开「归入项目资料包」：先校验产物是不是网关产物（本地临时地址存进AssetRef 后无法回看），
+     * 不合格就直接提示，不让用户填完表才发现白填。
+     */
+    const startAttachPack = (image: GeneratedImage, index: number) => {
+        const path = gatewayArtifactPath(image.artifactUrl);
+        if (!path) {
+            message.warning(t("attachAsset.localOnly"));
+            return;
+        }
+        setAttachTarget({ url: path, jobId: candidateJobIdFor(image, jobs), name: t("imageWorkbench.resultTitle", { count: index + 1 }) });
     };
 
     const insertPickedAsset = async (payload: InsertAssetPayload) => {
@@ -904,6 +935,7 @@ export default function ImagePage() {
                                     onDownload={downloadImage}
                                     onSaveAsset={saveResultToAssets}
                                     onAddCandidate={setCandidateJobId}
+                                    onAttachPack={startAttachPack}
                                 />
                             </div>
                         ) : detailLog ? (
@@ -922,7 +954,7 @@ export default function ImagePage() {
                                     <Image.PreviewGroup>
                                         <div className="grid gap-4 sm:grid-cols-2 2xl:grid-cols-3">
                                             {detailLog.images.map((image, index) => (
-                                                <ResultImageCard key={image.id} image={image} index={index} candidateJobId={candidateJobIdFor(image, jobs)} onEdit={addResultToReferences} onDownload={downloadImage} onSaveAsset={saveResultToAssets} onAddCandidate={setCandidateJobId} />
+                                                <ResultImageCard key={image.id} image={image} index={index} candidateJobId={candidateJobIdFor(image, jobs)} onEdit={addResultToReferences} onDownload={downloadImage} onSaveAsset={saveResultToAssets} onAddCandidate={setCandidateJobId} onAttachPack={startAttachPack} />
                                             ))}
                                         </div>
                                     </Image.PreviewGroup>
@@ -970,6 +1002,7 @@ export default function ImagePage() {
             </Drawer>
             <PromptSelectDialog open={promptDialogOpen} onOpenChange={setPromptDialogOpen} onSelect={setPrompt} />
             <SlotCandidateDialog open={candidateJobId !== null} jobId={candidateJobId} onClose={() => setCandidateJobId(null)} />
+            <AttachAssetModal open={attachTarget !== null} artifact={attachTarget} onClose={() => setAttachTarget(null)} />
             <AssetPickerModal open={assetPickerOpen} defaultTab="my-assets" onInsert={(payload) => void insertPickedAsset(payload)} onClose={() => setAssetPickerOpen(false)} />
             <Modal title={t("workbench.deleteLogs")} open={deleteConfirmOpen} onCancel={() => setDeleteConfirmOpen(false)} onOk={deleteSelectedLogs} okText={t("common.delete")} okButtonProps={{ danger: true }} cancelText={t("common.cancel")}>
                 {t("workbench.deleteLogsConfirm", { count: selectedLogIds.length })}
@@ -1017,6 +1050,7 @@ function ResultImageCard({
     onDownload,
     onSaveAsset,
     onAddCandidate,
+    onAttachPack,
 }: {
     image: GeneratedImage;
     index: number;
@@ -1028,6 +1062,8 @@ function ResultImageCard({
     onDownload: (image: GeneratedImage, index: number) => void;
     onSaveAsset: (image: GeneratedImage, index: number) => void;
     onAddCandidate: (jobId: string) => void;
+    /** 归入项目资料包（挂到项目的角色/场景/道具上，成为后续生成的参考图）。 */
+    onAttachPack?: (image: GeneratedImage, index: number) => void;
 }) {
     const { t } = useTranslation();
     useSyncExternalStore(subscribeImagePreviews, getImagePreviewRevision);
@@ -1083,6 +1119,15 @@ function ResultImageCard({
                             {t("imageWorkbench.addCandidate")}
                         </Button>
                     </Tooltip>
+                    {onAttachPack ? (
+                        // 「归入资料包」与「加入资产」是两件事：后者进本地素材库，前者进项目事实层，
+                        // 会成为后续关键帧/合成的参考图。分开给按钮，避免用户以为存了素材就等于锁了角色。
+                        <Tooltip title={t("attachAsset.buttonHint")}>
+                            <Button className={RESULT_ACTION_BUTTON_CLASS} size="small" disabled={unavailable} icon={<PackagePlus className="size-3.5" />} onClick={() => onAttachPack(image, index)}>
+                                {t("attachAsset.button")}
+                            </Button>
+                        </Tooltip>
+                    ) : null}
                 </div>
                 {/* 生产动线只给「归档」（可逆）；彻底删除只在「我的资产」页。归档优先认该次任务的产物地址。 */}
                 {unavailable ? null : (
@@ -1104,6 +1149,7 @@ function TaskGroup({
     onDownload,
     onSaveAsset,
     onAddCandidate,
+    onAttachPack,
 }: {
     task: Task;
     jobs: ImageJob[];
@@ -1115,6 +1161,8 @@ function TaskGroup({
     onDownload: (image: GeneratedImage, index: number) => void;
     onSaveAsset: (image: GeneratedImage, index: number) => void;
     onAddCandidate: (jobId: string) => void;
+    /** 透传给每张结果卡；不传则该入口不渲染（视频页复用同一张卡）。 */
+    onAttachPack?: (image: GeneratedImage, index: number) => void;
 }) {
     const { t } = useTranslation();
     const jobById = new Map(jobs.map((job) => [job.id, job] as const));
@@ -1138,7 +1186,7 @@ function TaskGroup({
             return job.outputs
                 .filter((output) => !output.type || output.type === "image")
                 .map((output, outputIndex) => (
-                    <ResultImageCard key={`${id}-${output.filename || outputIndex}`} image={jobOutputToImage(job, output)} index={jobIndex} archiveTargets={archiveTargetsFromJobs([job])} candidateJobId={job.id} onEdit={onEdit} onDownload={onDownload} onSaveAsset={onSaveAsset} onAddCandidate={onAddCandidate} />
+                    <ResultImageCard key={`${id}-${output.filename || outputIndex}`} image={jobOutputToImage(job, output)} index={jobIndex} archiveTargets={archiveTargetsFromJobs([job])} candidateJobId={job.id} onEdit={onEdit} onDownload={onDownload} onSaveAsset={onSaveAsset} onAddCandidate={onAddCandidate} onAttachPack={onAttachPack} />
                 ));
         }
         if (job?.status === "canceled") {

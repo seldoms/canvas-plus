@@ -317,6 +317,45 @@ export async function createAssetRef(projectId: string, input: AssetRefCreateInp
     return unwrapEntity<AssetRef>(data, "assetRef");
 }
 
+/** POST /api/projects/:id/asset-refs/attach 请求体：artifactId + role + bindingId 必填。 */
+export type AssetRefAttachInput = {
+    role: AssetRole;
+    bindingId: string;
+    /** 主产物：本网关的产物地址（/api/artifacts/<jobId>/<file>）。 */
+    artifactId: string;
+    /** 附加候选（如三视图的其他视角）；与 artifactId 一起去重合并。 */
+    artifactIds?: ArtifactId[];
+    /** 显式指定采用哪张；必须在最终候选内，否则后端 400。 */
+    selectedArtifactId?: ArtifactId | null;
+    /** false = 只进候选池等人工选（默认 true，即首次归入自动采用）。 */
+    select?: boolean;
+    /** 归因：产物来自哪个 job/阶段，服务端会并进 metadata。 */
+    sourceJobId?: string;
+    stageId?: string;
+    name?: string;
+    episodeId?: EpisodeId;
+    sceneId?: SceneId;
+    shotId?: ShotId;
+};
+
+/** attach 的响应：assetRef 是最终那条引用，created=false 表示命中已有引用（幂等追加）。 */
+export type AssetRefAttachResult = { assetRef: AssetRef; created: boolean; addedArtifactIds: number };
+
+/**
+ * 归入项目资料包（upsert 语义）：同 role+bindingId 命中已有引用就追加候选，不新建重复引用。
+ * 生图/生视频工作台与 Agent 统一走这里 —— 「归入」必须幂等，否则重复引用会让参考图随机命中。
+ */
+export async function attachAssetRef(projectId: string, input: AssetRefAttachInput): Promise<AssetRefAttachResult> {
+    const data = await projectRequest<{ assetRef?: AssetRef; created?: boolean; addedArtifactIds?: number } | null>({
+        method: "post",
+        url: `/api/projects/${encodeURIComponent(projectId)}/asset-refs/attach`,
+        data: input,
+    });
+    const assetRef = data?.assetRef;
+    if (!assetRef) throw new Error("归入资料包失败：网关未返回 assetRef");
+    return { assetRef, created: Boolean(data?.created), addedArtifactIds: Number(data?.addedArtifactIds) || 0 };
+}
+
 export async function updateAssetRef(projectId: string, refId: string, patch: AssetRefPatchInput) {
     const data = await projectRequest<unknown>({
         method: "patch",

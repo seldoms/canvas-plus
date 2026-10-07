@@ -48,8 +48,8 @@ function lastRequest() {
 }
 
 describe("project_* 工具", () => {
-    it("十七个工具都在 PROJECT_TOOL_NAMES 里且能被识别", () => {
-        assert.equal(PROJECT_TOOL_NAMES.length, 17);
+    it("十九个工具都在 PROJECT_TOOL_NAMES 里且能被识别", () => {
+        assert.equal(PROJECT_TOOL_NAMES.length, 19);
         for (const name of PROJECT_TOOL_NAMES) assert.equal(isProjectTool(name), true);
         assert.equal(isProjectTool("canvas_get_state"), false, "画布工具不该被认成 project 工具");
     });
@@ -186,6 +186,65 @@ describe("project_* 工具", () => {
         const result = (await callProjectTool("project_run_qc", { runId: "run_1" })) as Record<string, unknown>;
         assert.ok(lastRequest().url.endsWith("/qc"), lastRequest().url);
         assert.equal((result.report as Record<string, unknown>).needsReview, true);
+    });
+
+    it("project_asset_pack 把 AssetRef 归成三态，并裁掉 artifactIds 全量与 metadata 全文", async () => {
+        respond = (_req, res) =>
+            res.writeHead(200, { "Content-Type": "application/json" }).end(
+                JSON.stringify({
+                    assetRefs: [
+                        { id: "as_1", role: "character", bindingId: "c1", artifactIds: ["/api/a1", "/api/a2"], selectedArtifactId: "/api/a2", metadata: { name: "阿海", stageId: "casting", sourceJobId: "run-x", prompt: "很长".repeat(200) } },
+                        { id: "as_2", role: "character", bindingId: "c2", artifactIds: ["/api/b1"], selectedArtifactId: null, metadata: { name: "小满" } },
+                        { id: "as_3", role: "character", bindingId: "c3", artifactIds: [], selectedArtifactId: null, metadata: {} },
+                    ],
+                }),
+            );
+        const result = (await callProjectTool("project_asset_pack", { projectId: "prj_1" })) as { packs: Array<Record<string, unknown>> };
+        assert.equal(lastRequest().url, "/api/projects/prj_1/asset-refs");
+        assert.equal(result.packs.length, 3);
+        assert.equal(result.packs[0].status, "adopted");
+        assert.equal(result.packs[0].candidateCount, 2);
+        assert.equal(result.packs[0].stageId, "casting", "归因必须带回来，否则查不清这张图哪来的");
+        assert.equal(result.packs[0].sourceJobId, "run-x");
+        assert.equal(result.packs[1].status, "candidates");
+        assert.equal(result.packs[2].status, "missing");
+        // 三态语义与前端 asset-ref-model 一致：selected 才算 adopted。
+        assert.equal("artifactIds" in result.packs[0], false, "不该把候选全量塞进上下文");
+        assert.equal("metadata" in result.packs[0], false, "不该把 metadata 全文塞进上下文");
+    });
+
+    it("project_asset_pack 带 role 时走查询参数过滤", async () => {
+        respond = (_req, res) => res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ assetRefs: [] }));
+        await callProjectTool("project_asset_pack", { projectId: "prj_1", role: "scene" });
+        assert.equal(lastRequest().url, "/api/projects/prj_1/asset-refs?role=scene");
+    });
+
+    it("project_attach_asset 打 POST /asset-refs/attach 并回传幂等结果", async () => {
+        respond = (_req, res) =>
+            res.writeHead(200, { "Content-Type": "application/json" }).end(
+                JSON.stringify({ assetRef: { id: "as_1", role: "character", bindingId: "c1", artifactIds: ["/api/a1", "/api/a2"], selectedArtifactId: "/api/a1" }, created: false, addedArtifactIds: 1 }),
+            );
+        const result = (await callProjectTool("project_attach_asset", { projectId: "prj_1", role: "character", bindingId: "c1", artifactId: "/api/a2", sourceJobId: "run-x", stageId: "casting" })) as Record<string, unknown>;
+        assert.equal(lastRequest().method, "POST");
+        assert.equal(lastRequest().url, "/api/projects/prj_1/asset-refs/attach");
+        assert.deepEqual(lastRequest().body, { role: "character", bindingId: "c1", artifactId: "/api/a2", sourceJobId: "run-x", stageId: "casting" });
+        // created=false 必须原样带回：Agent 要靠它区分「新建条目」与「追加候选」。
+        assert.equal(result.created, false);
+        assert.equal(result.addedArtifactIds, 1);
+        assert.equal(result.candidateCount, 2);
+        assert.equal(result.refId, "as_1");
+    });
+
+    it("project_attach_asset 缺 artifactId 时本地就报错，不去打网关", async () => {
+        const before = recorded.length;
+        await assert.rejects(() => callProjectTool("project_attach_asset", { projectId: "prj_1", role: "character", bindingId: "c1" }), /缺少 artifactId/);
+        assert.equal(recorded.length, before, "入参校验不过就不该产生 HTTP 请求");
+    });
+
+    it("project_attach_asset 的 select:false 原样透传（只进候选池）", async () => {
+        respond = (_req, res) => res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ assetRef: { id: "as_1", artifactIds: ["/api/a1"], selectedArtifactId: null }, created: true, addedArtifactIds: 1 }));
+        await callProjectTool("project_attach_asset", { projectId: "prj_1", role: "prop", bindingId: "p1", artifactId: "/api/a1", select: false });
+        assert.equal((lastRequest().body as Record<string, unknown>).select, false);
     });
 
     it("project_stage_items 从整个 run 里只抽出镜头清单（不带 novel）", async () => {

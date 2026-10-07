@@ -14,6 +14,7 @@ description: 驱动 Infinite Canvas 服务端短剧项目与七段流水线（�
 ## 工作流
 
 1. **了解项目**：`project_context`（基本信息/plan/集进度/runIds）→ `project_gates`（七段门禁：什么能跑、被哪个上游挡住）。
+   - 独立生成的素材（生图工作台产物、外部图）用 `project_attach_asset` 归入，产物一旦带上归因就被项目看见，不必先建 run。
 2. **找执行记录**：`project_list_runs`（可按 projectId 过滤，只回裁剪后的阶段状态，不含剧本文本）。
 3. **驱动阶段**：`project_run_stage`（202 异步，真实生成在后台）/ `project_cancel_stage` / `project_retry_failed`（只补跑失败条目，成功的不重跑）/ `project_update_stage_input`（改模型、参数等输入，**改完必须再 `project_run_stage` 才生效**）。
 4. **等进度**：只轮询 `project_run_status`（轻量 progress.json：done/total/ETA/inflight）。不要用 `project_stage_items` 当轮询器——它会拉整个 run。
@@ -22,6 +23,8 @@ description: 驱动 Infinite Canvas 服务端短剧项目与七段流水线（�
    - `project_regenerate_item`：单条重出（itemId 必填；`promptOverride` 人工改词只覆盖提示词，尺寸/参考图/采样参数仍走规则表，不破坏身份锁定；新候选自动选中）；
    - `project_confirm_casting`：锁脸/锁声（face/voice 至少确认一个；确认后自动解除 keyframe/audio 的 casting 阻断，批量生产前必须全部确认）；
    - `project_adopt_candidate`：采用/撤销候选（jobId 传 null 撤销）。
+   - `project_asset_pack`：查资料包现状（每个角色/场景/道具锁了几张参考图、status 是 adopted/candidates/missing）。**推进定妆或关键帧前先调它**，missing 的实体就是要先补的缺口。
+   - `project_attach_asset`：把产物归入资料包挂到实体上（artifactId 用网关产物地址 `/api/artifacts/<jobId>/<file>`，不是本地 data:/blob: 地址）。**幂等** —— 同 role+bindingId 重复调用只追加候选，created=false 就是命中已有引用，不会造出重复引用导致选参考图随机命中。
 6. **成片交付**：`project_assemble` 合成（ffmpeg 分钟级）→ `project_run_status` 等终态 → `project_export_package` 取交付包（zip：成片 + 分集 clips + SRT + FCPXML + EDL，可直接导入剪映继续剪）。
 7. **质检**：`project_run_qc` 读报告。**没报警不等于没问题**——指标接近门槛（如接缝响度差）时主动提醒用户人工复核。
 

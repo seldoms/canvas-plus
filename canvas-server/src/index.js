@@ -1522,6 +1522,12 @@ router.post("/api/projects/:id/asset-refs", routeHandler(async (req, res, { para
     sendJson(res, 201, { assetRef: projects.assets.create(params.id, await readJson(req)) });
 }));
 
+// 归入资料包（upsert）：生图/生视频工作台、Agent、画布把产物挂到项目实体上的统一入口。
+// 与上面 POST 的区别是**幂等**：同 role+bindingId 命中已有引用就追加候选，而不是新增一条重复引用。
+router.post("/api/projects/:id/asset-refs/attach", routeHandler(async (req, res, { params }) => {
+    sendJson(res, 200, projects.assets.attach(params.id, await readJson(req)));
+}));
+
 // 改引用：前端走 PATCH，契约同时保留 POST；同一条路径共用同一个处理器。
 const updateAssetRef = routeHandler(async (req, res, { params }) => {
     sendJson(res, 200, { assetRef: projects.assets.update(params.id, params.refId, await readJson(req)) });

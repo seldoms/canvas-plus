@@ -119,7 +119,7 @@ args = ["-y", "@basketikun/canvas-agent@latest", "mcp"]
 default_tools_approval_mode = "approve"
 ```
 
-可用工具（51 个，按域分组）：
+可用工具（53 个，按域分组）：
 
 - **站点与画布**（需网页已连接）：`site_navigate`、`canvas_get_state`、`canvas_get_selection`、`canvas_export_snapshot`、`canvas_apply_ops`、`canvas_create_node`、`canvas_create_attachment_nodes`、`canvas_create_text_node`、`canvas_create_text_nodes`、`canvas_create_config_node`、`canvas_create_image_prompt_flow`、`canvas_create_generation_flow`、`canvas_generate_text`、`canvas_generate_image`、`canvas_generate_video`、`canvas_generate_audio`、`canvas_update_node`、`canvas_update_node_text`、`canvas_move_nodes`、`canvas_resize_node`、`canvas_delete_nodes`、`canvas_connect_nodes`、`canvas_select_nodes`、`canvas_set_viewport`、`canvas_run_generation`、`generation_get_status`
 - **工作台与素材**：`workbench_image_get_config`、`workbench_image_generate`、`workbench_video_get_config`、`workbench_video_generate`、`prompts_search`、`assets_list`、`assets_add`
@@ -127,6 +127,7 @@ default_tools_approval_mode = "approve"
   - 项目视角：`project_context`、`project_gates`、`project_list_runs`、`project_run_status`、`project_run_qc`、`project_stage_items`、`project_list_jobs`
   - 阶段驱动：`project_run_stage`、`project_cancel_stage`、`project_retry_failed`、`project_update_stage_input`、`project_assemble`
   - 条目精调：`project_regenerate_item`、`project_patch_shot`、`project_confirm_casting`、`project_adopt_candidate`、`project_export_package`
+  - 资料包：`project_asset_pack`（查谁还没锁参考图）、`project_attach_asset`（把产物归入角色/场景/道具，幂等追加不产生重复引用）
 
 `project_*` 工具默认连接本机 `http://127.0.0.1:8788` 的 canvas-server 网关，可用环境变量 `CANVAS_GATEWAY_URL` 覆盖；网关不可达时工具会显式报错，而不是静默失败。
 

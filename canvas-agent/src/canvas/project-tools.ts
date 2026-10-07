@@ -370,6 +370,67 @@ export async function callProjectTool(name: ToolName, input: Json) {
             const payload = await gateway(`/api/pipeline/runs/${encodeURIComponent(runId)}/steps/assembly/export`, { method: "POST", body });
             return { runId, inflight: payload.inflight === true, packageId: payload.packageId ?? null };
         }
+        case "project_asset_pack": {
+            const projectId = String(input.projectId || "").trim();
+            if (!projectId) throw new Error("缺少 projectId");
+            const query = input.role ? `?role=${encodeURIComponent(String(input.role))}` : "";
+            const payload = await gateway(`/api/projects/${encodeURIComponent(projectId)}/asset-refs${query}`);
+            const refs = Array.isArray(payload.assetRefs) ? payload.assetRefs : [];
+            // 只回「够判断下一步」的三件事：谁还没锁参考图、有几个候选、采用的是哪张。
+            // 不回 artifactIds 全量与 metadata 全文 —— 几十条引用就能把上下文撑爆。
+            return {
+                projectId,
+                packs: refs.map((item) => {
+                    const ref = item as Json;
+                    const ids = Array.isArray(ref.artifactIds) ? (ref.artifactIds as Json[]).map(String) : [];
+                    const selected = ref.selectedArtifactId ? String(ref.selectedArtifactId) : "";
+                    const meta = (ref.metadata ?? {}) as Json;
+                    return {
+                        refId: ref.id ?? null,
+                        role: ref.role ?? null,
+                        bindingId: ref.bindingId ?? null,
+                        name: (meta.name as string) ?? ref.bindingId ?? null,
+                        stageId: (meta.stageId as string) ?? null,
+                        sourceJobId: (meta.sourceJobId as string) ?? null,
+                        candidateCount: ids.length,
+                        selectedArtifactId: selected || null,
+                        // 与前端 asset-ref-model 的三态一致：selected 才算锁定。
+                        status: selected ? "adopted" : ids.length ? "candidates" : "missing",
+                    };
+                }),
+            };
+        }
+        case "project_attach_asset": {
+            const projectId = String(input.projectId || "").trim();
+            const role = String(input.role || "").trim();
+            const bindingId = String(input.bindingId || "").trim();
+            const artifactId = String(input.artifactId || "").trim();
+            if (!projectId) throw new Error("缺少 projectId");
+            if (!role) throw new Error("缺少 role（character/scene/prop/keyframe/clip）");
+            if (!bindingId) throw new Error("缺少 bindingId（先用 project_asset_pack 查现有绑定；剧本实体用其 id）");
+            if (!artifactId) throw new Error("缺少 artifactId（形如 /api/artifacts/<jobId>/<file>，不是本地 data:/blob: 地址）");
+            const body: Json = { role, bindingId, artifactId };
+            if (input.artifactIds !== undefined) body.artifactIds = input.artifactIds;
+            if (input.selectedArtifactId !== undefined) body.selectedArtifactId = input.selectedArtifactId;
+            if (typeof input.select === "boolean") body.select = input.select;
+            for (const key of ["sourceJobId", "stageId", "name"] as const) if (input[key]) body[key] = String(input[key]);
+            if (input.episodeId) body.episodeId = String(input.episodeId);
+            if (input.sceneId) body.sceneId = String(input.sceneId);
+            if (input.shotId) body.shotId = String(input.shotId);
+            const payload = await gateway(`/api/projects/${encodeURIComponent(projectId)}/asset-refs/attach`, { method: "POST", body });
+            const ref = (payload.assetRef ?? {}) as Json;
+            return {
+                projectId,
+                refId: ref.id ?? null,
+                role,
+                bindingId,
+                // created=false 表示命中已有引用并追加了候选 —— 这正是期望的幂等行为。
+                created: payload.created === true,
+                addedArtifactIds: Number(payload.addedArtifactIds) || 0,
+                candidateCount: Array.isArray(ref.artifactIds) ? ref.artifactIds.length : 0,
+                selectedArtifactId: ref.selectedArtifactId ?? null,
+            };
+        }
         default:
             throw new Error(`project_* 工具未实现：${String(name)}`);
     }
@@ -392,6 +453,8 @@ export const PROJECT_TOOL_NAMES: readonly ToolName[] = [
     "project_confirm_casting",
     "project_assemble",
     "project_adopt_candidate",
+    "project_asset_pack",
+    "project_attach_asset",
     "project_export_package",
 ];
 
