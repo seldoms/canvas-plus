@@ -45,6 +45,25 @@ process.env.CANVAS_SERVER_LLM_URL = llmUrl;
 // 在本隔离环境里未注册该渠道，脚本阶段会因「未注册的外部 LLM 渠道」直接失败。
 process.env.CANVAS_SERVER_LLM_MODEL = "test-model";
 process.env.CANVAS_SERVER_COMFY_URL = "http://127.0.0.1:9"; // 不可达：任何生成任务都会立刻失败，绝不真跑
+
+// 显式指定配置文件，**不让它读 canvas-server/config.json**（那是被 gitignore 的开发机真配置，
+// 里面有真实 API key 与内网地址，绝不能提交）。
+// 不隔离的后果很具体：本文件要断言「16:9 取 qwen_image_2_1 官方档 2752x1536」，
+// 依赖 config.pipeline.imageTemplate=img_qwen21_t2i；开发机上碰巧配了它所以全绿，
+// 干净 clone / CI 上落到config.js 默认值 img_zimage_artistic → 断言拿到 1024 !== 2752 失败。
+// 2026-10-08 首次上 CI 才暴露这条，本地 1120 全绿把它掩盖了。
+// 注意：pipeline.imageTemplate **没有**对应环境变量（config.js 只给 llm/comfy/generation/runninghub 暴露了），
+// 所以只能靠 CANVAS_SERVER_CONFIG 换整份配置文件。
+const configFile = join(root, "config.json");
+writeFileSync(
+    configFile,
+    JSON.stringify({
+        llm: { baseUrl: llmUrl, apiKey: "test-key", defaultModel: "test-model" },
+        comfy: { baseUrl: "http://127.0.0.1:9" },
+        pipeline: { imageTemplate: "img_qwen21_t2i" },
+    }),
+);
+process.env.CANVAS_SERVER_CONFIG = configFile;
 const mod = await import("../src/index.js");
 await new Promise((resolve) => mod.server.listen(0, "127.0.0.1", resolve));
 const base = `http://127.0.0.1:${mod.server.address().port}`;
@@ -55,7 +74,7 @@ after(async () => {
         llmServer.closeAllConnections?.();
         llmServer.close(resolve);
     });
-    for (const key of ["CANVAS_SERVER_DATA_DIR", "CANVAS_SERVER_SKILLS_DIR", "CANVAS_SERVER_LLM_URL", "CANVAS_SERVER_LLM_MODEL", "CANVAS_SERVER_COMFY_URL"]) delete process.env[key];
+    for (const key of ["CANVAS_SERVER_DATA_DIR", "CANVAS_SERVER_SKILLS_DIR", "CANVAS_SERVER_LLM_URL", "CANVAS_SERVER_LLM_MODEL", "CANVAS_SERVER_COMFY_URL", "CANVAS_SERVER_CONFIG"]) delete process.env[key];
     rmSync(root, { recursive: true, force: true });
 });
 

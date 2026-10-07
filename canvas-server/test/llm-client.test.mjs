@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import { rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 
 import { callLlm, llmCall, LlmError, findProvider, DEFAULT_MODEL } from "../src/llm-client.js";
@@ -183,6 +186,20 @@ test("渠道缺失：未知 provider 名 → 抛 llm_unavailable", async () => {
 });
 
 test("findProvider：默认渠道 deepseek 有 baseUrl", () => {
-    const found = findProvider("deepseek");
-    assert.ok(found && /^https?:\/\//.test(found.baseUrl), "渠道表应能查到 deepseek 的 baseUrl");
+    //必须注入 file，不能让它去读默认路径。
+    // 默认路径是 data/llm-providers.json —— 那是**开发机的机器配置**（被 gitignore）。
+    // 于是：开发机上这条永远绿（文件在），干净 clone / CI 上必红（文件不在）。
+    // 2026-10-08 首次上CI 才暴露：本地 1120 全绿，干净 clone 里这条失败。
+    // 测试要验的是「按 name 能查到渠道」这个行为，不是「某台机器上配了 deepseek」。
+    const providersFile = join(tmpdir(), `llm-providers-${process.pid}.json`);
+    writeFileSync(providersFile, JSON.stringify({ providers: [{ name: "deepseek", baseUrl: "https://api.deepseek.example/", apiKey: "sk-test-not-real" }] }));
+    try {
+        const found = findProvider("deepseek", { file: providersFile });
+        //顺带锁住 baseUrl 的规整行为：结尾斜杠要去掉，避免拼出 //v1。
+        assert.equal(found?.baseUrl, "https://api.deepseek.example", "baseUrl 尾斜杠被规整掉");
+        assert.ok(found && /^https?:\/\//.test(found.baseUrl), "渠道表应能查到 deepseek 的 baseUrl");
+        assert.equal(findProvider("no-such-channel-xyz", { file: providersFile }), null, "查不到返回 null，不抛");
+    } finally {
+        rmSync(providersFile, { force: true });
+    }
 });

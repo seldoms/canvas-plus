@@ -1,0 +1,83 @@
+name: Tests
+
+# 这道闸是补2026-10-08 三个 P0 的漏：三个 P0（视频工作台全 400、画布 70 个空白节点、
+# 回写面板输入被覆盖）都是在本地全绿的状态下写完并合入的 —— 因为 4 个已有 workflow
+# 一个测试都不跑，只build 和 publish。**测试不被CI 执行，等于没有测试。**
+#
+# 三个包的 runner 各不相同，不要试图统一：
+#   canvas-server → node --test（零外部依赖，全是 node: 内置模块，不需要 npm install）
+#   canvas-agent  → tsx --test（需要 npm ci）
+#   web           → bun test（**不是 vitest**：这些 suite 用 bun:test 导入，vitest 跑不了）
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# 同一分支的新 push 会取消上一个未跑完的 run（省 CI 时间；并发 PR 之间不取消）。
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  canvas-server:
+    name: canvas-server (node --test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # 不 npm install：后端测试只 import node: 内置模块，装依赖只会拖慢并可能装崩。
+      # 若哪天测试真的引入了外部依赖，这里必须改成 npm ci --prefix canvas-server。
+      - name: Run backend tests
+        working-directory: canvas-server
+        run: node --test test/*.test.mjs
+
+  canvas-agent:
+    name: canvas-agent (tsx --test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install
+        working-directory: canvas-agent
+        run: npm ci --no-audit --no-fund
+      - name: Typecheck
+        working-directory: canvas-agent
+        run: npx tsc -p tsconfig.json --noEmit
+      - name: Run tests
+        working-directory: canvas-agent
+        run: npm test
+
+  web:
+    name: web (bun test + tsc)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      # 刻意**不用** --frozen-lockfile：web/bun.lock 里每个 tarball 都写死了
+      # registry.npmmirror.com（国内镜像）。GitHub Actions 的 runner 在境外，
+      # 用它装依赖会极慢甚至超时 —— CI 变成"能不能跑"取决于网络位置。
+      # 代价是不锁依赖版本；本项目前端依赖树稳定，且 vite build 会兜住版本不兼容。
+      # 若将来要锁：先把 bun.lock 里的 registry 统一改回 registry.npmjs.org。
+      - name: Install
+        working-directory: web
+        run: bun install
+      # tsc 必须在 build 之前跑：类型错会在 build 阶段才炸，但报错信息难读；
+      # 而 2026-10-08 那次「测试数据形状错、TypeScript 因索引签名不报错」就是靠 tsc 也拦不住的
+      # —— 所以这里两者都跑，不是二选一。
+      - name: Typecheck
+        working-directory: web
+        run: npx tsc --noEmit
+      - name: Run tests
+        working-directory: web
+        run: bun test
+      - name: Build
+        working-directory: web
+        run: npx vite build
