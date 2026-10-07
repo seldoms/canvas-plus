@@ -1,5 +1,5 @@
-import { Button, Select, Tag, Tooltip } from "antd";
-import { BookOpen, History, PanelLeftClose, PanelLeftOpen, Plus, ShieldCheck } from "lucide-react";
+import { Button, Select, Tooltip } from "antd";
+import { BookOpen, PanelLeftClose, PanelLeftOpen, Plus } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
@@ -175,17 +175,9 @@ export function PipelineSidebar({
                 )}
             </div>
 
-            {/* 底部：QC / 历史 / 接线进度标记 */}
-            <div className="mt-auto flex items-center gap-1.5 border-t border-stone-200/60 px-3 py-2.5 dark:border-stone-800/60">
-                <Tooltip title="结构、引用、对白时序检查已通过；声纹与嘴型需人工复核（不做越界承诺）">
-                    <Tag icon={<ShieldCheck className="size-3" />} color="success" className="mr-0 inline-flex items-center gap-1 text-[11px]">
-                        QC
-                    </Tag>
-                </Tooltip>
-                <Button size="small" type="text" icon={<History className="size-3.5" />} className="h-6 px-1.5 text-[11px]">历史</Button>
-                <Tooltip title="骨架与操作已接真实接口；阶段面板内容仍是演示数据，逐阶段替换中">
-                    <span className="ml-auto cursor-help rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-700 dark:bg-amber-950 dark:text-amber-300">面板演示</span>
-                </Tooltip>
+            {/* 底部：接线状态说明（QC 徽标待接 /qc 接口后恢复，不做越界展示） */}
+            <div className="mt-auto border-t border-stone-200/60 px-3 py-2 text-[10px] leading-4 text-stone-400 dark:border-stone-800/60 dark:text-stone-500">
+                面板与操作已接真实接口；模型选择与 QC 徽标待接 registry / qc。
             </div>
         </aside>
     );

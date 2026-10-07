@@ -498,6 +498,25 @@ export async function regeneratePipelineItem(runId: string, stageId: string, bod
     return data.run;
 }
 
+/**
+ * run 内镜头局部编辑（分镜阶段产物的可视化编辑入口）。后端 router.any 接 PATCH/POST，
+ * 返回 { run, shot }；可改字段由 pipeline.patchStageShot 决定（景别/动作/对白/时长等）。
+ */
+export async function patchPipelineStageShot(runId: string, stageId: string, shotId: string, patch: Record<string, unknown>, baseUrl?: string) {
+    const data = await gatewayRequest<{ run: GatewayPipelineRun; shot: unknown }>({ method: "patch", url: `/api/pipeline/runs/${encodeURIComponent(runId)}/steps/${encodeURIComponent(stageId)}/shots/${encodeURIComponent(shotId)}`, data: patch }, baseUrl);
+    return data;
+}
+
+/**
+ * 角色定妆确认（锁脸/锁声音的人工动作）。body 见后端契约：
+ * { characterId, face?, voice?, speaker?, design?, language?, speed?, previewArtifactId? }。
+ * face/voice 各一个确认位；确认后自动解除 keyframe/audio 的 casting 阻断。
+ */
+export async function confirmPipelineCasting(runId: string, body: { characterId: string; face?: boolean; voice?: boolean; speaker?: string; design?: string; language?: string; speed?: number; previewArtifactId?: string }, baseUrl?: string) {
+    const data = await gatewayRequest<{ run: GatewayPipelineRun }>({ method: "post", url: `/api/pipeline/runs/${encodeURIComponent(runId)}/steps/casting/confirm`, data: body }, baseUrl);
+    return data.run;
+}
+
 /** 有内置脚本模板的网关模板：键为模板名，对应 model-plugin 里的模板 label 文案 key。 */
 const BUILTIN_GATEWAY_SCRIPTS: Record<string, { capability: "image" | "video"; labelKey: string }> = {
     img_zimage_artistic: { capability: "image", labelKey: "zimage" },

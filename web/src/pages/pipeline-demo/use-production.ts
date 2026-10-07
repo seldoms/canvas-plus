@@ -2,13 +2,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
     cancelPipelineStage,
+    confirmPipelineCasting,
     createPipelineRun,
     fetchGatewayLlmModels,
     fetchGatewayStages,
     fetchPipelineProgress,
     getPipelineRun,
     listPipelineRuns,
+    patchPipelineStageShot,
     probeGatewayBaseUrl,
+    regeneratePipelineItem,
     retryPipelineStageFailed,
     runPipelineStage,
     type GatewayPipelineRun,
@@ -17,6 +20,7 @@ import {
     type GatewayStageProgress,
     type GatewayStageStatus,
 } from "@/services/api/gateway";
+import { assemblePipelineRun, exportDeliveryPackage, type ExportPackageResult } from "@/services/api/delivery";
 import { getProjectContext, getSourceRevision, listEpisodes, listProjects, type ProjectSummary } from "@/services/api/projects";
 import type { Episode } from "@/types/domain";
 
@@ -316,6 +320,93 @@ export function useProduction() {
         [llmModels],
     );
 
+    /** 产物地址解析：后端返回 /api/artifacts/... 相对路径，拼网关基址；已是绝对地址原样返回。 */
+    const artifactUrl = useCallback(
+        (path?: string | null) => {
+            if (!path) return "";
+            if (/^https?:\/\//.test(path)) return path;
+            return `${gwBase}${path}`;
+        },
+        [gwBase],
+    );
+
+    /** 条目级重跑（关键帧/配音/片段的单项重做）：202 后阶段落 running，终态由轮询接回。 */
+    const regenerateItem = useCallback(
+        async (stageId: string, itemId: string, extra?: { template?: string; promptOverride?: string; params?: Record<string, unknown> }) => {
+            const id = runIdRef.current;
+            if (!id || !gwBase) return;
+            setError("");
+            try {
+                setRun(await regeneratePipelineItem(id, stageId, { itemId, ...extra }, gwBase));
+            } catch (caught) {
+                setError(messageOf(caught));
+            }
+        },
+        [gwBase],
+    );
+
+    /** run 内镜头局部编辑（分镜可视化编辑入口）。 */
+    const patchShot = useCallback(
+        async (stageId: string, shotId: string, patch: Record<string, unknown>) => {
+            const id = runIdRef.current;
+            if (!id || !gwBase) return false;
+            setError("");
+            try {
+                const data = await patchPipelineStageShot(id, stageId, shotId, patch, gwBase);
+                setRun(data.run);
+                return true;
+            } catch (caught) {
+                setError(messageOf(caught));
+                return false;
+            }
+        },
+        [gwBase],
+    );
+
+    /** 定妆确认（锁脸/锁声）：成功后后端自动解除下游 casting 阻断。 */
+    const confirmCasting = useCallback(
+        async (body: { characterId: string; face?: boolean; voice?: boolean; speaker?: string; design?: string; language?: string; speed?: number }) => {
+            const id = runIdRef.current;
+            if (!id || !gwBase) return false;
+            setError("");
+            try {
+                setRun(await confirmPipelineCasting(id, body, gwBase));
+                return true;
+            } catch (caught) {
+                setError(messageOf(caught));
+                return false;
+            }
+        },
+        [gwBase],
+    );
+
+    /** 独立合成成片（ffmpeg 后台跑；reused 时 200 直接复用）。 */
+    const assemble = useCallback(async () => {
+        const id = runIdRef.current;
+        if (!id || !gwBase) return;
+        setError("");
+        try {
+            const result = await assemblePipelineRun(id, {}, gwBase);
+            setRun(result.run);
+            if (result.inflight) void refreshRun();
+        } catch (caught) {
+            setError(messageOf(caught));
+        }
+    }, [gwBase, refreshRun]);
+
+    /** 导出交付包（MP4/SRT/FCPXML/ZIP 清单）。 */
+    const exportPackage = useCallback(async (): Promise<ExportPackageResult | null> => {
+        const id = runIdRef.current;
+        if (!id || !gwBase) return null;
+        setError("");
+        try {
+            return await exportDeliveryPackage(id, {}, gwBase);
+        } catch (caught) {
+            setError(messageOf(caught));
+            return null;
+        }
+    }, [gwBase]);
+
     return {
         gwBase,
         stages,
@@ -338,5 +429,14 @@ export function useProduction() {
         cancelStage,
         retryFailed,
         defaultTextModel,
+        artifactUrl,
+        regenerateItem,
+        patchShot,
+        confirmCasting,
+        assemble,
+        exportPackage,
+        refreshRun,
     };
 }
+
+export type Production = ReturnType<typeof useProduction>;

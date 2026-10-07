@@ -1,6 +1,6 @@
 import { Alert, Button, Tooltip } from "antd";
 import { Ban, Lock, Play, RotateCcw, Wrench } from "lucide-react";
-import { useEffect, useState, type JSX, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 import { cn } from "@/lib/utils";
 
@@ -12,19 +12,10 @@ import { CastingPanel, DesignPanel, KeyframePanel } from "./panels-assets";
 import { AssemblyPanel, AudioPanel } from "./panels-media";
 import { PipelineSidebar } from "./pipeline-sidebar";
 import { STATUS_META } from "./stage-shell";
-import { useProduction, type ProductionStageStatus } from "./use-production";
+import { useProduction, type Production, type ProductionStageStatus } from "./use-production";
 
 /** 文本阶段：运行时把默认文本模型传给后端（模型选择器接线前先用自动优选值）。 */
 const TEXT_STAGES = new Set(["script", "storyboard"]);
-
-const PANELS: Record<Exclude<StageId, "storyboard">, () => JSX.Element> = {
-    script: ScriptPanel,
-    design: DesignPanel,
-    casting: CastingPanel,
-    keyframe: KeyframePanel,
-    audio: AudioPanel,
-    assembly: AssemblyPanel,
-};
 
 /** 各阶段的模型选择（按能力域配对；定妆不选 LLM，配音音色在定妆配置）。选择器本身待接 registry。 */
 const MODEL_SLOTS: Partial<Record<StageId, ReactNode>> = {
@@ -39,6 +30,27 @@ const MODEL_SLOTS: Partial<Record<StageId, ReactNode>> = {
     keyframe: <DemoModelPicker domain="image" value="img_qwen21_t2i_1080" />,
     assembly: <DemoModelPicker domain="video" value="vid_wan22_i2v" />,
 };
+
+function ActiveStagePanel({ stage, production }: { stage: StageId; production: Production }) {
+    switch (stage) {
+        case "script":
+            return <ScriptPanel production={production} />;
+        case "storyboard":
+            return <StoryboardPanel production={production} />;
+        case "design":
+            return <DesignPanel production={production} />;
+        case "casting":
+            return <CastingPanel production={production} />;
+        case "keyframe":
+            return <KeyframePanel production={production} />;
+        case "audio":
+            return <AudioPanel production={production} />;
+        case "assembly":
+            return <AssemblyPanel production={production} />;
+        default:
+            return null;
+    }
+}
 
 /** 阶段操作（真实接口）：运行/继续生成/取消/重试失败项/重跑，并入步骤条行。 */
 function StageActions({
@@ -77,13 +89,14 @@ function StageActions({
 }
 
 export default function PipelineDemoPage() {
+    const production = useProduction();
     const {
         stages, projects, projectId, setProjectId,
         episodes, episodeId, setEpisodeId,
         runs, runId, openRun,
         error, busyStage, stageStatus, startStage, cancelStage, retryFailed,
         defaultTextModel,
-    } = useProduction();
+    } = production;
 
     const [activeStage, setActiveStage] = useState<StageId>("storyboard");
     const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("pipeline-demo.sidebar-collapsed") === "1");
@@ -97,9 +110,7 @@ export default function PipelineDemoPage() {
         return (meta?.requires || []).filter((dep) => stageStatus(dep) !== "done");
     };
 
-    const episode = episodes.find((item) => item.id === episodeId) || null;
     const activeStatus: StageStatus = stageStatus(activeStage);
-    const ActivePanel = activeStage === "storyboard" ? null : PANELS[activeStage];
 
     const handleStart = (resume: boolean) =>
         void startStage(activeStage, { resume, model: TEXT_STAGES.has(activeStage) ? defaultTextModel || undefined : undefined });
@@ -179,20 +190,9 @@ export default function PipelineDemoPage() {
 
                 {error ? <Alert type="error" showIcon message={error} closable className="shrink-0" /> : null}
 
-                {/* 工作区：阶段面板吃满剩余高度（面板内容仍是演示数据，逐阶段接线替换） */}
+                {/* 工作区：阶段面板吃满剩余高度，全部读当前执行记录的真实产物 */}
                 <main className="min-h-0 flex-1 overflow-y-auto">
-                    {activeStage === "storyboard" ? (
-                        <StoryboardPanel
-                            episode={{
-                                id: episode?.id || "ep1",
-                                index: episode?.index ?? 1,
-                                title: episode?.title || "未选择集",
-                                logline: episode?.logline || "",
-                            }}
-                        />
-                    ) : ActivePanel ? (
-                        <ActivePanel />
-                    ) : null}
+                    <ActiveStagePanel stage={activeStage} production={production} />
                 </main>
             </div>
             <FeedbackLayer />
