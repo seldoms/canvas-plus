@@ -100,9 +100,11 @@ export default function PipelineDemoPage() {
                     .dark .demo-stage-pill[data-active="true"] { background: #fafaf9; color: #1c1917; }
                     .demo-stage-pill[data-active="true"] .demo-stage-num { color: rgba(250,250,249,.55); }
                     .dark .demo-stage-pill[data-active="true"] .demo-stage-num { color: rgba(28,25,23,.5); }
+                    .demo-stage-nav { scrollbar-width: none; }
+                    .demo-stage-nav::-webkit-scrollbar { display: none; }
                 `}</style>
                 <div className="flex shrink-0 flex-wrap items-center gap-x-2 gap-y-1.5 rounded-xl border border-stone-200 bg-white px-2.5 py-1.5 dark:border-stone-800 dark:bg-transparent">
-                    <nav className="min-w-0 flex-1 overflow-x-auto">
+                    <nav className="demo-stage-nav min-w-0 flex-1 overflow-x-auto">
                         <div className="flex min-w-max items-center gap-1">
                             {STAGES.map((stage, index) => {
                                 const status = stageStatus(stage.id);
