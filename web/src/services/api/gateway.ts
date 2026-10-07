@@ -453,6 +453,11 @@ export async function cancelPipelineStage(runId: string, stageId: string, baseUr
     return gatewayRequest<{ canceled: boolean; stage: string; ranMs: number }>({ method: "post", url: `/api/pipeline/runs/${encodeURIComponent(runId)}/steps/${encodeURIComponent(stageId)}/cancel` }, baseUrl);
 }
 
+/** 重试阶段内失败条目（202，后台补跑）；终态靠 progress 轮询 + getPipelineRun 接回。 */
+export async function retryPipelineStageFailed(runId: string, stageId: string, baseUrl?: string) {
+    return gatewayRequest<{ run?: GatewayPipelineRun }>({ method: "post", url: `/api/pipeline/runs/${encodeURIComponent(runId)}/steps/${encodeURIComponent(stageId)}/retry-failed`, data: {} }, baseUrl);
+}
+
 export async function fetchGatewayLlmModels(baseUrl?: string) {
     const data = await gatewayRequest<{ models: Array<string | { id?: string; name?: string }> }>({ method: "get", url: "/api/llm/models" }, baseUrl);
     return data.models.map((m) => (typeof m === "string" ? m : m.id || m.name || "")).filter(Boolean);

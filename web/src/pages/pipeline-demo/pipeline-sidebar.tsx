@@ -1,33 +1,52 @@
-import { Button, Tag, Tooltip } from "antd";
-import { BookOpen, GitBranch, History, PanelLeftClose, PanelLeftOpen, Plus, ShieldCheck } from "lucide-react";
+import { Button, Select, Tag, Tooltip } from "antd";
+import { BookOpen, History, PanelLeftClose, PanelLeftOpen, Plus, ShieldCheck } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
-import { EPISODES, PROJECT, RUNS } from "./mock-data";
+import type { RunListItem } from "./use-production";
+
+type ProjectItem = { id: string; title: string };
+type EpisodeItem = { id: string; index: number; title: string };
+
+/** ISO 时间 → 「MM-DD HH:mm」短格式（执行记录列表用）。 */
+function shortTime(iso: string) {
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) return iso.slice(0, 16);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
 
 /**
- * 生产侧栏 —— 项目 → 集 → 执行记录三级上下文收进左栏（原上下文条的纵向化）：
- * - 集即全局唯一的集选择入口，各阶段面板不再各自带集导航；
- * - 执行记录按选中集过滤，分支 run 带分叉图标；
- * - 打开 run 后左栏即锁定态的视觉锚点（快照设置明细在「剧本」阶段的制作设定里展示）；
+ * 生产侧栏 —— 项目 → 集 → 执行记录三级上下文（真实数据）。
+ * - 多项目时项目名是下拉；集是全局唯一集入口；执行记录按项目过滤（run↔集关联后端未存，见 use-production 注释）；
  * - 可收起为窄轨：只留展开钮 + 集序号，把主体让给创作窗口。
  */
 export function PipelineSidebar({
+    projects,
+    projectId,
+    episodes,
     episodeId,
+    runs,
     runId,
     collapsed,
+    onSelectProject,
     onSelectEpisode,
     onSelectRun,
     onToggleCollapsed,
 }: {
+    projects: ProjectItem[];
+    projectId: string;
+    episodes: EpisodeItem[];
     episodeId: string;
-    runId: string | null;
+    runs: RunListItem[];
+    runId: string;
     collapsed: boolean;
+    onSelectProject: (id: string) => void;
     onSelectEpisode: (id: string) => void;
     onSelectRun: (id: string) => void;
     onToggleCollapsed: () => void;
 }) {
-    const episodeRuns = RUNS.filter((run) => run.episodeId === episodeId);
+    const project = projects.find((item) => item.id === projectId) || null;
 
     if (collapsed) {
         return (
@@ -43,7 +62,7 @@ export function PipelineSidebar({
                     </button>
                 </Tooltip>
                 <div className="mt-2 flex flex-col items-center gap-1 border-t border-stone-200/60 pt-2 dark:border-stone-800/60">
-                    {EPISODES.map((ep) => {
+                    {episodes.map((ep) => {
                         const active = ep.id === episodeId;
                         return (
                             <Tooltip key={ep.id} title={`第 ${ep.index} 集 · ${ep.title}`} placement="right">
@@ -63,9 +82,6 @@ export function PipelineSidebar({
                         );
                     })}
                 </div>
-                <Tooltip title="QC 通过" placement="right">
-                    <span className="mt-auto mb-1 size-1.5 rounded-full bg-emerald-500" />
-                </Tooltip>
             </aside>
         );
     }
@@ -75,7 +91,21 @@ export function PipelineSidebar({
             {/* 项目 */}
             <div className="flex items-center gap-2 px-3.5 pb-2 pt-3.5">
                 <BookOpen className="size-4 shrink-0 text-stone-400" />
-                <span className="truncate text-sm font-semibold text-stone-900 dark:text-stone-100">《{PROJECT.title}》</span>
+                {projects.length > 1 ? (
+                    <Select
+                        size="small"
+                        variant="borderless"
+                        value={projectId || undefined}
+                        placeholder="选择项目"
+                        className="min-w-0 flex-1 font-semibold"
+                        options={projects.map((item) => ({ value: item.id, label: `《${item.title}》` }))}
+                        onChange={onSelectProject}
+                    />
+                ) : (
+                    <span className="truncate text-sm font-semibold text-stone-900 dark:text-stone-100">
+                        {project ? `《${project.title}》` : "暂无项目"}
+                    </span>
+                )}
                 <Tooltip title="收起侧栏">
                     <button
                         type="button"
@@ -91,58 +121,61 @@ export function PipelineSidebar({
             {/* 集 */}
             <div className="border-t border-stone-200/60 px-2 py-2 dark:border-stone-800/60">
                 <div className="flex items-center px-1.5 pb-1">
-                    <span className="text-[11px] font-medium uppercase tracking-wider text-stone-400">集 · {EPISODES.length}</span>
-                    <Button size="small" type="text" icon={<Plus className="size-3.5" />} className="ml-auto -mr-1 h-5 px-1 text-[11px]">新建</Button>
+                    <span className="text-[11px] font-medium uppercase tracking-wider text-stone-400">集 · {episodes.length}</span>
+                    <Button size="small" type="text" icon={<Plus className="size-3.5" />} className="ml-auto -mr-1 h-5 px-1 text-[11px]" disabled title="新建集接口待接">
+                        新建
+                    </Button>
                 </div>
-                {EPISODES.map((ep) => {
-                    const active = ep.id === episodeId;
-                    return (
-                        <button
-                            key={ep.id}
-                            type="button"
-                            onClick={() => onSelectEpisode(ep.id)}
-                            className={cn(
-                                "w-full rounded-lg px-2.5 py-1.5 text-left text-[13px] transition hover:bg-black/5 dark:hover:bg-white/10",
-                                active && "bg-black/5 font-medium dark:bg-white/10",
-                            )}
-                        >
-                            <span className="tabular-nums text-stone-400">{String(ep.index).padStart(2, "0")}</span>
-                            <span className="ml-1.5 text-stone-800 dark:text-stone-200">{ep.title}</span>
-                        </button>
-                    );
-                })}
-            </div>
-
-            {/* 执行记录（按集过滤） */}
-            <div className="border-t border-stone-200/60 px-2 py-2 dark:border-stone-800/60">
-                <div className="px-1.5 pb-1 text-[11px] font-medium uppercase tracking-wider text-stone-400">执行记录</div>
-                {episodeRuns.length ? (
-                    episodeRuns.map((run) => {
-                        const active = run.id === runId;
+                {episodes.length ? (
+                    episodes.map((ep) => {
+                        const active = ep.id === episodeId;
                         return (
                             <button
-                                key={run.id}
+                                key={ep.id}
                                 type="button"
-                                onClick={() => onSelectRun(run.id)}
+                                onClick={() => onSelectEpisode(ep.id)}
+                                className={cn(
+                                    "w-full rounded-lg px-2.5 py-1.5 text-left text-[13px] transition hover:bg-black/5 dark:hover:bg-white/10",
+                                    active && "bg-black/5 font-medium dark:bg-white/10",
+                                )}
+                            >
+                                <span className="tabular-nums text-stone-400">{String(ep.index).padStart(2, "0")}</span>
+                                <span className="ml-1.5 text-stone-800 dark:text-stone-200">{ep.title}</span>
+                            </button>
+                        );
+                    })
+                ) : (
+                    <div className="px-2.5 py-1.5 text-[11px] text-stone-400">暂无集</div>
+                )}
+            </div>
+
+            {/* 执行记录（按项目过滤；无记录时点「运行」自动建立） */}
+            <div className="border-t border-stone-200/60 px-2 py-2 dark:border-stone-800/60">
+                <div className="px-1.5 pb-1 text-[11px] font-medium uppercase tracking-wider text-stone-400">执行记录</div>
+                {runs.length ? (
+                    runs.map((item) => {
+                        const active = item.id === runId;
+                        return (
+                            <button
+                                key={item.id}
+                                type="button"
+                                onClick={() => onSelectRun(item.id)}
                                 className={cn(
                                     "w-full rounded-lg px-2.5 py-1.5 text-left transition hover:bg-black/5 dark:hover:bg-white/10",
                                     active && "bg-black/5 dark:bg-white/10",
                                 )}
                             >
-                                <span className="flex items-center gap-1.5 text-[13px] text-stone-800 dark:text-stone-200">
-                                    {run.parentId ? <GitBranch className="size-3 shrink-0 text-stone-400" /> : null}
-                                    <span className="truncate">{run.title.replace(/^第 \d+ 集 · /, "")}</span>
-                                </span>
-                                <span className="mt-0.5 block pl-4 text-[11px] tabular-nums text-stone-400">{run.createdAt}</span>
+                                <span className="block truncate text-[13px] text-stone-800 dark:text-stone-200">{item.title}</span>
+                                <span className="mt-0.5 block text-[11px] tabular-nums text-stone-400">{shortTime(item.createdAt)}</span>
                             </button>
                         );
                     })
                 ) : (
-                    <div className="px-2.5 py-1.5 text-[11px] text-stone-400">本集尚无执行记录</div>
+                    <div className="px-2.5 py-1.5 text-[11px] leading-4 text-stone-400">尚无执行记录，点「运行」将按项目原文自动建立</div>
                 )}
             </div>
 
-            {/* 底部：QC / 历史 / Demo 标记 */}
+            {/* 底部：QC / 历史 / 接线进度标记 */}
             <div className="mt-auto flex items-center gap-1.5 border-t border-stone-200/60 px-3 py-2.5 dark:border-stone-800/60">
                 <Tooltip title="结构、引用、对白时序检查已通过；声纹与嘴型需人工复核（不做越界承诺）">
                     <Tag icon={<ShieldCheck className="size-3" />} color="success" className="mr-0 inline-flex items-center gap-1 text-[11px]">
@@ -150,7 +183,9 @@ export function PipelineSidebar({
                     </Tag>
                 </Tooltip>
                 <Button size="small" type="text" icon={<History className="size-3.5" />} className="h-6 px-1.5 text-[11px]">历史</Button>
-                <span className="ml-auto rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-700 dark:bg-amber-950 dark:text-amber-300">Demo</span>
+                <Tooltip title="骨架与操作已接真实接口；阶段面板内容仍是演示数据，逐阶段替换中">
+                    <span className="ml-auto cursor-help rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-700 dark:bg-amber-950 dark:text-amber-300">面板演示</span>
+                </Tooltip>
             </div>
         </aside>
     );

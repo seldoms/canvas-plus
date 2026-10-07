@@ -128,6 +128,35 @@ export async function archiveProject(id: string) {
 }
 
 /* ------------------------------------------------------------------ *
+ * 源版本（不可变；契约见 canvas-server/src/sources.js）
+ * ------------------------------------------------------------------ */
+
+/** 列表元素：不回正文，只回轻量摘要。 */
+export type SourceSummary = { id: string; kind: string; title: string; sha256: string; chars: number; createdAt: string };
+/** 单版本详情：带正文 text。 */
+export type SourceRevision = SourceSummary & { projectId: string; from: string; text: string };
+
+export async function listSourceRevisions(projectId: string): Promise<SourceSummary[]> {
+    const data = await projectRequest<unknown>({ method: "get", url: `/api/projects/${encodeURIComponent(projectId)}/sources` });
+    return unwrapList<SourceSummary>(data, "sources");
+}
+
+/** 读某个源版本（含正文）；不存在返回 null。 */
+export async function getSourceRevision(projectId: string, revisionId: string): Promise<SourceRevision | null> {
+    try {
+        const data = await projectRequest<unknown>({
+            method: "get",
+            url: `/api/projects/${encodeURIComponent(projectId)}/sources/${encodeURIComponent(revisionId)}`,
+        });
+        const source = unwrapEntity<SourceRevision | null>(data, "source");
+        return source?.id ? source : null;
+    } catch (error) {
+        if ((error as ProjectApiError).status === 404) return null;
+        throw error;
+    }
+}
+
+/* ------------------------------------------------------------------ *
  * 分镜 / 资产引用 / 门禁（P0-a 前端编辑，接口形状已冻结）
  *
  * 后端并行实现中：请求失败一律抛带 status 的 Error（400 不合法 / 409 冲突 / 404 不存在），
