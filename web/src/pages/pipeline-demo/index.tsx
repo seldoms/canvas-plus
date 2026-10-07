@@ -5,7 +5,6 @@ import { useEffect, useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
 import { DemoModelPicker } from "./demo-model-picker";
-import { FeedbackLayer } from "./feedback-layer";
 import type { StageId, StageStatus } from "./mock-data";
 import { ScriptPanel, StoryboardPanel } from "./panels-story";
 import { CastingPanel, DesignPanel, KeyframePanel } from "./panels-assets";
@@ -195,7 +194,6 @@ export default function PipelineDemoPage() {
                     <ActiveStagePanel stage={activeStage} production={production} />
                 </main>
             </div>
-            <FeedbackLayer />
         </div>
     );
 }
