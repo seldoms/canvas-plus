@@ -35,6 +35,7 @@ export default {
         details: "详情",
         addToAssets: "加入我的资产",
         addedToAssets: "已加入我的资产",
+        attachAssetPack: "归入资料包",
         copyPrompt: "复制提示词",
         promptCopied: "提示词已复制",
         created: "创建：{{date}}",

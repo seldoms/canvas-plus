@@ -21,7 +21,7 @@ import { nanoid } from "nanoid";
 import { formatBytes, formatDuration } from "@/lib/image-utils";
 import { cancelImageJob, enqueueImages, getImageJob, isActiveJobStatus, listImageJobs, type ImageJob, type ImageJobOutput, type ImageJobProgress } from "@/services/api/image-jobs";
 import { defaultSizeFor, findTemplate, loadTemplateCatalog, sizeNoteFor, sizeOptionsFor, type GatewayTemplateInfo } from "@/services/api/template-sizes";
-import { resolveGatewayUrl, uploadGatewayAsset } from "@/services/api/gateway";
+import { gatewayArtifactPath, resolveGatewayUrl, uploadGatewayAsset } from "@/services/api/gateway";
 import { deleteStoredImages, ensureImagePreview, getImageBlob, getImagePreviewRevision, previewUrlFor, resolveImageUrl, subscribeImagePreviews, uploadImage } from "@/services/image-storage";
 import { useAssetStore } from "@/stores/use-asset-store";
 import { useWorkbenchAgentStore } from "@/stores/use-workbench-agent-store";
@@ -122,20 +122,6 @@ function candidateJobIdFor(image: GeneratedImage, jobs: Record<string, ImageJob>
     if (!image.artifactUrl) return null;
     const jobId = jobIdsForItemIds([image.id], jobs)[0];
     return jobId && jobs[jobId]?.status === "done" ? jobId : null;
-}
-
-/**
- * 产物绝对地址 → 网关相对路径（`/api/artifacts/...`）。
- * AssetRef.artifactIds 里存的是相对路径（真实项目数据即如此），绝对地址存进去会让
- * 换一个网关地址就全部失效，所以归入资料包前必须还原成相对路径。
- * 认不出来（data:/blob: 等本地临时地址）返回空串 —— 这类产物根本不该进资料包。
- */
-function gatewayArtifactPath(url: string | undefined): string {
-    if (!url) return "";
-    if (/^(data:|blob:)/i.test(url)) return "";
-    const marker = "/api/artifacts/";
-    const at = url.indexOf(marker);
-    return at >= 0 ? url.slice(at) : url;
 }
 
 /** 队列里一条任务的缩略图（从后端 job 产物取，最多 4 张）；生图专有，交给共享队列面板渲染。 */

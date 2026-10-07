@@ -3338,12 +3338,46 @@ ${JSON.stringify(partials, null, 2)}
         const designChars = Array.isArray(design?.characters) ? design.characters : [];
         const characters = projectChars.length ? projectChars : scriptChars.length ? scriptChars : designChars;
         const { profiles } = projectVoiceProfiles({ project, design, characters });
-        const output = buildCastingOutput({ characters, design, voiceProfiles: profiles, prev });
+        // 资料包（project.assetRefs）里人工采用的脸**优先于** design 自动绑定 —— 见 casting.js 的 faceArtifactsFromPack。
+        const assetRefs = Array.isArray(project?.assetRefs) ? project.assetRefs : [];
+        const output = buildCastingOutput({ characters, design, voiceProfiles: profiles, assetRefs, prev });
         stage.output = output;
         stage.status = "done";
         stage.error = undefined;
         stage.finishedAt = nowIso();
         enforceCastingGate(run);
+    }
+
+    /**
+     * 定妆取料盘点：每张角色卡当前的正脸 + 来源 + 项目资料包里该角色的全部候选。
+     * 纯读取，不改 run —— 让「这张脸从哪来 / 能不能换」看得见，而不是靠猜。
+     */
+    function castingPack(runId) {
+        const run = requireRun(runId);
+        const output = normalizeCasting(run?.stages?.casting?.output);
+        const project = projectOf(run);
+        const assetRefs = Array.isArray(project?.assetRefs) ? project.assetRefs : [];
+        return {
+            runId: run.id,
+            projectId: run?.options?.projectId ?? null,
+            stageId: "casting",
+            characters: output.characters.map((card) => {
+                const ref = assetRefs.find((item) => item?.bindingId === card.characterId && item?.role === "character");
+                const candidates = Array.isArray(ref?.artifactIds) ? ref.artifactIds.map((item) => String(item)).filter(Boolean) : [];
+                const selected = ref?.selectedArtifactId ? String(ref.selectedArtifactId) : "";
+                return {
+                    characterId: card.characterId,
+                    name: card.name || card.characterId,
+                    currentCloseupArtifactId: card.face.closeupArtifactId,
+                    // pack = 人工从资料包选用/归入；design = 03 阶段自动绑定；prev = 沿用上次；none = 还没取到料。
+                    source: card.face.source,
+                    confirmed: card.face.confirmed === true,
+                    hasPackRef: Boolean(ref),
+                    packSelectedArtifactId: selected || null,
+                    candidates,
+                };
+            }),
+        };
     }
 
     /**
@@ -3422,7 +3456,13 @@ ${JSON.stringify(partials, null, 2)}
         const before = JSON.stringify(card);
         const wasConfirmed = card.confirmed === true;
 
-        if (body.closeupArtifactId !== undefined) card.face.closeupArtifactId = String(body.closeupArtifactId ?? "").trim();
+        //显式传 closeupArtifactId = 人从资料包候选里「选用」了这张脸；来源随之记为 pack，
+        // 否则重跑阶段时buildCastingOutput 会按 design 自动绑定把它顶掉，显式选用等于白做。
+        if (body.closeupArtifactId !== undefined) {
+            const picked = String(body.closeupArtifactId ?? "").trim();
+            card.face.closeupArtifactId = picked;
+            card.face.source = picked ? "pack" : "none";
+        }
         if (Array.isArray(body.turnaroundArtifactIds)) card.face.turnaroundArtifactIds = body.turnaroundArtifactIds.map((item) => String(item)).filter(Boolean);
         if (body.face !== undefined) {
             if (body.face === true) {
@@ -4029,5 +4069,5 @@ ${JSON.stringify(partials, null, 2)}
         return fixed;
     }
 
-    return { stages, list, get, create, fork, estimate: estimateFor, runStage, beginStage, executeStage, stageProgress, runLog, qualityCheck, latestQualityCheck, reconcileRunning, setStageInput, projectJob, bindJobs, cancelStage, beginAssemble, executeAssemble, assembleStage, beginRegenerate, executeRegenerate, retryFailedItems, groupFramesByReference, stageGate, stageGates, patchStageShot, durationPolicy, skeletonOf, castingReadinessOf, enforceCastingGate, confirmCasting };
+    return { stages, list, get, create, fork, estimate: estimateFor, runStage, beginStage, executeStage, stageProgress, runLog, qualityCheck, latestQualityCheck, reconcileRunning, setStageInput, projectJob, bindJobs, cancelStage, beginAssemble, executeAssemble, assembleStage, beginRegenerate, executeRegenerate, retryFailedItems, groupFramesByReference, stageGate, stageGates, patchStageShot, durationPolicy, skeletonOf, castingReadinessOf, castingPack, enforceCastingGate, confirmCasting };
 }

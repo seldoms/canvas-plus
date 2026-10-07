@@ -17,7 +17,7 @@
 目标形态、六个断点（B1–B6）与目标架构见 [`project-centric-skeleton.md`](./project-centric-skeleton.md)，**当前开发以其 §6 的 P0–P3 为准**：
 
 1. **P0 串联引导**：✅ 已落地（2026-10-08，提交 6374954 / b0d8f8a）——项目页五步主线引导卡 + 列表卡片「下一步」标签 + Agent 安装引导改向自研版；
-2. **P1 资料包一等公民**：🟡 部分落地（2026-10-08，提交 76fe1cf）——✅「归入项目资料包」通道（后端 `assets.attach` upsert 幂等 + 生图工作台结果卡入口 + 弹窗按真实剧本列实体）、✅ 资料包盘点视图（`buildAssetPacks` 以**剧本实体**为主轴，缺参考图的角色一眼可见，替代不了的是编辑视角，故与 AssetRefPanel 并存）；⬜ 仍欠：定妆/服化道阶段的**显式取料**动作（现在靠编译链隐式引用 reference-lock 解析，看得见结果但没有「选用」这一步）、生视频工作台也接上归入入口
+2. **P1 资料包一等公民**：✅ 已落地（2026-10-08，提交 76fe1cf + 本轮）——①「归入项目资料包」通道（后端 `assets.attach` upsert 幂等 + 生图/生视频两个工作台结果卡入口 + 弹窗按真实剧本列实体）；② 资料包盘点视图（`buildAssetPacks` 以**剧本实体**为主轴，缺参考图的角色一眼可见，替代不了的是编辑视角，故与 AssetRefPanel 并存）；③ **定妆显式取料**：`casting.js` 新增 `faceArtifactsFromPack`，脸**优先取资料包人工采用/归入的那张**，服化道自动绑定排后；`face.source`（pack/design/prev/none）如实标出处，`GET .../steps/casting/pack` 给面板与 Agent 同一份盘点，`confirmCasting` 的 `closeupArtifactId` 落地为可见的「换脸」动作（接口早有该参数，此前前端没暴露）
 3. **P2 画布↔流水线双向** + 生图/生视频归因选择器；
 4. **P3 分发私有化**：内部 marketplace 跑通（配置侧已就绪，见下）。
 
@@ -28,7 +28,7 @@
 - ✅ 配套②：插件注册名已改 `canvas-plus`（`.codex-plugin`、`.zcode-plugin`、`.mcp.json`、`marketplace.json`、`.agents/plugins/marketplace.json` 五份同步），`canvas-agent` 包名改 `@sobey/canvas-agent`、版本 0.6.0 → 0.7.0，避免与官方插件在工友机器上互踩。目录名保留 `plugins/infinite-canvas`（改名会牵动路径引用，收益不大）；
 - ⬜ 待用户执行：① 创建 GitHub 仓库并推送；② 按发布出的真实地址把 `CANVAS_PLUS_REPO` 改成实值；③ 确认公开范围（仓库含内网地址/端口/主机别名）。若走 npm，还需在 CI 里把发布包名从 `@basketikun/canvas-agent` 改为 `@sobey/canvas-agent`（本仓库当前无发布该包的工作流，工作流在上游）。
 
-**本周已落地（10-06 晚 ~ 10-08）**：流水线新页 `/pipeline` 全量真实数据（七面板 + 条目级动作全真接口）；Agent `project_*` 7→19（总 53 工具，项目/阶段/条目/资料包四层视角）；agent-instructions / README / 插件 pipeline 技能三面文档同步；页面标注工具全局悬浮窗化；**P0 五步主线引导 + Agent 安装引导改向自研版**；**P1 资料包通道**（`project_asset_pack` / `project_attach_asset`，Agent 总工具数 51→53）。
+**本周已落地（10-06 晚 ~ 10-08）**：流水线新页 `/pipeline` 全量真实数据（七面板 + 条目级动作全真接口）；Agent `project_*` 7→19（总 53 工具，项目/阶段/条目/资料包四层视角）；agent-instructions / README / 插件 pipeline 技能三面文档同步；页面标注工具全局悬浮窗化；**P0 五步主线引导 + Agent 安装引导改向自研版**；**P1 资料包通道**（`project_asset_pack` / `project_attach_asset`，Agent 总工具数 51→53）；**P1 显式取料**（定妆脸改从资料包取、`face.source` 出处标记、换脸动作、换脸后强制重新确认）。
 
 ---
 

@@ -26,7 +26,7 @@
 
 **2026-10-08 凌晨（先读这段）**
 
-> 基线：`canvas-plus` @ `76fe1cf`（工作区干净，已推裸仓库）。后端 `node --test` **1088/1088**（10-08 凌晨实测，本轮 +8）；canvas-agent **155/155**（+5）；前端 `bun test` **22/22**（+8，新增资料包聚合测试）+ `tsc --noEmit` 通过。
+> 基线：`canvas-plus` @ 本轮 HEAD（工作区干净，已推裸仓库）。后端 `node --test` **1099/1099**（10-08 实测，本轮 +11，新增定妆取料测试）；canvas-agent **158/158**（+3）；前端 `bun test` **22/22** + `tsc --noEmit` 通过。
 > 服务：canvas-server / canvas-agent / infinite-canvas-web 均 active（canvas-agent 19:25 重启加载新 instructions；web dev 19:30 清 `.vite` 缓存重启）。
 
 **本周已上线（10-06 晚 ~ 10-08）**：
@@ -35,7 +35,8 @@
 - 页面标注工具升级为全局悬浮窗（所有页面可用，标注模式下再点一次取消标记）。
 - **P0 串联引导**（10-08）：项目页五步主线引导卡 + 列表卡片「下一步」标签（提交 `6374954`）；Agent 安装引导改向自研版、插件注册名改 `canvas-plus`、包名改 `@sobey/canvas-agent@0.7.0`。
 - **P1 资料包一等公民·通道与盘点**（10-08，提交 `76fe1cf`）：后端 `POST /api/projects/:id/asset-refs/attach`（`assets.attach`，**upsert 幂等** —— 同 role+bindingId 只追加候选，不再像旧 `create` 那样每次新增一条同 bindingId 的引用，那正是 reference-lock `findAssetRef` 只取第一条导致「选参考图随机命中」的根源）；生图工作台结果卡新增「归入资料包」入口（与「加入我的资产」分开：后者进本地素材库，前者进项目事实层并成为后续关键帧的参考图）；资产工作区新增 `AssetPackOverview`（`buildAssetPacks` 以**剧本实体**为主轴，缺参考图的角色一眼可见）。Agent +2 工具（`project_asset_pack` / `project_attach_asset`），总工具数 51→**53**。
-- **产品方向拍板**：以项目为中心但不绑死——目标形态与断点清单见 `docs/content/docs/progress/project-centric-skeleton.md`，执行序列以其 §6 的 P0–P3 为准。**进度：P0 ✅ / P1 🟡（通道与盘点已落地，欠定妆显式取料与生视频入口）/ P2 ⬜ / P3 ⬜ —— 下一步 = P1 剩余两项，之后进 P2**。
+- **P1 资料包一等公民·显式取料**（10-08，本轮）：`casting.js` 新增 `faceArtifactsFromPack` —— 定妆的脸**优先取资料包里人工采用/归入的那张**，服化道自动绑定排后（此前资料包对定妆**完全无作用**，归入了也看不见）；`face.source`（pack/design/prev/none）标出处，存量产物无该字段时按「有正脸→prev」回落，不误报「未取到」；新增 `GET /api/pipeline/runs/:id/steps/casting/pack` 盘点接口，前端 `CastingCard` 据此显示来源标签 + 「换脸（N 张候选）」，走 `confirmCasting` 的 `closeupArtifactId`（该参数接口早有，此前没暴露）；生视频工作台结果卡补上「归入资料包」入口（`gatewayArtifactPath` 提为共用工具函数，不再两页各写一份）。Agent：`project_asset_pack` 支持给 `runId` 走取料盘点，`project_confirm_casting` 支持换脸（工具数不变，仍 53）。
+- **产品方向拍板**：以项目为中心但不绑死——目标形态与断点清单见 `docs/content/docs/progress/project-centric-skeleton.md`，执行序列以其 §6 的 P0–P3 为准。**进度：P0 ✅ / P1 ✅ / P2 ⬜ / P3 ⬜ —— 下一步 = P2 画布↔流水线双向归因**。
 - **GitHub 发布决策（待用户执行）**：发布后插件分发走 `marketplace add <github 地址>`。配套①②已执行（引导文案改向自研版、插件改名 `canvas-plus`、包名 `@sobey/canvas-agent`）；发布前用户需确认公开范围（仓库含内网地址/端口/主机别名），并按真实地址把 `CANVAS_PLUS_REPO` 常量改成实值。
 
 **声音质量警告（仍然有效，勿删）**：M6 是功能性成片里程碑，**声音质量验收未通过**（跨镜音色不一致 / 电话场景抢台词 / 音画不同步），按 [`audio-video-quality-audit-2026-10-06.md`](./docs/content/docs/progress/audio-video-quality-audit-2026-10-06.md) 处理。不要依据"七段全 done"宣称音色或嘴型闭环。

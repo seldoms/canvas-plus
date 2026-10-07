@@ -6,6 +6,7 @@ import {
     createPipelineRun,
     fetchGatewayLlmModels,
     fetchGatewayStages,
+    fetchCastingPack,
     fetchPipelineProgress,
     getPipelineRun,
     listPipelineRuns,
@@ -19,6 +20,7 @@ import {
     type GatewayStageInfo,
     type GatewayStageProgress,
     type GatewayStageStatus,
+    type CastingPackRow,
 } from "@/services/api/gateway";
 import { assemblePipelineRun, exportDeliveryPackage, type ExportPackageResult } from "@/services/api/delivery";
 import { getProjectContext, getSourceRevision, listEpisodes, listProjects, type ProjectSummary } from "@/services/api/projects";
@@ -79,6 +81,33 @@ export function useProduction() {
     const [progress, setProgress] = useState<GatewayStageProgress | null>(null);
     const [error, setError] = useState("");
     const [busyStage, setBusyStage] = useState("");
+    /**
+     * 定妆取料盘点（`casting/pack`）：每张角色卡的当前脸 + 来源 + 项目资料包候选。
+     * 拉不到就留空数组 —— 面板据此**不显示**候选区，绝不用 design 的图冒充「可换的候选」。
+     */
+    const [castingPack, setCastingPack] = useState<CastingPackRow[]>([]);
+
+    const refreshCastingPack = useCallback(
+        async (id: string) => {
+            if (!gwBase) return;
+            try {
+                setCastingPack(await fetchCastingPack(id, gwBase));
+            } catch {
+                setCastingPack([]);
+            }
+        },
+        [gwBase],
+    );
+
+    // 换 run 时重取盘点（候选属于具体 run + 项目，串台会把别张脸当成本角色候选）。
+    useEffect(() => {
+        if (!runIdRef.current || !gwBase) {
+            setCastingPack([]);
+            return;
+        }
+        void refreshCastingPack(runIdRef.current);
+    }, [gwBase, runId, refreshCastingPack]);
+
     const [llmModels, setLlmModels] = useState<string[]>([]);
     /** 自动建 run 流程里 createPipelineRun 与 runPipelineStage 同轮调用，state 来不及落地，用 ref 兜底（旧 hook #72 教训）。 */
     const runIdRef = useRef(runId);
@@ -359,19 +388,20 @@ export function useProduction() {
 
     /** 定妆确认（锁脸/锁声）：成功后后端自动解除下游 casting 阻断。 */
     const confirmCasting = useCallback(
-        async (body: { characterId: string; face?: boolean; voice?: boolean; speaker?: string; design?: string; language?: string; speed?: number }) => {
+        async (body: { characterId: string; face?: boolean; voice?: boolean; speaker?: string; design?: string; language?: string; speed?: number; closeupArtifactId?: string }) => {
             const id = runIdRef.current;
             if (!id || !gwBase) return false;
             setError("");
             try {
                 setRun(await confirmPipelineCasting(id, body, gwBase));
+                await refreshCastingPack(id);
                 return true;
             } catch (caught) {
                 setError(messageOf(caught));
                 return false;
             }
         },
-        [gwBase],
+        [gwBase, refreshCastingPack],
     );
 
     /** 独立合成成片（ffmpeg 后台跑；reused 时 200 直接复用）。 */
@@ -426,6 +456,7 @@ export function useProduction() {
         regenerateItem,
         patchShot,
         confirmCasting,
+        castingPack,
         assemble,
         exportPackage,
         refreshRun,

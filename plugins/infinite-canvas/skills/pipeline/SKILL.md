@@ -23,8 +23,9 @@ description: 驱动 Infinite Canvas 服务端短剧项目与七段流水线（�
    - `project_regenerate_item`：单条重出（itemId 必填；`promptOverride` 人工改词只覆盖提示词，尺寸/参考图/采样参数仍走规则表，不破坏身份锁定；新候选自动选中）；
    - `project_confirm_casting`：锁脸/锁声（face/voice 至少确认一个；确认后自动解除 keyframe/audio 的 casting 阻断，批量生产前必须全部确认）；
    - `project_adopt_candidate`：采用/撤销候选（jobId 传 null 撤销）。
-   - `project_asset_pack`：查资料包现状（每个角色/场景/道具锁了几张参考图、status 是 adopted/candidates/missing）。**推进定妆或关键帧前先调它**，missing 的实体就是要先补的缺口。
+   - `project_asset_pack`：查资料包现状。给 projectId → 每个角色/场景/道具锁了几张参考图、status 是 adopted/candidates/missing，**推进定妆或关键帧前先调它**，missing 的实体就是要先补的缺口；给 runId → 定妆取料盘点（每张脸当前用哪张、source、可换的 candidates）。
    - `project_attach_asset`：把产物归入资料包挂到实体上（artifactId 用网关产物地址 `/api/artifacts/<jobId>/<file>`，不是本地 data:/blob: 地址）。**幂等** —— 同 role+bindingId 重复调用只追加候选，created=false 就是命中已有引用，不会造出重复引用导致选参考图随机命中。
+   - 定妆的脸**优先取资料包里人工采用/归入的那张**，服化道自动绑定的排后面；`project_confirm_casting` 可用 `closeupArtifactId` 显式换脸。换了正脸该角色会回到未确认状态，需要重新确认才能放行下游 —— 这是刻意的，不替你批准没看过的脸。
 6. **成片交付**：`project_assemble` 合成（ffmpeg 分钟级）→ `project_run_status` 等终态 → `project_export_package` 取交付包（zip：成片 + 分集 clips + SRT + FCPXML + EDL，可直接导入剪映继续剪）。
 7. **质检**：`project_run_qc` 读报告。**没报警不等于没问题**——指标接近门槛（如接缝响度差）时主动提醒用户人工复核。
 

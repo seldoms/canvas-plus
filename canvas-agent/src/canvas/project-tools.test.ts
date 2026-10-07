@@ -213,6 +213,40 @@ describe("project_* 工具", () => {
         assert.equal("metadata" in result.packs[0], false, "不该把 metadata 全文塞进上下文");
     });
 
+    it("project_asset_pack 带 runId 时走 casting/pack 盘点：回当前脸+来源+候选，且带换脸提示", async () => {
+        respond = (_req, res) =>
+            res.writeHead(200, { "Content-Type": "application/json" }).end(
+                JSON.stringify({
+                    characters: [
+                        { characterId: "c1", name: "阿海", currentCloseupArtifactId: "/api/p1.png", source: "pack", confirmed: false, hasPackRef: true, packSelectedArtifactId: "/api/p1.png", candidates: ["/api/p1.png", "/api/p2.png"] },
+                        { characterId: "c2", name: "小满", currentCloseupArtifactId: "/api/d1.png", source: "design", confirmed: true, hasPackRef: false, packSelectedArtifactId: null, candidates: [] },
+                    ],
+                }),
+            );
+        const result = (await callProjectTool("project_asset_pack", { runId: "run_1" })) as { castingFaces: Array<Record<string, unknown>>; hint: string };
+        assert.ok(lastRequest().url.endsWith("/steps/casting/pack"), lastRequest().url);
+        assert.equal(result.castingFaces.length, 2);
+        assert.equal(result.castingFaces[0].source, "pack");
+        assert.deepEqual(result.castingFaces[0].candidates, ["/api/p1.png", "/api/p2.png"]);
+        assert.equal(result.castingFaces[1].source, "design");
+        assert.deepEqual(result.castingFaces[1].candidates, [], "资料包没候选就必须回空数组，不能拿 design 的图冒充");
+        assert.match(result.hint, /closeupArtifactId/);
+    });
+
+    it("project_asset_pack 既没 projectId 也没 runId 时报错（不静默打错接口）", async () => {
+        await assert.rejects(() => callProjectTool("project_asset_pack", {}), /projectId/);
+    });
+
+    it("project_confirm_casting 支持 closeupArtifactId 换脸，并原样透传给网关", async () => {
+        respond = (_req, res) => res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ run: { id: "run_1" } }));
+        await callProjectTool("project_confirm_casting", { runId: "run_1", characterId: "c1", face: true, closeupArtifactId: "/api/p2.png" });
+        assert.ok(lastRequest().url.endsWith("/steps/casting/confirm"), lastRequest().url);
+        const body = lastRequest().body as Record<string, unknown>;
+        assert.equal(body.closeupArtifactId, "/api/p2.png", "换脸必须真的发到后端，否则选了等于没选");
+        assert.equal(body.face, true);
+        assert.equal(body.characterId, "c1");
+    });
+
     it("project_asset_pack 带 role 时走查询参数过滤", async () => {
         respond = (_req, res) => res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ assetRefs: [] }));
         await callProjectTool("project_asset_pack", { projectId: "prj_1", role: "scene" });

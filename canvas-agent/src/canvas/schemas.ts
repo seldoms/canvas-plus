@@ -159,11 +159,11 @@ export const toolInputSchemas = {
     project_update_stage_input: z.object({ runId: z.string(), stage: z.string(), patch: recordSchema }),
     project_regenerate_item: z.object({ runId: z.string(), stage: z.string(), itemId: z.string(), template: z.string().optional(), params: recordSchema.optional(), promptOverride: z.string().optional() }),
     project_patch_shot: z.object({ runId: z.string(), shotId: z.string(), patch: recordSchema, stage: z.string().optional() }),
-    project_confirm_casting: z.object({ runId: z.string(), characterId: z.string(), face: z.boolean().optional(), voice: z.boolean().optional(), speaker: z.string().optional(), design: z.string().optional(), language: z.string().optional(), speed: z.number().optional(), previewArtifactId: z.string().optional() }),
+    project_confirm_casting: z.object({ runId: z.string(), characterId: z.string(), face: z.boolean().optional(), voice: z.boolean().optional(), speaker: z.string().optional(), design: z.string().optional(), language: z.string().optional(), speed: z.number().optional(), previewArtifactId: z.string().optional(), closeupArtifactId: z.string().optional() }),
     project_assemble: z.object({ runId: z.string(), options: recordSchema.optional() }),
     /** 采用某个候选：jobId 传 null 表示撤销采用（与 M3 的 select 语义一致）。 */
     project_adopt_candidate: z.object({ projectId: z.string(), shotId: z.string(), slotId: z.string(), jobId: z.string().nullable() }),
-    project_asset_pack: z.object({ projectId: z.string(), role: z.string().optional() }),
+    project_asset_pack: z.object({ projectId: z.string().optional(), role: z.string().optional(), runId: z.string().optional() }),
     project_attach_asset: z.object({
         projectId: z.string(),
         role: z.string(),
@@ -230,10 +230,10 @@ export const toolDescriptions: Record<ToolName, string> = {
     project_update_stage_input: "改某阶段的输入参数（如模型、时长、风格强度），patch 为键值对。**改完要再调 project_run_stage 才生效**。用于「换模型重跑这一段」。",
     project_regenerate_item: "给单个条目**追加一个候选**（换模板/参数/提示词再出一份）：itemId 来自 project_stage_items。promptOverride 是人工改词——只覆盖提示词，尺寸/参考图/采样参数仍走规则表，不破坏身份锁定。202 立刻返回，新候选自动选中。",
     project_patch_shot: "改 run 内某个镜头的字段（景别/机位/动作/对白/时长等，patch 为键值对）。stage 默认 storyboard。shotId 来自 project_stage_items。改完对白后通常要配 project_regenerate_item 重录对应配音。",
-    project_confirm_casting: "角色定妆确认（锁脸/锁声音的人工动作）：characterId + face/voice 确认位，可带 speaker/design/language/speed。确认后自动解除 keyframe/audio 的 casting 阻断。批量生产前必须全部确认。",
+    project_confirm_casting: "角色定妆确认（锁脸/锁声音的人工动作）：characterId + face/voice 确认位，可带 speaker/design/language/speed。**换脸**：先 project_asset_pack({runId}) 看 candidates，再传 closeupArtifactId + face:true，来源会被记为 pack（人工选用）并在重跑时保留。确认后自动解除 keyframe/audio 的 casting 阻断。批量生产前必须全部确认。",
     project_assemble: "触发「片段 → 成片」合成（assembly 阶段的执行体）：按 assembly.order 拼接、逐段响度归一、接缝淡化。202 立刻返回，ffmpeg 是分钟级，用 project_run_status 等终态。合成完用 project_export_package 取交付包。",
     project_adopt_candidate: "采用/撤销采用某个槽位候选。传 jobId 采用（写入 slot.selected），传 **null 撤销采用**（幂等、不动候选数组）。这是「批量生成后由 Agent 逐个确认采用」的关键动作。",
-    project_asset_pack: "读取项目资料包现状：每个角色的/场景/道具绑定了哪些参考图、几个候选、有没有选定（status: adopted/candidates/missing）。想推进定妆或关键帧前先调它，missing 的实体就是必须先补的缺口。",
+    project_asset_pack: "读取项目资料包现状。两种用法：给 projectId → 每个角色的/场景/道具绑了哪些参考图、几个候选、有没有选定（status: adopted/candidates/missing），missing 的实体就是必须先补的缺口；给 runId → **定妆取料盘点**（castingFaces：每张脸当前用哪张、source=pack/design/prev/none、还有哪些 candidates 可换）。想推进定妆或换脸前先调它。",
     project_attach_asset: "把一个产物归入项目资料包，挂到某个实体上（role + bindingId），之后它就是该实体的参考图。artifactId 必须是网关产物地址 /api/artifacts/<jobId>/<file>。**幂等**：同 role+bindingId 重复调用只会追加候选，不会造出重复引用。",
     project_export_package: "导出完整交付包：自动粗剪成片 + clips/ 分集原片 + SRT + FCPXML + EDL + 清单 + 说明，打成 zip。**202 立刻返回**（真实 ffmpeg 是分钟级），完成后用 GET 同路径读 manifest。与浏览器端的「成片+字幕」下载不同，这个含剪辑工程文件，可直接导入剪映继续剪。",
 };

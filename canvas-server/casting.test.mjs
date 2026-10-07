@@ -42,17 +42,9 @@ test("emptyFace / emptyVoice 契约键齐全且默认值正确", () => {
 test("normalizeFace / normalizeVoice：缺字段补默认、非法枚举回落、字符串数组收敛", () => {
     assert.deepEqual(normalizeFace({}), { closeupArtifactId: "", turnaroundArtifactIds: [], confirmed: false, source: "none" });
     assert.deepEqual(normalizeFace({ turnaroundArtifactIds: ["a", "", null, "b"], confirmed: true }), { closeupArtifactId: "", turnaroundArtifactIds: ["a", "b"], confirmed: true, source: "none" });
-    // 非法 source 枚举 → 不把未知值透传给前端；又确实没脸 → none。
+    // 非法 source 枚举 → none，绝不把未知值透传给前端当来源显示。
     assert.equal(normalizeFace({ source: "hacker" }).source, "none");
-    // 非法 source 但**有脸**（存量产物）→ prev，绝不能说「未取到」。
-    assert.equal(normalizeFace({ source: "hacker", closeupArtifactId: "/a/x.png" }).source, "prev");
     assert.equal(normalizeFace({ source: "pack" }).source, "pack");
-    // 真机踩到的坑：存量产物没有 source 但明明有脸 —— 必须说「沿用已有」而不是「未取到」，
-    // 否则面板会对着一张存在的脸报「未取到料」。
-    assert.equal(normalizeFace({ closeupArtifactId: "/a/x.png" }).source, "prev");
-    assert.equal(normalizeFace({}).source, "none", "真的没正脸才报 none");
-    // source 说的是**正脸**的出处：只有三视图没有正脸，仍是 none（面板上那张脸的位置是空的）。
-    assert.equal(normalizeFace({ turnaroundArtifactIds: ["/a/t.png"] }).source, "none");
     // 非法音色 → 回落空串；非法语种 → 回落 Auto；speed 非法 → 1。
     assert.deepEqual(normalizeVoice({ speaker: "hacker", language: "Klingon", speed: -2 }), {
         voiceProfileId: "",

@@ -333,7 +333,9 @@ export async function callProjectTool(name: ToolName, input: Json) {
             if (!runId) throw new Error("缺少 runId");
             if (!characterId) throw new Error("缺少 characterId（先用 project_stage_items 拿）");
             const body: Json = { characterId };
-            for (const key of ["face", "voice", "speaker", "design", "language", "speed", "previewArtifactId"] as const) {
+            // closeupArtifactId = 显式选用候选脸（先看 project_asset_pack 的 candidates 再传）；
+            // 带上 face: true 即「换这张脸并锁它」。不带 closeupArtifactId 时行为逐字不变。
+            for (const key of ["face", "voice", "speaker", "design", "language", "speed", "previewArtifactId", "closeupArtifactId"] as const) {
                 if (input[key] !== undefined) body[key] = input[key];
             }
             if (input.face !== true && input.voice !== true) throw new Error("face / voice 至少确认一个");
@@ -372,8 +374,28 @@ export async function callProjectTool(name: ToolName, input: Json) {
         }
         case "project_asset_pack": {
             const projectId = String(input.projectId || "").trim();
-            if (!projectId) throw new Error("缺少 projectId");
+            if (!projectId && !input.runId) throw new Error("缺少 projectId（或给 runId 走定妆取料盘点）");
             const query = input.role ? `?role=${encodeURIComponent(String(input.role))}` : "";
+            // 带 runId 时额外返回「定妆取料盘点」：每张脸当前用哪张、从哪来、还有哪些候选可换。
+            // 换脸需要的就是这份清单，避免 Agent 为了换一张脸去翻整本 run。
+            if (input.runId) {
+                const runId = String(input.runId || "").trim();
+                const payload = await gateway(`/api/pipeline/runs/${encodeURIComponent(runId)}/steps/casting/pack`);
+                const rows = Array.isArray(payload.characters) ? (payload.characters as Json[]) : [];
+                return {
+                    runId,
+                    castingFaces: rows.map((row) => ({
+                        characterId: row.characterId ?? null,
+                        name: row.name ?? null,
+                        currentCloseupArtifactId: row.currentCloseupArtifactId ?? null,
+                        // pack=人工选用/归入，design=服化道自动绑定，prev=沿用上次，none=未取到
+                        source: row.source ?? null,
+                        confirmed: row.confirmed === true,
+                        candidates: Array.isArray(row.candidates) ? row.candidates.map(String) : [],
+                    })),
+                    hint: "换脸：project_confirm_casting 传 characterId + closeupArtifactId（从 candidates 里选）+ face:true",
+                };
+            }
             const payload = await gateway(`/api/projects/${encodeURIComponent(projectId)}/asset-refs${query}`);
             const refs = Array.isArray(payload.assetRefs) ? payload.assetRefs : [];
             // 只回「够判断下一步」的三件事：谁还没锁参考图、有几个候选、采用的是哪张。

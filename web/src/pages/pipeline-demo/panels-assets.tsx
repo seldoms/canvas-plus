@@ -157,12 +157,25 @@ export function DesignPanel({ production }: { production: Production }) {
 /* 04 角色定妆 —— 真实定妆照 / 音色 / 试听 / 脸声双确认（确认即解下游阻断） */
 /* ------------------------------------------------------------------ */
 
+/** 脸从哪来：如实显示取料出处，别让人对着不明来源的缩略图猜。 */
+const FACE_SOURCE_LABEL: Record<string, { text: string; tone: string }> = {
+    pack: { text: "资料包选用", tone: "success" },
+    design: { text: "服化道自动", tone: "default" },
+    prev: { text: "沿用上次", tone: "default" },
+    none: { text: "未取到", tone: "warning" },
+};
+
 function CastingCard({ production, character }: { production: Production; character: NonNullable<CastingStageOutput["characters"]>[number] }) {
     const [auditioning, setAuditioning] = useState(false);
-    const [confirming, setConfirming] = useState<"" | "face" | "voice">("");
+    const [confirming, setConfirming] = useState<"" | "face" | "voice" | "pick">("");
+    const [picking, setPicking] = useState(false);
     const face = character.face ?? {};
     const voice = character.voice ?? {};
     const faceUrl = production.artifactUrl(face.closeupArtifactId);
+    // 候选只认服务端盘点的资料包引用；没有就不显示候选区（绝不用 design 的图冒充可选候选）。
+    const packRow = production.castingPack.find((row) => row.characterId === character.characterId);
+    const candidates = (packRow?.candidates ?? []).filter((id) => id !== face.closeupArtifactId);
+    const sourceTag = FACE_SOURCE_LABEL[face.source ?? "none"] ?? FACE_SOURCE_LABEL.none;
 
     const audition = async () => {
         if (!voice.speaker) return;
@@ -190,6 +203,14 @@ function CastingCard({ production, character }: { production: Production; charac
         setConfirming("");
     };
 
+    /** 显式选用候选脸：走 confirmCasting 的 closeupArtifactId，后端会把来源记为 pack 并沿用。 */
+    const pickFace = async (artifactId: string) => {
+        setConfirming("pick");
+        const ok = await production.confirmCasting({ characterId: character.characterId, closeupArtifactId: artifactId });
+        setConfirming("");
+        if (ok) setPicking(false);
+    };
+
     return (
         <div className="rounded-lg border border-stone-200/80 p-3.5 dark:border-stone-800">
             <div className="flex gap-3">
@@ -198,11 +219,44 @@ function CastingCard({ production, character }: { production: Production; charac
                     <div className="flex items-center gap-2">
                         <span className="text-sm font-medium text-stone-900 dark:text-stone-100">{character.name || character.characterId}</span>
                         <Tag color={face.confirmed ? "success" : "default"} className="mr-0">脸{face.confirmed ? "已确认" : "待确认"}</Tag>
+                        {/* 取料出处：资料包选用 / 服化道自动 / 沿用上次 / 未取到。不显示就等于让人猜。 */}
+                        <Tooltip title="这张脸的来源：资料包选用=你手动选的；服化道自动=03 阶段自动绑定；沿用上次=本轮没取到新料">
+                            <Tag color={sourceTag.tone} className="mr-0">
+                                {sourceTag.text}
+                            </Tag>
+                        </Tooltip>
                     </div>
                     {face.turnaroundArtifactIds?.length ? (
                         <div className="mt-2 flex gap-1.5">
                             {face.turnaroundArtifactIds.slice(0, 3).map((id, i) => (
                                 <ArtifactThumb key={id} small url={production.artifactUrl(id)} label={`三视图 ${i + 1}`} />
+                            ))}
+                        </div>
+                    ) : null}
+                    {candidates.length ? (
+                        <div className="mt-2 flex items-center gap-2">
+                            <Button size="small" onClick={() => setPicking((value) => !value)}>
+                                {picking ? "收起候选" : `换脸（${candidates.length} 张候选）`}
+                            </Button>
+                            <span className="text-[11px] text-stone-400">候选来自项目资料包</span>
+                        </div>
+                    ) : null}
+                    {picking && candidates.length ? (
+                        <div className="mt-2 flex flex-wrap gap-1.5">
+                            {candidates.map((id) => (
+                                <button
+                                    key={id}
+                                    type="button"
+                                    className="group relative overflow-hidden rounded-lg ring-1 ring-black/10 transition hover:ring-emerald-500 focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:outline-none dark:ring-white/15"
+                                    style={{ height: 96, width: 72 }}
+                                    onClick={() => void pickFace(id)}
+                                    disabled={confirming === "pick"}
+                                >
+                                    <img src={production.artifactUrl(id)} alt="候选定妆照" className="size-full object-cover object-top" loading="lazy" />
+                                    <span className="absolute inset-x-0 bottom-0 bg-black/55 py-0.5 text-[10px] leading-tight text-white/90 group-hover:bg-emerald-600/80">
+                                        {confirming === "pick" ? "选用中…" : "选这张"}
+                                    </span>
+                                </button>
                             ))}
                         </div>
                     ) : null}

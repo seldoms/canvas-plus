@@ -40,7 +40,8 @@ export type DesignOutput = { characters?: DesignCharacter[]; locations?: DesignL
 export type CastingCharacterOut = {
     characterId: string;
     name?: string;
-    face?: { closeupArtifactId?: string; turnaroundArtifactIds?: string[]; confirmed?: boolean };
+    /** `source` = 取料来源：pack 人工从资料包选用/归入、design 03 自动绑定、prev 沿用上次、none 未取到。 */
+    face?: { closeupArtifactId?: string; turnaroundArtifactIds?: string[]; confirmed?: boolean; source?: "pack" | "design" | "prev" | "none" };
     voice?: { voiceProfileId?: string; speaker?: string; design?: string; speed?: number; language?: string; previewArtifactId?: string; confirmed?: boolean };
     confirmed?: boolean;
 };

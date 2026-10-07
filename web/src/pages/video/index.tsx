@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState, useSyncExternalStore, type DragEvent } from "react";
 import { App, Button, Drawer, Empty, Input, Modal, Tag } from "antd";
-import { ArrowLeft, ArrowRight, BookOpen, ClipboardPaste, Download, FolderPlus, History, SlidersHorizontal, Sparkles, Trash2, Upload, VideoIcon } from "lucide-react";
+import { ArrowLeft, ArrowRight, BookOpen, ClipboardPaste, Download, FolderPlus, History, ListPlus, SlidersHorizontal, Sparkles, Trash2, Upload, VideoIcon } from "lucide-react";
 import { nanoid } from "nanoid";
 import { useTranslation } from "react-i18next";
 
 import { ArtifactActions, type ArtifactTarget } from "@/components/artifact-actions";
+import { AttachAssetModal } from "@/components/attach-asset-modal";
 import { AssetPickerModal, type InsertAssetPayload } from "@/components/canvas/asset-picker-modal";
 import { ModelPicker } from "@/components/model-picker";
 import { PromptSelectDialog } from "@/components/prompts/prompt-select-dialog";
@@ -15,7 +16,7 @@ import { canvasThemes } from "@/lib/canvas-theme";
 import { formatBytes, formatDuration } from "@/lib/image-utils";
 import { clampVideoSeconds, inferVideoRatio, readVideoDimensions } from "@/lib/media-size";
 import { findTemplate, loadTemplateCatalog, type GatewayTemplateInfo } from "@/services/api/template-sizes";
-import { resolveGatewayUrl, uploadGatewayAsset } from "@/services/api/gateway";
+import { gatewayArtifactPath, resolveGatewayUrl, uploadGatewayAsset } from "@/services/api/gateway";
 import { cancelVideoJob, enqueueVideoJob, getVideoJob, listVideoJobs } from "@/services/api/video-jobs";
 import { ensureImagePreview, getImageBlob, getImagePreviewRevision, previewUrlFor, resolveImageUrl, subscribeImagePreviews, uploadImage } from "@/services/image-storage";
 import { useAssetStore } from "@/stores/use-asset-store";
@@ -237,6 +238,8 @@ export default function VideoPage() {
     const [settingsOpen, setSettingsOpen] = useState(false);
     const [promptDialogOpen, setPromptDialogOpen] = useState(false);
     const [assetPickerOpen, setAssetPickerOpen] = useState(false);
+    /** 「归入项目资料包」弹窗当前携带的产物（null = 关闭）；与「存入我的素材」是**两条独立动线**。 */
+    const [attachTarget, setAttachTarget] = useState<{ url: string; jobId?: string; name?: string } | null>(null);
     const [nowTick, setNowTick] = useState(0);
     const [selectedId, setSelectedId] = useState<string | null>(null);
     const [isReferenceDragActive, setIsReferenceDragActive] = useState(false);
@@ -453,6 +456,19 @@ export default function VideoPage() {
             metadata: { source: "video-page", prompt },
         });
         message.success(t("common.addedToAssets"));
+    };
+
+    /**
+     * 打开「归入项目资料包」：先校验产物是不是网关产物（本地临时地址存进AssetRef 后无法回看），
+     * 不合格就直接提示，不让用户填完表才发现白填。
+     */
+    const startAttachPack = (url: string, jobId?: string) => {
+        const path = gatewayArtifactPath(url);
+        if (!path) {
+            message.warning(t("attachAsset.localOnly"));
+            return;
+        }
+        setAttachTarget({ url: path, jobId, name: t("videoWorkbench.resultTitle") });
     };
 
     const insertPickedAsset = async (payload: InsertAssetPayload) => {
@@ -728,13 +744,13 @@ export default function VideoPage() {
                         {detailTask ? (
                             <div className="space-y-4">
                                 <SnapshotPanel prompt={detailTask.prompt} tags={videoSnapshotTags(detailTask.snapshot)} references={detailTask.snapshot.references} />
-                                <VideoTaskGroup task={detailTask} jobs={detailTask.jobIds.map((id) => jobs[id]).filter((job): job is WorkbenchJob => Boolean(job))} now={nowTick} onCancelJob={(jobId) => void cancelJob(jobId)} onCancelJobs={(ids) => void cancelJobs(ids)} onRetryJob={(jobId) => void retryJob(jobId)} onDownload={downloadVideo} onSaveAsset={saveResultToAssets} />
+                                <VideoTaskGroup task={detailTask} jobs={detailTask.jobIds.map((id) => jobs[id]).filter((job): job is WorkbenchJob => Boolean(job))} now={nowTick} onCancelJob={(jobId) => void cancelJob(jobId)} onCancelJobs={(ids) => void cancelJobs(ids)} onRetryJob={(jobId) => void retryJob(jobId)} onDownload={downloadVideo} onSaveAsset={saveResultToAssets} onAttachPack={startAttachPack} />
                             </div>
                         ) : detailLog ? (
                             <div className="space-y-4">
                                 <SnapshotPanel prompt={detailLog.prompt} tags={videoSnapshotTags(detailLog.snapshot)} references={detailLog.snapshot.references} />
                                 {detailLog.url ? (
-                                    <VideoResultCard url={detailLog.url} archiveTargets={logArchiveTargets} onDownload={downloadVideo} onSaveAsset={saveResultToAssets} />
+                                    <VideoResultCard url={detailLog.url} archiveTargets={logArchiveTargets} onDownload={downloadVideo} onSaveAsset={saveResultToAssets} onAttachPack={gatewayArtifactPath(detailLog.url) ? startAttachPack : undefined} />
                                 ) : (
                                     <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={detailLog.status === "canceled" ? t("workbench.canceled") : t("videoWorkbench.empty")} className="!my-16" />
                                 )}
@@ -769,6 +785,7 @@ export default function VideoPage() {
             </Drawer>
             <PromptSelectDialog open={promptDialogOpen} onOpenChange={setPromptDialogOpen} onSelect={setPrompt} />
             <AssetPickerModal open={assetPickerOpen} defaultTab="my-assets" onInsert={(payload) => void insertPickedAsset(payload)} onClose={() => setAssetPickerOpen(false)} />
+            <AttachAssetModal open={attachTarget !== null} artifact={attachTarget} onClose={() => setAttachTarget(null)} />
         </div>
     );
 }
@@ -790,8 +807,23 @@ function GenerationSettings({ config, model, updateConfig, openConfigDialog }: {
     );
 }
 
-/** 生视频结果卡片（视频播放 + 加入资产 / 下载 / 归档）。 */
-function VideoResultCard({ url, archiveTargets, onDownload, onSaveAsset }: { url: string; archiveTargets?: ArtifactTarget[]; onDownload: (url: string) => void; onSaveAsset: (url: string) => void }) {
+/** 生视频结果卡片（视频播放 + 存入我的素材 / 归入资料包 / 下载 / 归档）。 */
+function VideoResultCard({
+    url,
+    archiveTargets,
+    onDownload,
+    onSaveAsset,
+    onAttachPack,
+    jobId,
+}: {
+    url: string;
+    archiveTargets?: ArtifactTarget[];
+    onDownload: (url: string) => void;
+    onSaveAsset: (url: string) => void;
+    /** 只有父级确认产物是网关产物（本地临时地址存进资料包后无法回看）时才传；不传则不显示该动作。 */
+    onAttachPack?: (url: string, jobId?: string) => void;
+    jobId?: string;
+}) {
     const { t } = useTranslation();
     return (
         <div className="overflow-hidden rounded-lg border border-stone-200 bg-background dark:border-stone-800">
@@ -801,6 +833,12 @@ function VideoResultCard({ url, archiveTargets, onDownload, onSaveAsset }: { url
                     <Button size="small" icon={<FolderPlus className="size-3.5" />} onClick={() => onSaveAsset(url)}>
                         {t("common.addToAssets")}
                     </Button>
+                    {/* 归入项目资料包 ≠ 存入我的素材：前者进项目事实层并被定妆/关键帧取用，后者只是本地素材库。 */}
+                    {onAttachPack ? (
+                        <Button size="small" icon={<ListPlus className="size-3.5" />} onClick={() => onAttachPack(url, jobId)}>
+                            {t("common.attachAssetPack")}
+                        </Button>
+                    ) : null}
                     <Button size="small" icon={<Download className="size-3.5" />} onClick={() => onDownload(url)}>
                         {t("common.download")}
                     </Button>
@@ -814,7 +852,7 @@ function VideoResultCard({ url, archiveTargets, onDownload, onSaveAsset }: { url
 }
 
 /** 进行中任务的详情：状态 / 进度 / 取消 + 结果卡片（视频）。 */
-function VideoTaskGroup({ task, jobs, now, onCancelJob, onCancelJobs, onRetryJob, onDownload, onSaveAsset }: { task: VideoTask; jobs: WorkbenchJob[]; now: number; onCancelJob: (jobId: string) => void; onCancelJobs: (jobIds: string[]) => void; onRetryJob: (jobId: string) => void; onDownload: (url: string) => void; onSaveAsset: (url: string) => void }) {
+function VideoTaskGroup({ task, jobs, now, onCancelJob, onCancelJobs, onRetryJob, onDownload, onSaveAsset, onAttachPack }: { task: VideoTask; jobs: WorkbenchJob[]; now: number; onCancelJob: (jobId: string) => void; onCancelJobs: (jobIds: string[]) => void; onRetryJob: (jobId: string) => void; onDownload: (url: string) => void; onSaveAsset: (url: string) => void; onAttachPack: (url: string, jobId?: string) => void }) {
     const { t } = useTranslation();
     const jobById = new Map(jobs.map((job) => [job.id, job] as const));
     const total = task.jobIds.length;
@@ -863,7 +901,7 @@ function VideoTaskGroup({ task, jobs, now, onCancelJob, onCancelJobs, onRetryJob
                         const job = jobById.get(id);
                         if (job?.status === "done" && job.outputs?.length) {
                             const output = job.outputs.find((item) => item.url);
-                            return output ? <VideoResultCard key={id} url={resolveGatewayUrl(output.url)} archiveTargets={archiveTargetsFromJobs([job])} onDownload={onDownload} onSaveAsset={onSaveAsset} /> : null;
+                            return output ? <VideoResultCard key={id} url={resolveGatewayUrl(output.url)} archiveTargets={archiveTargetsFromJobs([job])} onDownload={onDownload} onSaveAsset={onSaveAsset} jobId={id} onAttachPack={gatewayArtifactPath(output.url) ? onAttachPack : undefined} /> : null;
                         }
                         if (job?.status === "canceled") return <FailedMediaCard key={id} canceled error={t("workbench.canceled")} aspectClassName="aspect-video" />;
                         if (job?.status === "error") return <FailedMediaCard key={id} error={job.error || t("workbench.generationFailed")} onRetry={() => onRetryJob(id)} aspectClassName="aspect-video" />;

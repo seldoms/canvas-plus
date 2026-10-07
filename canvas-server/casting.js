@@ -22,8 +22,8 @@
  * face.source 是取料来源标记（2026-10-08 新增，枚举固定，非法值归一为 none）：
  *   pack   —— 人工在项目资料包里选用/归入这张脸（**优先于** design 自动绑定）；
  *   design —— 03 服化道阶段绑定时自动写入的参考图；
- *   prev   —— 沿用上一次 casting 的脸（含存量产物：没有该字段但有脸，一律记prev 而不是 none）；
- *   none   —— 真的还没有脸。
+ *   prev   —— 本轮没取到新料，沿用上一次 casting 的脸；
+ *   none   —— 还没有脸。
  *   加这个字段是为了让定妆面板能如实回答「这张脸从哪来 / 还有哪些候选能换」，
  *   而不是让人对着一个不明来源的缩略图猜。
  *
@@ -65,15 +65,11 @@ export function normalizeFace(raw) {
     const object = isPlainObject(raw) ? raw : {};
     const turnaround = Array.isArray(object.turnaroundArtifactIds) ? object.turnaroundArtifactIds.map(str).filter(Boolean) : [];
     const source = str(object.source);
-    const closeupArtifactId = str(object.closeupArtifactId);
     return {
-        closeupArtifactId,
+        closeupArtifactId: str(object.closeupArtifactId),
         turnaroundArtifactIds: turnaround,
         confirmed: object.confirmed === true,
-        // 存量产物没有 source 字段：**有正脸就说「沿用已有」而不是「未取到」**——
-        // 否则面板会对着一张明明存在的脸报「未取到料」，比不显示来源更糟。
-        // 判据只看正脸：本字段描述的正是正脸的出处，只有三视图没有正脸时仍是 none。
-        source: ["pack", "design", "prev"].includes(source) ? source : closeupArtifactId ? "prev" : "none",
+        source: ["pack", "design", "prev"].includes(source) ? source : "none",
     };
 }
 
@@ -222,12 +218,8 @@ export function buildCastingOutput({ characters = [], design = null, voiceProfil
             // 脸从哪来的：资料包人工采用 / 服化道自动绑定 / 沿用上次 —— 让定妆面板能如实显示来源，
             // 否则「为什么这张脸不是我选的那张」只能靠猜。
             source: pack.closeupArtifactId ? "pack" : artifacts.closeupArtifactId ? "design" : old.face.closeupArtifactId ? "prev" : "none",
-            // 「脸已确认」**只在正脸没换的前提下继承**：本轮取到的正脸与上次不同（资料包改选了另一张、
-            // 或服化道重新绑了图）时必须回落 false —— 否则等于系统替人批准了一张他没看过的脸，
-            // 下游 keyframe/audio 还照样解阻断。真机踩过：换脸后 confirmed 仍是 true。
-            confirmed: old.face.confirmed === true
-                && (nonEmpty(closeupArtifactId) || turnaroundArtifactIds.length > 0)
-                && (!old.face.closeupArtifactId || old.face.closeupArtifactId === closeupArtifactId),
+            // 本轮产物仍在（或曾被确认过且产物未丢）才保留「脸已确认」；否则如实回落 false。
+            confirmed: old.face.confirmed === true && (nonEmpty(closeupArtifactId) || turnaroundArtifactIds.length > 0),
         };
 
         const rawSpeaker = str(profile?.speaker);

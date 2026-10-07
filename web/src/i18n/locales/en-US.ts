@@ -34,6 +34,7 @@ export default {
         details: "Details",
         addToAssets: "Add to My Assets",
         addedToAssets: "Added to My Assets",
+        attachAssetPack: "Attach to Pack",
         copyPrompt: "Copy prompt",
         promptCopied: "Prompt copied",
         created: "Created: {{date}}",

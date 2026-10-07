@@ -1106,6 +1106,18 @@ router.post("/api/pipeline/runs/:id/steps/casting/confirm", async (req, res, { p
 });
 
 /**
+ * 定妆取料来源：某run 的 casting 角色卡 + 该角色在**项目资料包**里的候选脸。
+ * 前端定妆面板据此显示「这张脸是哪来的 / 还有哪些候选可以换」，Agent 也靠它做「选用」而非猜。
+ */
+router.get("/api/pipeline/runs/:id/steps/casting/pack", async (req, res, { params }) => {
+    try {
+        sendJson(res, 200, pipeline.castingPack(params.id));
+    } catch (error) {
+        sendError(res, error.status || 400, error.message);
+    }
+});
+
+/**
  * 合成成片：独立于阶段 LLM 编排的用户触发动作（D11 保留逐阶段人工审核门禁——用户看过片段才决定拼）。
  * body 可带 `{ order?, transition?, quality?, force? }`；同步部分做门禁与幂等判定：
  * 片段未全部成功 → 400 并给出明确原因；已有成片 → 200 直接回原结果，不重复拼；否则 202 后台跑 ffmpeg。

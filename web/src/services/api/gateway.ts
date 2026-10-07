@@ -512,12 +512,49 @@ export async function patchPipelineStageShot(runId: string, stageId: string, sho
  * { characterId, face?, voice?, speaker?, design?, language?, speed?, previewArtifactId? }。
  * face/voice 各一个确认位；确认后自动解除 keyframe/audio 的 casting 阻断。
  */
-export async function confirmPipelineCasting(runId: string, body: { characterId: string; face?: boolean; voice?: boolean; speaker?: string; design?: string; language?: string; speed?: number; previewArtifactId?: string }, baseUrl?: string) {
+export async function confirmPipelineCasting(runId: string, body: { characterId: string; face?: boolean; voice?: boolean; speaker?: string; design?: string; language?: string; speed?: number; previewArtifactId?: string; closeupArtifactId?: string }, baseUrl?: string) {
     const data = await gatewayRequest<{ run: GatewayPipelineRun }>({ method: "post", url: `/api/pipeline/runs/${encodeURIComponent(runId)}/steps/casting/confirm`, data: body }, baseUrl);
     return data.run;
 }
 
-/** 有内置脚本模板的网关模板：键为模板名，对应 model-plugin 里的模板 label 文案 key。 */
+/** 定妆取料盘点：当前脸+ 来源 + 项目资料包里该角色的全部候选（`GET .../steps/casting/pack`）。 */
+export type CastingPackRow = {
+    characterId: string;
+    name: string;
+    currentCloseupArtifactId: string;
+    source: "pack" | "design" | "prev" | "none";
+    confirmed: boolean;
+    hasPackRef: boolean;
+    packSelectedArtifactId: string | null;
+    candidates: string[];
+};
+
+/**
+ * 定妆「显式取料」的盘点视图：告诉面板这张脸从哪来、还有哪些候选能换。
+ * 读不到就让调用方降级（面板仍能显示，只是没有候选可换）——不假装有候选。
+ */
+export async function fetchCastingPack(runId: string, baseUrl?: string): Promise<CastingPackRow[]> {
+    const data = await gatewayRequest<{ characters?: CastingPackRow[] }>({ url: `/api/pipeline/runs/${encodeURIComponent(runId)}/steps/casting/pack` }, baseUrl);
+    return Array.isArray(data.characters) ? data.characters : [];
+}
+
+/**
+ * 产物绝对地址 → 网关相对路径（`/api/artifacts/...`）。
+ *
+ * AssetRef.artifactIds 里存的是**相对路径**（真实项目数据即如此），绝对地址存进去换个网关地址就全失效，
+ * 所以任何产物归入资料包前都必须还原成相对路径。
+ * 认不出来（data:/blob: 等本地临时地址）返回空串 —— 这类产物根本不该进资料包。
+ * 生图/生视频两个工作台共用这一份判定，避免两边各写一套慢慢漂移。
+ */
+export function gatewayArtifactPath(url: string | undefined): string {
+    if (!url) return "";
+    if (/^(data:|blob:)/i.test(url)) return "";
+    const marker = "/api/artifacts/";
+    const at = url.indexOf(marker);
+    return at >= 0 ? url.slice(at) : url;
+}
+
+/** 有内置脚本模板的网关模板：键为模板名，对应 model-plugin 里的模板 label 文案key。 */
 const BUILTIN_GATEWAY_SCRIPTS: Record<string, { capability: "image" | "video"; labelKey: string }> = {
     img_zimage_artistic: { capability: "image", labelKey: "zimage" },
     img_flux_artistic: { capability: "image", labelKey: "flux" },
