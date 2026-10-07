@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
 
 import { artifactUrl, ensureDir, safeJoin, sanitizeName, saveBuffer } from "./files.js";
+import { subscribeComfyProgress } from "./comfy-progress.js";
 import { probeMedia } from "./media-probe.js";
 import { MEDIA_TYPES, collectOutputs, disableEmptyImageRefs, disableEmptyLoras, extractTokens, renderTemplate } from "./providers/comfy.js";
 
@@ -154,24 +155,47 @@ export function createLocalRunner({ config, comfy, jobs }) {
         const removedRefs = disableEmptyImageRefs(graph);
         if (removedRefs.length) console.log(`[job ${job.id}] 未指定的参考图槽位，已摘除节点 ${removedRefs.join(", ")}`);
 
-        const promptId = await comfy.queuePrompt(graph);
+        const { promptId, clientId } = await comfy.queuePrompt(graph);
         ctx.patch({ promptId });
         ctx.progress(0, 0, "已提交");
 
+        // 真实进度：ComfyUI 只在 WebSocket 上推progress_state，轮询 /history 整个生成期间都拿不到
+        // （那正是 progress 长期恒为 0/0 的原因）。订阅失败不阻断生成 —— 进度是增强项。
+        let latest = null; // 最近一次真实进度；null = 还没收到（如 ComfyUI 未推或模板无可计数节点）
+        const subscription = subscribeComfyProgress({
+            baseUrl: config.comfy.baseUrl,
+            clientId,
+            onEvent: (event) => {
+                if (event.kind !== "progress") return;
+                latest = event;
+                // node 字段带上正在跑的节点，前端能显示「采样中 (节点 7)」而不只是一根光条。
+                ctx.progress(event.value, event.max, event.node ? `生成中·节点 ${event.node}` : "生成中");
+            },
+        });
+
         const deadline = Date.now() + config.comfy.timeoutMs;
         let entry = null;
-        while (Date.now() < deadline) {
-            if (ctx.signal.aborted) throw new Error("已取消");
-            entry = await comfy.history(promptId);
-            if (entry) break;
-            const counts = await comfy.queueCounts().catch(() => ({ running: 0, pending: 0 }));
-            ctx.progress(0, 0, counts.running ? "生成中" : "排队中");
-            await sleep(config.comfy.pollIntervalMs, ctx.signal);
+        try {
+            while (Date.now() < deadline) {
+                if (ctx.signal.aborted) throw new Error("已取消");
+                entry = await comfy.history(promptId);
+                if (entry) break;
+                const counts = await comfy.queueCounts().catch(() => ({ running: 0, pending: 0 }));
+                // 只有**还没拿到真实进度**时才用排队/生成中文案；一旦收到过真实进度，
+                // 就不再用 0/0 覆盖它（否则进度条会在有真实值之后突然跳回 0）。
+                if (!latest) ctx.progress(0, 0, counts.running ? "生成中" : "排队中");
+                await sleep(config.comfy.pollIntervalMs, ctx.signal);
+            }
+        } finally {
+            // 必须关连接：不关Node 进程会被挂住不退出（视频连跑十几镜时连接会一直累积）。
+            subscription?.close();
         }
         if (!entry) {
             await comfy.interrupt().catch(() => {});
             throw new Error(`生成超时（${Math.round(config.comfy.timeoutMs / 1000)}s）`);
         }
+        // 如实记录「有没有拿到真实进度」：拿到过才说明这条链真的通了，便于日后排查。
+        ctx.patch({ realProgress: Boolean(latest) });
 
         const status = entry.status || {};
         if (status.status_str === "error") {

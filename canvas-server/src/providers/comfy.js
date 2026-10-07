@@ -259,6 +259,14 @@ export function createComfyClient(config) {
         return result?.subfolder ? `${result.subfolder}/${stored}` : stored;
     }
 
+    /**
+     * 提交图，返回 `{ promptId, clientId }`。
+     *
+     * ⚠️ clientId 必须一起回传（2026-10-08）：ComfyUI 按 client_id 把progress_state 等消息
+     * 推给**提交方**，而 clientId 原本在函数内部生成、调用方无从得知 —— 于是进度订阅连
+     * 「自己的任务」都收不到，只能退回轮询（也就是长期 0/0）。改成对象返回后，
+     * 调用方可以拿 clientId 去建 WS 订阅；兼容旧的字符串调用点由generate.js 一并处理。
+     */
     async function queuePrompt(graph, clientId = randomUUID()) {
         const result = await json("/prompt", {
             method: "POST",
@@ -266,7 +274,7 @@ export function createComfyClient(config) {
             body: JSON.stringify({ prompt: graph, client_id: clientId }),
         });
         if (!result?.prompt_id) throw new Error(`ComfyUI 未返回 prompt_id：${JSON.stringify(result).slice(0, 300)}`);
-        return result.prompt_id;
+        return { promptId: result.prompt_id, clientId };
     }
 
     async function history(promptId) {
