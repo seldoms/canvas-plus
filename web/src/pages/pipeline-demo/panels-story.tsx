@@ -84,44 +84,58 @@ function shotsByScene(sceneId: string): MockShot[] {
     return SHOTS.filter((shot) => shot.sceneId === sceneId).sort((a, b) => a.index - b.index);
 }
 
+/** 镜头行：片场镜头表排版 —— 大字镜号 + 状态点起行，景别/运镜是淡 chips，
+ *  动作一行、对白作引用块，时长与调序收在右侧，不放成堆的输入框。 */
 function ShotRow({ shot, first, last }: { shot: MockShot; first: boolean; last: boolean }) {
     const board = shot.storyboard;
-    const statusColor =
-        shot.status === "done" ? "border-l-emerald-400" : shot.status === "partial" ? "border-l-orange-400" : "border-l-stone-200 dark:border-l-stone-700";
+    const statusDot =
+        shot.status === "done" ? "bg-emerald-400" : shot.status === "partial" ? "bg-orange-400" : "bg-stone-300 dark:bg-stone-600";
     return (
-        <div className={cn("grid gap-3 rounded-lg border border-stone-200/70 border-l-4 bg-white px-3.5 py-3 md:grid-cols-[3.5rem_9rem_1fr_1.2fr_4.5rem_2rem]", statusColor, "dark:border-stone-800 dark:bg-transparent")}>
-            <div className="text-sm font-semibold tabular-nums text-stone-800 dark:text-stone-200">镜 {shot.index}</div>
-            <div>
+        <div className="group rounded-lg border border-stone-200/70 px-4 py-3 transition hover:bg-stone-50/60 dark:border-stone-800 dark:hover:bg-white/[0.03]">
+            {/* 第一行：镜号 / 景别·运镜 / 动作 / 时长 / 调序 */}
+            <div className="flex items-center gap-3">
+                <span className="flex w-10 shrink-0 items-baseline gap-1">
+                    <span className={cn("size-1.5 rounded-full", statusDot)} />
+                    <span className="text-lg font-semibold tabular-nums text-stone-300 dark:text-stone-600">{String(shot.index).padStart(2, "0")}</span>
+                </span>
                 <Select
                     size="small"
                     variant="borderless"
                     defaultValue={board.shotSize}
-                    className="-ml-2 w-full"
+                    className="-ml-2 w-20 font-medium"
                     options={["远景", "全景", "中景", "近景", "特写"].map((v) => ({ value: v, label: v }))}
                 />
-                <div className="text-xs text-stone-400">{board.camera}</div>
+                <span className="rounded bg-stone-100 px-1.5 py-0.5 text-[11px] text-stone-500 dark:bg-white/10 dark:text-stone-400">{board.camera || "固定"}</span>
+                <Input
+                    size="small"
+                    variant="borderless"
+                    defaultValue={board.action}
+                    placeholder="动作描述"
+                    className="min-w-0 flex-1 px-1 text-[13px]"
+                />
+                <span className="flex shrink-0 items-center text-xs tabular-nums text-stone-400">
+                    <Input size="small" variant="borderless" defaultValue={board.durationSec} className="w-9 px-0 text-right text-xs" />
+                    s
+                </span>
+                <span className="flex shrink-0 flex-col opacity-0 transition group-hover:opacity-100">
+                    <Button size="small" type="text" disabled={first} icon={<ChevronUp className="size-3" />} className="h-4" />
+                    <Button size="small" type="text" disabled={last} icon={<ChevronDown className="size-3" />} className="h-4" />
+                </span>
             </div>
-            <div className="space-y-1">
-                <Input size="small" variant="borderless" defaultValue={board.action} placeholder="动作描述" className="px-0 text-xs" />
-                <div className="flex items-center gap-1 text-xs text-stone-400">
+            {/* 第二行：背景 + 对白引用块（无对白则不占行） */}
+            <div className="mt-1.5 flex items-start gap-3 pl-11">
+                <span className="flex shrink-0 items-center gap-1 pt-0.5 text-[11px] text-stone-400">
                     <MapPin className="size-3" />
                     {board.background || "背景待定"}
-                </div>
-            </div>
-            <Input.TextArea
-                size="small"
-                variant="borderless"
-                autoSize
-                defaultValue={board.dialogue}
-                placeholder="对白（可空）"
-                className="px-0 text-xs leading-5 text-stone-600"
-            />
-            <div className="flex items-center gap-1 text-xs tabular-nums text-stone-500 dark:text-stone-400">
-                <Input size="small" defaultValue={board.durationSec} className="w-12 text-center" suffix="s" />
-            </div>
-            <div className="flex flex-col items-center justify-center">
-                <Button size="small" type="text" disabled={first} icon={<ChevronUp className="size-3.5" />} />
-                <Button size="small" type="text" disabled={last} icon={<ChevronDown className="size-3.5" />} />
+                </span>
+                <Input.TextArea
+                    size="small"
+                    variant="borderless"
+                    autoSize
+                    defaultValue={board.dialogue}
+                    placeholder="对白（可空）"
+                    className="min-w-0 flex-1 border-l-2 border-stone-200 px-2.5 text-xs italic leading-5 text-stone-500 dark:border-stone-700 dark:text-stone-400"
+                />
             </div>
         </div>
     );

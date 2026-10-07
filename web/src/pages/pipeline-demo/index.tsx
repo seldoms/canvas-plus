@@ -47,13 +47,19 @@ export default function PipelineDemoPage() {
                 <div className="mx-auto max-w-6xl space-y-4">
                     <div className="flex flex-wrap items-baseline gap-x-3">
                         <h1 className="text-xl font-semibold text-stone-950 dark:text-stone-100">影视流水线</h1>
-                        <span className="text-xs text-stone-400">项目 → 集 → 场景 → 镜头 → 素材与候选 → 成片；run 只是执行记录</span>
                         <span className="ml-auto rounded-full bg-amber-100 px-2.5 py-0.5 text-xs text-amber-700 dark:bg-amber-950 dark:text-amber-300">设计 Demo · 演示数据</span>
                     </div>
 
                     <ContextBar run={run} onSelectRun={setRunId} />
 
-                    {/* 阶段导航：横向步骤条，状态点 + 依赖锁，点击切换工作台 */}
+                    {/* 阶段导航：横向步骤条，状态点 + 依赖锁，点击切换工作台。
+                        激活态颜色走原生 <style>，不叠 Tailwind base/dark 双类 —— 级联顺序曾把白底上的文字也染白。 */}
+                    <style>{`
+                        .demo-stage-pill[data-active="true"] { background: #1c1917; color: #fafaf9; }
+                        .dark .demo-stage-pill[data-active="true"] { background: #fafaf9; color: #1c1917; }
+                        .demo-stage-pill[data-active="true"] .demo-stage-num { color: rgba(250,250,249,.55); }
+                        .dark .demo-stage-pill[data-active="true"] .demo-stage-num { color: rgba(28,25,23,.5); }
+                    `}</style>
                     <nav className="overflow-x-auto rounded-xl border border-stone-200 bg-white px-3 py-2.5 dark:border-stone-800 dark:bg-transparent">
                         <div className="flex min-w-max items-center gap-1">
                             {STAGES.map((stage, index) => {
@@ -65,15 +71,14 @@ export default function PipelineDemoPage() {
                                         {index > 0 ? <span className="mx-1 h-px w-4 bg-stone-200 dark:bg-stone-700" /> : null}
                                         <button
                                             type="button"
+                                            data-active={active}
                                             onClick={() => setActiveStage(stage.id)}
                                             className={cn(
-                                                "flex items-center gap-2 rounded-full px-3 py-1.5 text-sm transition",
-                                                active
-                                                    ? "bg-stone-950 text-white dark:bg-white dark:text-stone-900"
-                                                    : "text-stone-600 hover:bg-stone-100 dark:text-stone-300 dark:hover:bg-white/10",
+                                                "demo-stage-pill flex items-center gap-2 rounded-full px-3 py-1.5 text-sm transition",
+                                                !active && "text-stone-600 hover:bg-stone-100 dark:text-stone-300 dark:hover:bg-white/10",
                                             )}
                                         >
-                                            <span className={cn("text-[11px] tabular-nums", active ? "opacity-60" : "text-stone-400")}>
+                                            <span className={cn("demo-stage-num text-[11px] tabular-nums", !active && "text-stone-400")}>
                                                 {String(index + 1).padStart(2, "0")}
                                             </span>
                                             <span>{stage.title}</span>

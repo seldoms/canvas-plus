@@ -1,5 +1,5 @@
 import { Button, Select, Tag, Tooltip } from "antd";
-import { BookOpen, GitBranch, History, Lock, Plus, ShieldCheck } from "lucide-react";
+import { BookOpen, GitBranch, History, Lock, ShieldCheck } from "lucide-react";
 
 import { PROJECT, RUNS, type MockRun } from "./mock-data";
 
@@ -44,7 +44,7 @@ export function ContextBar({
                 <Select
                     size="middle"
                     value={run?.id}
-                    placeholder="选择执行记录（run）"
+                    placeholder="执行记录（选历次生产）"
                     className="min-w-64"
                     onChange={onSelectRun}
                     options={RUNS.filter((item) => !run || item.episodeId === run.episodeId || true).map((item) => ({
@@ -58,7 +58,6 @@ export function ContextBar({
                         ),
                     }))}
                 />
-                <Button size="middle" type="text" icon={<Plus className="size-4" />}>新建 run</Button>
                 <div className="ml-auto flex items-center gap-2">
                     <Tooltip title="结构、引用、对白时序检查已通过；声纹与嘴型需人工复核（不做越界承诺）">
                         <Tag icon={<ShieldCheck className="size-3.5" />} color="success" className="mr-0 inline-flex items-center gap-1">
