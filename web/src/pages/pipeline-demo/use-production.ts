@@ -314,12 +314,6 @@ export function useProduction() {
         [gwBase, refreshRun],
     );
 
-    /** 文本阶段的默认模型：优先 qwen3.8，不让用户面对「网关默认」黑盒（沿用旧 hook 策略）。 */
-    const defaultTextModel = useMemo(
-        () => llmModels.find((name) => /qwen3\.8/i.test(name)) || llmModels.find((name) => /qwen/i.test(name)) || llmModels[0] || "",
-        [llmModels],
-    );
-
     /** 产物地址解析：后端返回 /api/artifacts/... 相对路径，拼网关基址；已是绝对地址原样返回。 */
     const artifactUrl = useCallback(
         (path?: string | null) => {
@@ -428,7 +422,6 @@ export function useProduction() {
         startStage,
         cancelStage,
         retryFailed,
-        defaultTextModel,
         artifactUrl,
         regenerateItem,
         patchShot,

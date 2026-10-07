@@ -1,10 +1,11 @@
 import { Alert, Button, Tooltip } from "antd";
 import { Ban, Lock, Play, RotateCcw, Wrench } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 
+import type { ModelCapability } from "@/stores/use-config-store";
 import { cn } from "@/lib/utils";
 
-import { DemoModelPicker } from "./demo-model-picker";
+import { PipelineModelPicker } from "./pipeline-model-picker";
 import type { StageId, StageStatus } from "./mock-data";
 import { ScriptPanel, StoryboardPanel } from "./panels-story";
 import { CastingPanel, DesignPanel, KeyframePanel } from "./panels-assets";
@@ -13,22 +14,22 @@ import { PipelineSidebar } from "./pipeline-sidebar";
 import { STATUS_META } from "./stage-shell";
 import { useProduction, type Production, type ProductionStageStatus } from "./use-production";
 
-/** 文本阶段：运行时把默认文本模型传给后端（模型选择器接线前先用自动优选值）。 */
-const TEXT_STAGES = new Set(["script", "storyboard"]);
-
-/** 各阶段的模型选择（按能力域配对；定妆不选 LLM，配音音色在定妆配置）。选择器本身待接 registry。 */
-const MODEL_SLOTS: Partial<Record<StageId, ReactNode>> = {
-    script: <DemoModelPicker domain="text" />,
-    storyboard: <DemoModelPicker domain="text" />,
-    design: (
-        <>
-            <span className="flex items-center gap-1"><span className="text-[11px] text-stone-400">设定</span><DemoModelPicker domain="text" className="min-w-40" /></span>
-            <span className="flex items-center gap-1"><span className="text-[11px] text-stone-400">参考图</span><DemoModelPicker domain="image" className="min-w-40" /></span>
-        </>
-    ),
-    keyframe: <DemoModelPicker domain="image" value="img_qwen21_t2i_1080" />,
-    assembly: <DemoModelPicker domain="video" value="vid_wan22_i2v" />,
+/**
+ * 各阶段要选的能力域（真实模型注册表的 category）。
+ * - script/storyboard/design 走文本 LLM；
+ * - keyframe 走图像；assembly 走视频；
+ * - casting 不选 LLM（定妆靠身份卡），audio 选的是音色不是模型 → 无模型槽位。
+ */
+const STAGE_CAPABILITY: Partial<Record<StageId, ModelCapability>> = {
+    script: "text",
+    storyboard: "text",
+    design: "text",
+    keyframe: "image",
+    assembly: "video",
 };
+
+/** 阶段额外可配的能力域：服化道同时要一张参考图。 */
+const EXTRA_IMAGE_STAGES = new Set<StageId>(["design"]);
 
 function ActiveStagePanel({ stage, production }: { stage: StageId; production: Production }) {
     switch (stage) {
@@ -94,11 +95,35 @@ export default function PipelineDemoPage() {
         episodes, episodeId, setEpisodeId,
         runs, runId, openRun,
         error, busyStage, stageStatus, startStage, cancelStage, retryFailed,
-        defaultTextModel,
     } = production;
 
     const [activeStage, setActiveStage] = useState<StageId>("storyboard");
     const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("pipeline-demo.sidebar-collapsed") === "1");
+
+    /**
+     * 各阶段的模型选择（真实值 = 注册表 entry.name，请求侧直接用它）。
+     * 跨阶段记忆：切回上次的阶段时保留上次选的那个模型，不每次回落到默认值。
+     * 持久化到 localStorage：刷新页面不该把用户刚选好的模型重置掉。
+     */
+    const [stageModels, setStageModels] = useState<Record<string, string>>(() => {
+        try {
+            const raw = localStorage.getItem("pipeline-demo.stage-models");
+            return raw ? (JSON.parse(raw) as Record<string, string>) : {};
+        } catch {
+            return {};
+        }
+    });
+
+    useEffect(() => {
+        try {
+            localStorage.setItem("pipeline-demo.stage-models", JSON.stringify(stageModels));
+        } catch {
+            // 隐私模式等场景写不进去就算了，不影响本次会话内的选择。
+        }
+    }, [stageModels]);
+
+    const setStageModel = (stage: string, capability: ModelCapability, value: string) =>
+        setStageModels((prev) => ({ ...prev, [`${stage}:${capability}`]: value }));
 
     useEffect(() => {
         localStorage.setItem("pipeline-demo.sidebar-collapsed", sidebarCollapsed ? "1" : "0");
@@ -111,8 +136,17 @@ export default function PipelineDemoPage() {
 
     const activeStatus: StageStatus = stageStatus(activeStage);
 
-    const handleStart = (resume: boolean) =>
-        void startStage(activeStage, { resume, model: TEXT_STAGES.has(activeStage) ? defaultTextModel || undefined : undefined });
+    /**
+     * 跑阶段时把用户真选的模型传下去（只传 `model` 一个字段即可）：
+     * 服务端 `resolveModel` 会把 Comfy 模板名从 LLM 调用里排除，`configuredTemplateForStage`
+     * 再按 family 校验模板是否属于该阶段 —— 同一份 `stageModels[stageId]` 同时管文本模型与媒体模板。
+     * 没选就不传，让后端走自己的默认 —— 不代替用户猜一个。
+     */
+    const handleStart = (resume: boolean) => {
+        const capability = STAGE_CAPABILITY[activeStage];
+        const model = capability ? stageModels[`${activeStage}:${capability}`] : undefined;
+        void startStage(activeStage, { resume, model: model || undefined });
+    };
 
     return (
         <div className="flex h-full gap-2.5 overflow-hidden bg-background p-2.5 text-stone-800 dark:text-stone-100">
@@ -177,7 +211,31 @@ export default function PipelineDemoPage() {
                         </div>
                     </nav>
                     <span className="hidden h-5 w-px bg-stone-200 sm:block dark:bg-stone-700" />
-                    {MODEL_SLOTS[activeStage]}
+                    {/* 模型槽位：真实读模型注册表；定妆/配音阶段没有模型槽位（配音选音色，定妆选身份卡）。 */}
+                    {(() => {
+                        const capability = STAGE_CAPABILITY[activeStage];
+                        if (!capability) return null;
+                        const extraImage = EXTRA_IMAGE_STAGES.has(activeStage);
+                        return (
+                            <>
+                                <PipelineModelPicker
+                                    capability={capability}
+                                    value={stageModels[`${activeStage}:${capability}`]}
+                                    onChange={(value) => setStageModel(activeStage, capability, value)}
+                                />
+                                {extraImage ? (
+                                    <>
+                                        <span className="text-[11px] text-stone-400">参考图</span>
+                                        <PipelineModelPicker
+                                            capability="image"
+                                            value={stageModels[`${activeStage}:image`]}
+                                            onChange={(value) => setStageModel(activeStage, "image", value)}
+                                        />
+                                    </>
+                                ) : null}
+                            </>
+                        );
+                    })()}
                     <StageActions
                         status={activeStatus}
                         busy={busyStage === activeStage}

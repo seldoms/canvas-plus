@@ -154,37 +154,11 @@ export const AUDIO_LINES: MockAudioLine[] = [
 ];
 
 /**
- * 模型按能力域分组 —— 数据源是 GET /api/model-registry?category=…&enabled=true。
- * 形状对齐注册表条目：value=真实 name，base=分组标题，task=能力名，chips=能力标签。
+ * 阶段清单 —— 只保留阶段 id 与标题口径。
+ * **模型清单已删除**：原 `MODEL_GROUPS` 是演示期编的假数据（`vid_wan22_i2v`、`img_qwen21_t2i_1080`
+ * 这些名字在真实注册表里根本不存在，真实值是 `video_h3_i2v`、`img_qwen21_edit` 等），留着迟早被人当真值用。
+ * 阶段模型现在由 `pipeline-model-picker.tsx` 读 `/api/model-registry` 得到。
  */
-export interface MockModel {
-    value: string;
-    base: string;
-    task: string;
-    label: string;
-    cloud?: boolean;
-    chips: string[];
-}
-
-export const MODEL_GROUPS: Record<"text" | "image" | "video", MockModel[]> = {
-    text: [
-        { value: "qwen3.8-32b", base: "Qwen3.8 · 内网", task: "32B · 长文剧本", label: "Qwen3.8 32B · 长文剧本", chips: ["内网", "32k 上下文", "JSON 输出稳"] },
-        { value: "qwen3.8-14b", base: "Qwen3.8 · 内网", task: "14B · 快速草稿", label: "Qwen3.8 14B · 快速草稿", chips: ["内网", "快 3 倍"] },
-        { value: "glm-4.6", base: "GLM · 云端", task: "4.6 · 对白润色", label: "GLM 4.6 · 对白润色", cloud: true, chips: ["按 token 计费", "文学性强"] },
-        { value: "deepseek-v3", base: "DeepSeek · 云端", task: "V3 · 结构推理", label: "DeepSeek V3 · 结构推理", cloud: true, chips: ["按 token 计费", "结构强"] },
-    ],
-    image: [
-        { value: "img_qwen21_t2i_720", base: "Qwen-Image 2.1 · 本地 5060Ti", task: "文生图 · 720p 草稿", label: "Qwen-Image 2.1 · 720p 草稿", chips: ["本地", "≈8s/张", "图上中文稳"] },
-        { value: "img_qwen21_t2i_1080", base: "Qwen-Image 2.1 · 本地 5060Ti", task: "文生图 · 1080p 成片", label: "Qwen-Image 2.1 · 1080p 成片", chips: ["本地", "≈22s/张"] },
-        { value: "img_flux_dev", base: "FLUX.1 Dev · 本地", task: "质感优先", label: "FLUX.1 Dev · 质感优先", chips: ["本地", "需量化加载", "质感最佳"] },
-    ],
-    video: [
-        { value: "vid_wan22_i2v", base: "Wan 2.2 · 本地 5060Ti", task: "I2V · 标准", label: "Wan 2.2 I2V · 标准", chips: ["本地", "5s/段", "768×1344"] },
-        { value: "vid_wan22_kf2v", base: "Wan 2.2 · 本地 5060Ti", task: "KF2V · 首尾帧", label: "Wan 2.2 KF2V · 首尾帧", chips: ["本地", "首尾帧锁定"] },
-        { value: "vid_h3_talk", base: "H3 Talk · 本地", task: "口型驱动", label: "H3 Talk · 口型驱动", chips: ["受限", "仅单人近景"] },
-    ],
-};
-
 export const STAGES = [
     { id: "script", title: "剧本", modelDomain: "text" },
     { id: "storyboard", title: "分镜", modelDomain: "text" },
