@@ -11,3 +11,4 @@ export { MediaPreviewGroup, PreviewableMedia, type PreviewMediaItem, type Previe
 export { SnapshotPanel } from "./snapshot-panel";
 export { PendingMediaCard, FailedMediaCard } from "./status-cards";
 export { QueuePanel } from "./queue-panel";
+export { useMonotonicPercent } from "./use-monotonic-percent";

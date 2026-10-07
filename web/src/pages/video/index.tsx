@@ -13,7 +13,7 @@ import { ModelPicker } from "@/components/model-picker";
 import { PromptSelectDialog } from "@/components/prompts/prompt-select-dialog";
 import { VideoSettingsPanel, normalizeVideoResolutionValue, normalizeVideoSizeValue, videoModeLabel, videoSizeLabel } from "@/components/video-settings-panel";
 // 工作台共享件：任务队列 / 参数快照 / 取消·归档 卡片 —— 与生图工作台同一套。
-import { QueuePanel, SnapshotPanel, FailedMediaCard, PendingMediaCard, archiveTargetsFromJobs, buildQueueEntries, cancelWorkbenchJobs, countTaskJobs, deriveTaskStatus, isActiveJobStatus, jobDurationMs, jobIdsForItemIds, taskPercent, taskStatusColor, taskStatusLabelKey, usePreviewVerticalArrows, type WorkbenchJob, type WorkbenchLogView, type WorkbenchQueueEntry, type WorkbenchSnapshotTag, type WorkbenchTask, type WorkbenchThumb } from "@/components/workbench";
+import { QueuePanel, SnapshotPanel, FailedMediaCard, PendingMediaCard, archiveTargetsFromJobs, buildQueueEntries, cancelWorkbenchJobs, countTaskJobs, deriveTaskStatus, isActiveJobStatus, jobDurationMs, jobIdsForItemIds, taskStatusColor, taskStatusLabelKey, useMonotonicPercent, usePreviewVerticalArrows, type WorkbenchJob, type WorkbenchLogView, type WorkbenchQueueEntry, type WorkbenchSnapshotTag, type WorkbenchTask, type WorkbenchThumb } from "@/components/workbench";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { formatBytes, formatDuration } from "@/lib/image-utils";
 import { clampVideoSeconds, inferVideoRatio, readVideoDimensions } from "@/lib/media-size";
@@ -917,7 +917,7 @@ function VideoTaskGroup({ task, jobs, now, onCancelJob, onCancelJobs, onRetryJob
     const list = task.jobIds.map((id) => jobById.get(id));
     const stats = countTaskJobs(list);
     const { finished, anyRunning, hasActive } = stats;
-    const percent = taskPercent(list, finished, total);
+    const percent = useMonotonicPercent(list, finished, total);
     const status = deriveTaskStatus({ pendingSubmit, ...stats });
     const elapsedMs = Math.max(0, (now || task.startedAt) - task.startedAt);
     const statusLabel = pendingSubmit ? t("workbench.taskQueued") : t(taskStatusLabelKey(status, anyRunning));

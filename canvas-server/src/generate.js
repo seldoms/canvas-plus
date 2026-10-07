@@ -2,8 +2,9 @@ import { readFile } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
 
 import { artifactUrl, ensureDir, safeJoin, sanitizeName, saveBuffer } from "./files.js";
-import { subscribeComfyProgress } from "./comfy-progress.js";
+import { createProgressTracker, subscribeComfyProgress } from "./comfy-progress.js";
 import { probeMedia } from "./media-probe.js";
+import { totalSamplingSteps } from "./graph-steps.js";
 import { MEDIA_TYPES, collectOutputs, disableEmptyImageRefs, disableEmptyLoras, extractTokens, renderTemplate } from "./providers/comfy.js";
 
 /** 这些 token 的值是素材（本机路径 / 远端 URL / 网关产物地址），提交前要先上传到 ComfyUI。 */
@@ -161,15 +162,34 @@ export function createLocalRunner({ config, comfy, jobs }) {
 
         // 真实进度：ComfyUI 只在 WebSocket 上推progress_state，轮询 /history 整个生成期间都拿不到
         // （那正是 progress 长期恒为 0/0 的原因）。订阅失败不阻断生成 —— 进度是增强项。
-        let latest = null; // 最近一次真实进度；null = 还没收到（如 ComfyUI 未推或模板无可计数节点）
+        // 用跟踪器而不是瞬时快照，两个原因（都是真机踩出来的）：
+        //   ① ComfyUI 的 nodes 是**累计字典**，新节点陆续加入会让分母持续变大，
+        //      瞬时 Σvalue/Σmax 会**倒退**（实测 1 → 0.5 → 1）；
+        //   ② 且先跑完的小权重节点会瞬间把比值顶到 100%（实测整条视频全程显示 100%）。
+        // 所以分母取**提交前已在手上的 graph** 里采样节点的步数之和 —— 它是常量，
+        // 分子取按 node_id 记账的「已完成步数」，比值天然单调且量纲正确。
+        const graphSteps = totalSamplingSteps(graph);
+        const tracker = createProgressTracker({ totalSteps: graphSteps?.totalSteps ?? null });
+        if (!graphSteps) {
+            console.warn(`[job ${job.id}] 模板里没有可识别的采样节点，进度只报节点名不报百分比`);
+        }
+        let latest = null; // 最近一次**单调**的真实进度；null = 还没收到（如 ComfyUI 未推或模板无可计数节点）
         const subscription = subscribeComfyProgress({
             baseUrl: config.comfy.baseUrl,
             clientId,
             onEvent: (event) => {
                 if (event.kind !== "progress") return;
-                latest = event;
-                // node 字段带上正在跑的节点，前端能显示「采样中 (节点 7)」而不只是一根光条。
-                ctx.progress(event.value, event.max, event.node ? `生成中·节点 ${event.node}` : "生成中");
+                const monotonic = tracker.push(event.data);
+                if (!monotonic) return;
+                latest = monotonic;
+                // 第四参传**单调**百分比：max 会随新节点加入而变大（实测 14 → 21），
+                // 前端若自己拿 value/max 算，92% 会回落成 61%。所以后端算好直接给。
+                ctx.progress(
+                    monotonic.value,
+                    monotonic.max,
+                    monotonic.node ? `生成中·节点 ${monotonic.node}` : "生成中",
+                    Math.round(monotonic.ratio * 100),
+                );
             },
         });
 

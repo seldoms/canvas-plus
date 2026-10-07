@@ -8,7 +8,8 @@ import { formatTaskTime } from "@/lib/task-time";
 import { getImagePreviewRevision, subscribeImagePreviews } from "@/services/image-storage";
 
 import { ImageThumb } from "./media";
-import { countTaskJobs, deriveTaskStatus, isActiveJobStatus, taskPercent, taskStatusColor, taskStatusLabelKey } from "./task-utils";
+import { useMonotonicPercent } from "./use-monotonic-percent";
+import { countTaskJobs, deriveTaskStatus, isActiveJobStatus, taskStatusColor, taskStatusLabelKey } from "./task-utils";
 import type { WorkbenchJob, WorkbenchLogView, WorkbenchQueueEntry, WorkbenchTask, WorkbenchThumb } from "./types";
 
 /** 队列里一条「进行中的任务」卡片：状态与进度全部读后端 job，提交即出现。 */
@@ -20,7 +21,7 @@ function TaskCard({ task, jobs, now, active, thumbnails, onSelect }: { task: Wor
     const { total, finished, anyRunning, errorCount } = stats;
     const pendingSubmit = total === 0;
     const status = deriveTaskStatus({ pendingSubmit, ...stats });
-    const percent = taskPercent(list, finished, total);
+    const percent = useMonotonicPercent(list, finished, total);
     const statusLabel = t(taskStatusLabelKey(status, anyRunning));
     const elapsedMs = status === "running" ? Math.max(0, (now || task.startedAt) - task.startedAt) : 0;
 

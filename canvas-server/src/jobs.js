@@ -249,7 +249,10 @@ export function createJobQueue({ dataDir, concurrency = 1, label = "job", classC
             update(job.id, { status: "running", startedAt, waitMs: Number.isFinite(queued) ? Date.now() - queued : undefined });
             const ctx = {
                 signal: controller.signal,
-                progress: (value, max, node) => update(job.id, { progress: { value, max, node } }),
+                // percent 随progress 一起落库：后端算出的单调百分比是唯一可信口径。
+                // 前端自己用 value/max 算会踩「分母随新节点加入而变大」的坑 —— 实测 92% 回落到 61%。
+                // 不传时为 undefined，旧调用点与既有测试不受影响。
+                progress: (value, max, node, percent) => update(job.id, { progress: { value, max, node, percent } }),
                 patch: (patch) => update(job.id, patch),
             };
             void (async () => {

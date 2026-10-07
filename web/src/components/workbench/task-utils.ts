@@ -4,7 +4,8 @@
  * 全部只读后端事实（job.status / job.progress / job.outputs），不自己造槽位状态。
  * 抽成纯函数便于两条工作台共用同一口径，也便于单独验证。
  */
-import type { WorkbenchJob, WorkbenchLogView, WorkbenchQueueEntry, WorkbenchTask, WorkbenchTaskStatus, WorkbenchThumb } from "./types";
+import { clampLikeHook } from "./progress-clamp";
+import type { WorkbenchJob, WorkbenchJobProgress, WorkbenchLogView, WorkbenchQueueEntry, WorkbenchTask, WorkbenchTaskStatus, WorkbenchThumb } from "./types";
 
 /** 未结束状态（含未知，未知视为待确认 → 继续轮询）。 */
 export function isActiveJobStatus(status?: string): boolean {
@@ -42,12 +43,41 @@ export function deriveTaskStatus({ pendingSubmit, hasActive, doneCount, errorCou
     return "done";
 }
 
+/**
+ * 单个 job 的进度百分比，取值0–100。
+ *
+ * ## 为什么要有这个函数，而不是各处直接 `value / max * 100`
+ *   后端已把ComfyUI 的「累计字典」口径修成单调不回退，但前端仍不能裸算：
+ *   - 轮询是**跨请求**的，可能读到修复上线前写下的旧 job 记录（progress{1,1} → 0/0 → …），
+ *     也有后端某次覆盖导致的一次回落；
+ *   - 进度条往回走会让用户以为界面坏了，比显示得不准更糟。
+ *   所以这里是**最后一道防线**：只接受不低于历史值的比例。
+ *
+ * @param progress 后端 progress { value, max, node }
+ * @param previousPercent 上一次渲染出的百分比；无则传 0
+ * @returns 0–100 的整数；没有可用max 时返回 -1，表示「后端没给真实进度」
+ */
+export function jobProgressPercent(progress: WorkbenchJobProgress | undefined, previousPercent = 0): number {
+    const floor = Number.isFinite(previousPercent) ? Math.max(0, previousPercent) : 0;
+    const supplied = Number(progress?.percent);
+    // 优先用后端下发的单调百分比 —— 它已经按「分母会增长」的教训钳制过。
+    if (Number.isFinite(supplied) && supplied >= 0) {
+        return clampLikeHook(Math.min(100, supplied), floor);
+    }
+    // 后端没给（如修复上线前的旧 job 记录）才退回本地计算，并同样钳制。
+    const max = Number(progress?.max) || 0;
+    if (max <= 0) return -1; // 没有真实分母 → 如实说没有，不画一条 0% 的假进度
+    return clampLikeHook(Math.round((Math.min(Number(progress?.value) || 0, max) / max) * 100), floor);
+}
+
 /** 组进度：单条任务优先用后端 progress 的真实比例；多条任务退回「已完成/总数」。 */
-export function taskPercent(list: Array<WorkbenchJob | undefined>, finished: number, total: number): number {
+export function taskPercent(list: Array<WorkbenchJob | undefined>, finished: number, total: number, previousPercent = 0): number {
     const single = total === 1 ? list[0] : undefined;
-    const singleMax = Number(single?.progress?.max) || 0;
-    if (single && singleMax > 0) return Math.round((Number(single.progress?.value) / singleMax) * 100);
-    return total ? Math.round((finished / total) * 100) : 0;
+    if (single) {
+        const percent = jobProgressPercent(single.progress, previousPercent);
+        if (percent >= 0) return percent;
+    }
+    return total ? Math.max(Math.round((finished / total) * 100), previousPercent || 0) : 0;
 }
 
 /** 状态标签的 i18n key。 */

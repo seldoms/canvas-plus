@@ -2,17 +2,25 @@ import { Button, Progress, Typography } from "antd";
 import { LoaderCircle, XCircle } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
+import { jobProgressPercent } from "./task-utils";
 import type { WorkbenchJobProgress } from "./types";
 
 /**
- * 「生成中」占位卡片：进度/节点名全部来自后端 progress{value,max,node}。
- * 没有 max 时至少显示后端节点状态（排队中/生成中/已提交）。可取消（生图/视频共用）。
+ * 「生成中」占位卡片：进度/节点名全部来自后端 progress{value,max,node,percent}。
+ *
+ * 比例**优先用后端下发的 percent**（已按「分母会增长」钳制成单调），
+ * 只有 percent 缺失时才退回本地算value/max。老job 记录（无 percent）走后者，
+ * 因此两条路都要过 task-utils 的单调钳制。
+ * 没有 max 也没有 percent 时至少显示后端节点状态（排队中/生成中/已提交）。可取消（生图/视频共用）。
  */
 export function PendingMediaCard({ progress, onCancel, aspectClassName = "aspect-square" }: { progress?: WorkbenchJobProgress; onCancel?: () => void; aspectClassName?: string }) {
     const { t } = useTranslation();
-    const max = Number(progress?.max) || 0;
-    const value = Number(progress?.value) || 0;
-    const detail = max > 0 ? `${value}/${max}` : progress?.node || t("workbench.generating");
+    // 比例走 task-utils 的统一判据（优先用后端下发的单调 percent），不要在这里裸算。
+    const percent = jobProgressPercent(progress);
+    const hasPercent = percent >= 0;
+    // 有真实比例时不再显示 value/max —— max 会随新节点加入而变大，
+    // 「13/21」本身就在暗示 62%，而真实已到 92%，文案与实际不符比没有文案更糟。
+    const detail = hasPercent ? `${percent}%` : progress?.node || t("workbench.generating");
     return (
         <div className={`relative overflow-hidden rounded-lg border border-dashed border-stone-300 bg-stone-50 dark:border-stone-700 dark:bg-stone-900 ${aspectClassName}`}>
             <div
@@ -25,7 +33,7 @@ export function PendingMediaCard({ progress, onCancel, aspectClassName = "aspect
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-sm text-stone-500 dark:text-stone-400">
                 <LoaderCircle className="size-6 animate-spin" />
                 <span>{detail}</span>
-                {max > 0 ? <Progress percent={Math.round((value / max) * 100)} size="small" showInfo={false} className="!mb-0 !w-24" /> : null}
+                {hasPercent ? <Progress percent={percent} size="small" showInfo={false} className="!mb-0 !w-24" /> : null}
                 {onCancel ? (
                     <Button size="small" icon={<XCircle className="size-3.5" />} onClick={onCancel}>
                         {t("workbench.cancel")}

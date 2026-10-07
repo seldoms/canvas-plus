@@ -30,7 +30,7 @@ import { useWorkbenchAgentStore } from "@/stores/use-workbench-agent-store";
 import type { ReferenceImage } from "@/types/image";
 import i18n from "@/i18n";
 // 工作台共享件：任务队列 / 参数快照 / 取消·归档 卡片 —— 与视频创作台同一套（抽出来复用，不各写一份）。
-import { QueuePanel, SnapshotPanel, FailedMediaCard, PendingMediaCard, ImageThumb, UnavailableImage, archiveTargetsFromJobs, buildQueueEntries, cancelWorkbenchJobs, countTaskJobs, deriveTaskStatus, jobDurationMs, jobIdsForItemIds, taskPercent, taskStatusColor, taskStatusLabelKey, usePreviewVerticalArrows, type WorkbenchJob, type WorkbenchLogView, type WorkbenchQueueEntry, type WorkbenchTask, type WorkbenchThumb } from "@/components/workbench";
+import { QueuePanel, SnapshotPanel, FailedMediaCard, PendingMediaCard, ImageThumb, UnavailableImage, archiveTargetsFromJobs, buildQueueEntries, cancelWorkbenchJobs, countTaskJobs, deriveTaskStatus, jobDurationMs, jobIdsForItemIds, taskStatusColor, taskStatusLabelKey, useMonotonicPercent, usePreviewVerticalArrows, type WorkbenchJob, type WorkbenchLogView, type WorkbenchQueueEntry, type WorkbenchTask, type WorkbenchThumb } from "@/components/workbench";
 
 type GeneratedImage = {
     id: string;
@@ -1195,7 +1195,7 @@ function TaskGroup({
     const list = task.jobIds.map((id) => jobById.get(id));
     const stats = countTaskJobs(list);
     const { finished, anyRunning, hasActive } = stats;
-    const percent = taskPercent(list, finished, total);
+    const percent = useMonotonicPercent(list, finished, total);
     const status = deriveTaskStatus({ pendingSubmit, ...stats });
     const elapsedMs = Math.max(0, (now || task.startedAt) - task.startedAt);
     const statusLabel = pendingSubmit ? t("workbench.taskQueued") : t(taskStatusLabelKey(status, anyRunning));

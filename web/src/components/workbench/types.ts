@@ -23,6 +23,14 @@ export type WorkbenchJobProgress = {
     value?: number;
     max?: number;
     node?: string;
+    /**
+     * 后端算好的**单调**百分比（0–100）。
+     *
+     * 为什么必须有它：ComfyUI 的 nodes 是累计字典，分母 max 会随新节点加入而增长
+     * （实测一条视频任务 14 → 21）。前端若自己拿 value/max 算，进度会从 92% 回落到 61%。
+     * 所以真实比例由后端钳制后下发；缺失时才退回本地计算（见 task-utils 的 jobProgressPercent）。
+     */
+    percent?: number;
 };
 
 /** 后端任务（生图/视频同构；状态与进度是唯一事实源，前端不自己算槽位）。 */
