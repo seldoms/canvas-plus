@@ -291,7 +291,9 @@ function FrameCell({ production, frame }: { production: Production; frame?: Keyf
     if (!frame) {
         return (
             <div className="rounded-lg bg-stone-50 p-2 dark:bg-white/5">
-                <ArtifactThumb tall label="无此帧" />
+                <div className="mx-auto max-w-36">
+                    <ArtifactThumb tall label="无此帧" />
+                </div>
             </div>
         );
     }
@@ -313,7 +315,7 @@ function FrameCell({ production, frame }: { production: Production; frame?: Keyf
                 </Tooltip>
             </div>
             <Tooltip title={frame.prompt ? `${frame.prompt.slice(0, 220)}…` : ""} placement="bottom">
-                <div>
+                <div className="mx-auto max-w-36">
                     <ArtifactThumb tall url={production.artifactUrl(frame.artifactUrl)} selected={frame.status === "done"} label={frame.status === "done" ? "已采用" : frame.status} />
                 </div>
             </Tooltip>
