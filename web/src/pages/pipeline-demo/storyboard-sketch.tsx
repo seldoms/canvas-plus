@@ -2,7 +2,7 @@
  * 分镜示意稿 —— 铅笔手稿风 SVG。按「场景类型 × 景别 × 人数」生成构图：
  * 让文字分镜在关键帧产出之前就有可读的视觉形态（正式接线后替换为真实分镜图/关键帧缩略图）。
  */
-import { useId } from "react";
+import { useId, type JSX } from "react";
 
 import type { MockScene, MockShot } from "./mock-data";
 

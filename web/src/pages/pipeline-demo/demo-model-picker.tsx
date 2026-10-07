@@ -51,7 +51,7 @@ export function DemoModelPicker({ domain, value, onChange, className }: { domain
             trigger="click"
             placement="bottomLeft"
             arrow={false}
-            styles={{ body: { padding: 4, width: 320 } }}
+            styles={{ container: { padding: 4, width: 320 } }}
             content={
                 <div className="max-h-80 overflow-y-auto">
                     {groups.map((group) => (

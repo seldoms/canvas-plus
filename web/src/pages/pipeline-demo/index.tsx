@@ -1,6 +1,6 @@
 import { Alert, Button, Tooltip } from "antd";
 import { Ban, Lock, Play, RotateCcw, Wrench } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState, type JSX, type ReactNode } from "react";
 
 import { cn } from "@/lib/utils";
 
