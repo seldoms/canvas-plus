@@ -338,7 +338,7 @@ planSuggestion: {
 ## 8. 第二次接线（01 多步可见改造：analyze → outline → script）
 
 > 追加式记录。本次把 01 剧本阶段从「单次黑盒调用」改造成**多步可见**，并一并治掉「episodes 恒为空」「plan 集数/时长没进提示词」两个实测问题。
-> 承接 `docs/content/docs/progress/pilot-issues.md` 第一轮 #1 / #2 / #3 / #11。
+> 承接 `docs/content/docs/progress/archive/pilot-issues.md` 第一轮 #1 / #2 / #3 / #11。
 
 ### 8.1 改了什么
 

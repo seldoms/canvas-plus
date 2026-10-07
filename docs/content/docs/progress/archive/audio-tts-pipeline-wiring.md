@@ -1,5 +1,8 @@
 # TTS 接线设计（audio_qwen3_tts → pipeline）
 
+> ⚠️ **已归档（2026-10-07）**：过程性文档，内容定格于写作时点，可能滞后于代码。现行权威文档见 `../development-plan.md`、`../project-centric-skeleton.md`、`../domain-contract.md`；本区说明见 `README.md`。
+
+
 > 状态：**设计稿，尚未接线**。本次只交付「TTS 能出音 + 音色可按角色固定」，
 > `pipeline.js` / `audio.js` / `audio-track.js` / `gates.js` / `projects.js` / `index.js`
 > **一行未改**（见边界说明）。本文说明后续怎么挂、挂在哪、要改哪些文件。

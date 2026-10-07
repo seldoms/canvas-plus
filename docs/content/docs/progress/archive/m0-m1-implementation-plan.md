@@ -1,5 +1,8 @@
 # M0/M1 施工计划与现状审计（第一轮）
 
+> ⚠️ **已归档（2026-10-07）**：过程性文档，内容定格于写作时点，可能滞后于代码。现行权威文档见 `../development-plan.md`、`../project-centric-skeleton.md`、`../domain-contract.md`；本区说明见 `README.md`。
+
+
 > 内部文档，不登记进 `meta.json`。
 > 基线：分支 `canvas-plus`，提交 `9851959 docs: establish short-drama production blueprint`（工作区干净）。
 > 依据：`project-integration-implementation-guide.md`（M0–M6 定义）、`domain-contract.md`（字段冻结）、`development-plan.md`（决策 D1–D16）、`platform-positioning.md`（C1–C10、P1–P9）、`prd.md`。

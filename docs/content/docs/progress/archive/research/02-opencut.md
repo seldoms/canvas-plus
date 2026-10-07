@@ -1,5 +1,8 @@
 # OpenCut 调研：能否作为短剧流水线的「精剪/时间线」环节
 
+> ⚠️ **已归档（2026-10-07）**：过程性文档，内容定格于写作时点，可能滞后于代码。现行权威文档见 `../../development-plan.md`、`../../project-centric-skeleton.md`、`../../domain-contract.md`；本区说明见 `../README.md`。
+
+
 > 调研日期：2026-10-03 ｜ 调研对象：`opencut-app/opencut`（GitHub 显示为 OpenCut-app/OpenCut，大小写不敏感）与其上一代 `opencut-app/opencut-classic`
 > 方法：`git clone --depth 1` 只读分析两个仓库源码 + raw.githubusercontent 取 README/package.json + 页面抓取星标数；**未改动 `/sobey/canvas-plus` 任何文件**
 

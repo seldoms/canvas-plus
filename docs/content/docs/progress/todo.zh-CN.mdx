@@ -5,22 +5,22 @@ description: 当前项目后续值得处理的事项
 
 # TODO
 
-- **影视流水线重构纠偏**：按 [`pipeline-feature-api-inventory.md`](./pipeline-feature-api-inventory.md) 核对项目/集/run 一致性、集级生成作用域、制作事实快照、镜头结构读取、可视化编辑、注册表模型分类与模板选择生效；补齐单句配音重跑、真实语速/音量控制、编辑与候选采用同步。上一轮 UI 改动尚未验收通过。
+> **当前主线（2026-10-07 起）**：产品形态与 P0–P3 落地顺序以 [`project-centric-skeleton.md`](./project-centric-skeleton.md) §6 为准（P0 串联引导 → P1 资料包 → P2 双向打通 → P3 分发私有化）；执行排期见 `development-plan.md` v4 卷首。影视流水线重构纠偏已完成（新页 `/pipeline` 2026-10-07 上线并逐面板验证），原核对清单归档至 [`archive/pipeline-feature-api-inventory.md`](./archive/pipeline-feature-api-inventory.md)。
 
 本文档用来记录当前项目后续比较值得处理的事项。
 
 - 本地 Agent 接入后续：按[本地 Agent 接入规划](/zh-CN/docs/progress/local-agent-integration-plan)把 Claude Code CLI Adapter 升级为 Claude Agent SDK Adapter，并完善工具队列体验。
 - Agent Skill 后续：补充网络检索安装、Skill 资源文件管理和可控的本地记忆沉淀。
-- Agent 生产作用域：新增项目上下文、阶段/Job 状态、跑阶段/取消、采用候选和资料包导出工具；保留 Canvas 本地工具，正式生产统一走 Project/流水线 API，并落实确认、乐观版本、幂等键和审计记录。
-- H3 续接 POC：先探测原生 Masked AV（ComfyUI PR #15375），再在 16GB 机器上对比原生 Masked AV 候选、MIT latent-tail Continuation、官方 Add Guide 和 Motion Context，按 2/4/8/10 段记录音频接缝相关性、响度/底噪突变、画面冻结、运动漂移、显存、耗时和链深衰减，验证前不把任何方案登记为默认 Provider。
-- Project 契约补充 continuation chain 字段：`continuationChainId`、`segmentIndex`、`parentArtifactId`、`contextArtifactId`、`latentArtifactId`、重叠/新增帧、分辨率锁、音频采样率和接缝指标；每段仍是独立 Job/Artifact/Candidate。
+- ~~Agent 生产作用域~~：✅ 已完成（2026-10-07）——`project_*` 工具 7→17 个（项目/阶段/条目三层视角），Codex 线程注入说明与插件 pipeline 技能已同步；真机冒烟通过。
+- ~~H3 续接 POC~~：✅ 已完成（M3.5 已上线，验收报告归档至 `archive/`）。
+- ~~Project 契约 continuation chain 字段~~：✅ 已完成（契约 §3.6 九个续接字段完整写入）。
 - 吸收经审核的短剧 Skill：连续性锁、稳定 SHOT/TAKE ID、道具/场景参考板、文字与时间确定性检查、生产前预览确认、可恢复审核门禁；不复制第三方运行时代码，也不建立第二套 Markdown 数据库。
 
 ## 本地网关与影视流水线
 
 - **PRD 与里程碑收口（仅规划）**：首个目标为 60～90 秒完整验证短片及剪辑交接包；已确认的分批、风格圣经、资产标准见 `prd.md` §1.1～§1.4。继续确认声音/对白、画幅、验收质量、画布职责、自动模式失败处理及目标剪辑工具，再形成实施里程碑。人工门禁现阶段开启，后期可全局切换（修订 D11）；本轮未实现新功能，不移入待测试清单。
 
-- **P0 健康检查边界（2026-10-05 复核后已基本收口）**：LLM 侧已收口 —— 产品负责人拍板「外部模型探测不实用，模型清单只读注册表」，探测链路（`probeLlm`/`listLlmModels`/`modelsAt`/探测缓存/`probeTimeoutMs`）整条删除，`/v1/models` 等四处清单改为注册表静态展开（渠道声明的 `models[]` → 「渠道名::模型名」，启动与渠道表写入时自动 sync）；`/api/health` 的 `ok` 改为存活语义 + 新增 `service` 段，`llm` 段带 `probed:false`，前端「测试连接」不再把「已登记」显示成「已连通」。**依赖探测也已收口**：`comfy`/`runninghub` 改走 30s TTL 缓存 + 过期后台刷新 + 单次 3s 硬超时，首次未就绪返回 `pending:true`，`/api/health` 实测 **1.8~2.4ms**（历史上是 8s+）。**仍未做**：生成就绪度还没与依赖连通分离。画幅改为**只检测不改稿**（`aspectRatioConflict` 命中即整稿弃用、回落同步稿 + warning），仍需真实任务验收；H3 新任务真实 UI 取证**已完成**（`h3-i2v-ui-evidence.md`），只剩带台词镜头的视频逐字台词未取证。方案与验收见开发计划 §11.7、契约见 `model-registry-contract.md` §3.1。
+- **P0 健康检查边界（2026-10-05 复核后已基本收口）**：LLM 侧已收口 —— 产品负责人拍板「外部模型探测不实用，模型清单只读注册表」，探测链路（`probeLlm`/`listLlmModels`/`modelsAt`/探测缓存/`probeTimeoutMs`）整条删除，`/v1/models` 等四处清单改为注册表静态展开（渠道声明的 `models[]` → 「渠道名::模型名」，启动与渠道表写入时自动 sync）；`/api/health` 的 `ok` 改为存活语义 + 新增 `service` 段，`llm` 段带 `probed:false`，前端「测试连接」不再把「已登记」显示成「已连通」。**依赖探测也已收口**：`comfy`/`runninghub` 改走 30s TTL 缓存 + 过期后台刷新 + 单次 3s 硬超时，首次未就绪返回 `pending:true`，`/api/health` 实测 **1.8~2.4ms**（历史上是 8s+）。**仍未做**：生成就绪度还没与依赖连通分离。画幅改为**只检测不改稿**（`aspectRatioConflict` 命中即整稿弃用、回落同步稿 + warning），仍需真实任务验收；H3 新任务真实 UI 取证**已完成**（`archive/h3-i2v-ui-evidence.md`），只剩带台词镜头的视频逐字台词未取证。方案与验收见开发计划 §11.7、契约见 `model-registry-contract.md` §3.1。
 - **2026-10-04 轮的运维遗留**：① `data/runs/run-murvf1vq-aqyqm/run.json.bak-bloated`（529MB，#67 事故备份）在修复后的 run.json 经正常使用确认无误后删除 —— 2026-10-05 复核仍在盘上；② ~~工作区按作者/主题分批提交~~ → **已全部提交**（2026-10-05 复核工作区干净，HEAD `0ca5698`）。
 
 权威排序、依赖关系与验收标准见 `docs/content/docs/progress/development-plan.md` §8；产品视角的优先级见 `prd.md` §6。以下按项列出当前现状（已完成 / 部分完成 / 尚未开工）。
@@ -43,7 +43,7 @@ description: 当前项目后续值得处理的事项
 - RunningHub 真机验证：适配器代码完成但旧 API Key 已失效，需要新的有效 Key 才能跑通 submit / query / upload 三条链路；前端也还没有后端切换入口。
 - `img_` 模板的尺寸 32 倍数吸附：官方明确 Qwen-Image 2.1「尺寸建议 32 的倍数」，但网关的吸附目前只对 `video_` 前缀生效（`generate.js`），`img_` 不吸附。
 - 契约里的死字段：`comfy.maxQueue`（默认 16，`src/` 中从未被读取）与 job 的 `progress`（只填 0/0，未接 ComfyUI WebSocket）——要么实现，要么从契约删掉，不要留着承诺做不到的字段。
-- **角色形象固定 —— ✅已完成（2026-10-03）**：已移入 `pending-test.zh-CN.mdx` 待你实测确认。落地内容：服化道阶段自动产出并绑定每个角色的**正脸特写与三视图**、每个场景的**空场母版**；关键帧按镜头→角色/场景绑定注入 `REF_IMAGE_1..N` 并改用**稳定种子**，生图模板切到能吃参考图的 `img_qwen21_edit`（同一个 Qwen-Image 2.1）；模板不具备参考图能力时该镜标 `blocked` 且**不假装已锁定角色**。见 `pilot-issues.md` #17/#41/#43/#45。
-- **角色音色 / 配音固定（产品负责人 2026-10-03 报，成片级）**：`voice` 字段只是文本描述、**下游零消费**：无 TTS 接线、无音色库、无 `voiceId`、无音频产物。方法论已有（`doubao-creative-drama/references/assets.md:25`：总时长 > 15 秒必须生成角色高光台词视频建立音色基准；输出「声线、年龄感、质感、情绪状态」）。要补：**音色锚点 + TTS 生成 + 音频轨作为 05 阶段必需产物**。见 `pilot-issues.md` #23。
-- **配乐与配音一致（成片级事故）**：根因未定位，与上一条同源（音轨非流水线产出、无对齐校验）。见 `pilot-issues.md` #24。
+- **角色形象固定 —— ✅已完成（2026-10-03）**：已移入 `pending-test.zh-CN.mdx` 待你实测确认。落地内容：服化道阶段自动产出并绑定每个角色的**正脸特写与三视图**、每个场景的**空场母版**；关键帧按镜头→角色/场景绑定注入 `REF_IMAGE_1..N` 并改用**稳定种子**，生图模板切到能吃参考图的 `img_qwen21_edit`（同一个 Qwen-Image 2.1）；模板不具备参考图能力时该镜标 `blocked` 且**不假装已锁定角色**。见 `archive/pilot-issues.md` #17/#41/#43/#45。
+- **角色音色 / 配音固定（产品负责人 2026-10-03 报，成片级）**：`voice` 字段只是文本描述、**下游零消费**：无 TTS 接线、无音色库、无 `voiceId`、无音频产物。方法论已有（`doubao-creative-drama/references/assets.md:25`：总时长 > 15 秒必须生成角色高光台词视频建立音色基准；输出「声线、年龄感、质感、情绪状态」）。要补：**音色锚点 + TTS 生成 + 音频轨作为 05 阶段必需产物**。见 `archive/pilot-issues.md` #23。
+- **配乐与配音一致（成片级事故）**：根因未定位，与上一条同源（音轨非流水线产出、无对齐校验）。见 `archive/pilot-issues.md` #24。
 - 重复实现收敛：文本文件导入有 2 份逐字重复、`type="file"` 11 处、模型下拉 3 套实现、「渠道::模型」2 种编码、尺寸 3 套词汇、「存进素材库」7 处各写一遍。属低单价高频次摩擦，建议在 P0/P1 落地过程中顺带收敛，不单独占一轮。

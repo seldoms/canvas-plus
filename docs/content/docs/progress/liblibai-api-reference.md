@@ -9,7 +9,7 @@
 > 故改为只保留**事实性内容**（端点、枚举值、数值限制、算法名）与**我们自己的表述**。
 > 需要原文细节时请回到上面的链接自行查阅。
 >
-> 基于本文得出的对标结论、差距分析与设计方案见 `gateway-api-benchmark.md`（同目录）。
+> 基于本文得出的对标结论、差距分析与设计方案见 `archive/gateway-api-benchmark.md`（同目录）。
 
 ---
 
@@ -31,7 +31,7 @@
   2. `hmacSha1(原文, SecretKey)`
   3. 转 **URL-safe base64**，且**不补全位数**
 
-> 对我们的意义：这是「每请求现算签名」的模式，与 Bearer Token 不同。`gateway-api-benchmark.md` §6.6
+> 对我们的意义：这是「每请求现算签名」的模式，与 Bearer Token 不同。`archive/gateway-api-benchmark.md` §6.6
 > 设计的 `auth.mode: hmac` 就是照这个形状留的位。
 
 ## 2. 计费与配额
@@ -77,7 +77,7 @@
 | Qwen Image | 文生图、查询结果 |
 | 其它 | 生图完整 demo、错误码汇总 |
 
-> 对我们的意义：`gateway-api-benchmark.md` §5 的逐项对照就是从这张清单展开的。
+> 对我们的意义：`archive/gateway-api-benchmark.md` §5 的逐项对照就是从这张清单展开的。
 > 结论是我们**能力面覆盖度不低**（尤其 ComfyUI 工作流直调、个人工作流这两条我们本来就有），
 > 真正的结构性缺口是模型生态、通用自然语言指令编辑（**注：Qwen-Image 2.1 接入后这条已大幅缓解**）与内容审核。
 

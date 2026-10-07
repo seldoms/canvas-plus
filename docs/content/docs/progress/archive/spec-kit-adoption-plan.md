@@ -1,5 +1,8 @@
 # spec-kit v1.1.0 借鉴方案（对照 canvas-plus）
 
+> ⚠️ **已归档（2026-10-07）**：过程性文档，内容定格于写作时点，可能滞后于代码。现行权威文档见 `../development-plan.md`、`../project-centric-skeleton.md`、`../domain-contract.md`；本区说明见 `README.md`。
+
+
 > **状态**：草案，待产品负责人审阅
 > **日期**：2026-10-03
 > **来源**：`github/spec-kit` **v1.1.0（2026-10-02）**，本地克隆 `/root/refs/spec-kit`

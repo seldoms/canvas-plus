@@ -30,38 +30,22 @@
 
 ## 项目进度
 
-- [更新日志](/zh-CN/docs/progress/changelog)
 - [待测试](/zh-CN/docs/progress/pending-test)
 - [TODO](/zh-CN/docs/progress/todo)
 
-## 内部研究文档（不进文档站导航）
+## 内部文档（不进文档站导航）
 
-以下是 `docs/content/docs/progress/` 下的纯 `.md` 文件，**有意不登记进 `meta.json`**，
-因此不会出现在文档站里，直接在仓库中阅读。
+`docs/content/docs/progress/` 下的 `.md` 文件**有意不登记进 `meta.json`**，直接在仓库中阅读。
+**现行权威文档**如下；过程性文档（里程碑计划、调研、审计、试跑清单）已归档至 `progress/archive/`，内容定格于写作时点。
 
-- `docs/content/docs/progress/prd.md` —— **产品需求文档（PRD）**：产品定位、现状（三个互不相通的
-  世界）、Project 一等实体与混合存储的目标架构、六阶段流水线、画布⇄流水线打通、功能优先级、
-  **内容创作规范（面向海外、忠于原著、风险只提示不改稿）**、非功能需求与待确认项。
-  后续所有开发的对齐基准。
-- `docs/content/docs/progress/development-plan.md` —— **开发计划**（PRD 的执行侧）：
-  三视角调研（资产复用 / 数据流断点 / 用户成本）的结论、`artifactUrl` 从不回写导致
-  五段流水线实际只有四段半的致命断链、Project 要补的七层标识符、四个落地即踩的陷阱、
-  决策登记（命名、产物存储）、P0-a→P2 工作包与验收标准。每条结论标注【已复核】/【调研】。
-- `docs/content/docs/progress/libtv-product-analysis.md` —— LibTV（liblib.tv）**产品与画布**层面的
-  竞品拆解：页面功能、设计系统、按钮设计、技术实现，结论分【已确认】/【推测】/【未确认】三档。
-  由项目负责人自行撰写，正文逐字保留；其末尾引用的 7 张截图未随投放提供，链接是死的。
-  注意与 `gateway-api-benchmark.md` 区分：那份对标的是 LiblibAI **开放平台 API**，这份是 **LibTV 产品**。
-- `docs/content/docs/progress/gateway-api-benchmark.md` —— 生成网关 API 对标研究与设计方案：
-  以成熟商业平台（LiblibAI）为基准线的能力对照矩阵、三层差距结论、冻结契约上的向后兼容加法设计、
-  按性价比排序的补齐路线，以及仍待确认的边界值清单。
-- `docs/content/docs/progress/local-capability-audit.md` —— 本地 ComfyUI 能力盘点。
-  对标研究里所有实测数字都出自这里，结论分【实测】/【文档】/【推断】三档。
-- `docs/content/docs/progress/liblibai-api-reference.md` —— 对标平台 API 的**事实摘要**
-  （端点、配额、状态枚举、错误码），用我们自己的表述整理。原页面需登录；
-  **有意不提交逐字存档**，因为 `origin` 是公开远端。
-- `docs/content/docs/progress/local-asset-inventory.md` —— 本地化能力的**对内**资产盘点：
-  结构性护城河、可外提复用的工程资产、值得推广的设计纪律、以及诚实列出的技术债，
-  每条都核实到 `file:line` 或真机任务 id，并标注【实测】/【核实】/【推断】。
+- `prd.md` —— **产品需求文档**：定位、目标架构、内容创作规范、功能优先级。所有开发的对齐基准。
+- `development-plan.md` —— **开发计划**（当前 v4）：执行排期，当前主线为 skeleton 的 P0–P3。
+- `project-centric-skeleton.md` —— **产品骨架**：以项目为中心的五入口串联形态、断点清单与落地路径。
+- `domain-contract.md` —— **领域契约（冻结）**：生产链词汇、字段与稳定 ID。
+- `model-registry-contract.md` —— **模型注册表契约**：清单只读注册表、别名与分类。
+- `ui-interaction-spec.md` —— **交互规范**：UI 铁律与验收铁律（验收必须走完整动线）。
+- `audio-video-quality-audit-2026-10-06.md` —— 声音/口型质量审计与验收门禁（**声音质量验收未通过，当前焦点**）。
+- `liblibai-api-reference.md` —— 第三方平台 API 事实摘要（可选后端参考）。
 
 ## 说明
 

@@ -1,5 +1,8 @@
 # 可融合开源工具链调研（成片装配 / 字幕 / TTS / 数字人 / 音效 / 编排 / 短剧垂直）
 
+> ⚠️ **已归档（2026-10-07）**：过程性文档，内容定格于写作时点，可能滞后于代码。现行权威文档见 `../../development-plan.md`、`../../project-centric-skeleton.md`、`../../domain-contract.md`；本区说明见 `../README.md`。
+
+
 > 调研日期：**2026-10-03**（星数、最近提交、许可证均为当日从 GitHub 一手抓取）
 > 调研范围：**只收自托管 / 命令行 / API 可编程调用**；纯 SaaS（DramaReel、Topview、Fliki 等）全部排除。
 > 定位前提：全本地化 AI 短剧平台 `/sobey/canvas-plus`（Node 网关 + React18 + 本地 ComfyUI + Ollama），已有五阶段流水线、角色一致性锁、画上文字逐字指定、Qwen3-TTS 固定音色、`delivery.js`（ffmpeg 拼接/字幕烧录/封面）。

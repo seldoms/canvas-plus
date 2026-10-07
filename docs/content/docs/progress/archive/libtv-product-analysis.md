@@ -1,5 +1,8 @@
 # LibTV（liblib.tv）竞品拆解：页面功能 / 设计系统 / 按钮设计 / 技术实现
 
+> ⚠️ **已归档（2026-10-07）**：过程性文档，内容定格于写作时点，可能滞后于代码。现行权威文档见 `../development-plan.md`、`../project-centric-skeleton.md`、`../domain-contract.md`；本区说明见 `README.md`。
+
+
 > 分析对象：<https://www.liblib.tv/> —— LiblibAI 旗下 **LibTV**，定位「专业视频创作工具」，官方口号是「首个同时面向人与 Agent 的专业视频创作平台」。
 > 采样时间：2026-10-02（Asia/Shanghai）。
 > 置信度标注：**【已确认】** = 有抓取到的真实 DOM / CSS / JS 字面量 / 响应头直接证据；**【推测】** = 由间接线索推断；**【未确认】** = 需要登录或真实交互才能看到。

@@ -1,5 +1,8 @@
 # 生成网关 API 对标研究与设计方案
 
+> ⚠️ **已归档（2026-10-07）**：过程性文档，内容定格于写作时点，可能滞后于代码。现行权威文档见 `../development-plan.md`、`../project-centric-skeleton.md`、`../domain-contract.md`；本区说明见 `README.md`。
+
+
 > 目的：以成熟商业生成平台（LiblibAI「图像&视频大模型 API」）为能力基准线，逐项对照 `canvas-server`
 > 本地网关的功能面，量化差距并给出补齐路径与 API 设计方案。
 >

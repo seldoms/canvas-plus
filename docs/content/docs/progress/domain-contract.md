@@ -56,7 +56,7 @@
 | `styleAnchor` | `string` | 是 | 风格锚点：一句话，全项目所有生图/生视频提示词首句必须一字不差（PRD §3.2、§4 阶段 0） |
 | `plan` | `Plan` | 是 | 阶段 0 规划产物，结构见下 |
 | `script` | `unknown` | 是 | 一份剧本（01 阶段产物的权威副本）。**内部形态由 P0-a/P1-c 定**，本契约只冻结字段名与归属 |
-| `sourceRevisionId` | `string \| null` | 否 | 当前采用的源版本 id，指向 `sources/<revisionId>.json`；初始为 `null`（P0-a 回填，见 `p0a-project-kernel-plan.md` §1.5 #2） |
+| `sourceRevisionId` | `string \| null` | 否 | 当前采用的源版本 id，指向 `sources/<revisionId>.json`；初始为 `null`（P0-a 回填，见 `archive/p0a-project-kernel-plan.md` §1.5 #2） |
 | `episodes` | `Episode[]` | 是 | 多条主线 = 多集/多单元，共享同一套角色/场景/道具资产（PRD §3.2 主线语义） |
 | `assetRefs` | `AssetRef[]` | 是 | 项目内的语义引用（引用而非复制，D2） |
 | `runIds` | `string[]` | 是 | 关联的流水线 run；一个项目可跑多轮 |

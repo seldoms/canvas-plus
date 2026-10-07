@@ -1,5 +1,8 @@
 # M3.5 施工计划：Shot / Take / Approval 与 H3 continuation
 
+> ⚠️ **已归档（2026-10-07）**：过程性文档，内容定格于写作时点，可能滞后于代码。现行权威文档见 `../development-plan.md`、`../project-centric-skeleton.md`、`../domain-contract.md`；本区说明见 `README.md`。
+
+
 > 内部文档，不登记进 `meta.json`。接续 M2（9d97c16）/ M3（afe9a4f）；H3 POC 已完成（05d51a9，报告 `research/win147-comfyui/h3-continuation-poc.md`）。
 > 契约依据：`domain-contract.md` §3.4–§3.6（Shot/GenerationSlot/Candidate 续接扩展字段已冻结）、§5.3（候选状态机）。**本计划不得改动已冻结字段，只落地。**
 

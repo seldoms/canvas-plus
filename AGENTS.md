@@ -17,12 +17,13 @@
 | 画布相关 UI | 本文件「画布 UI 规范」 |
 | 技能（`skills/`）与提示词模板的**内容取向** | 本文件「内容创作规范」 |
 | 文档 / CHANGELOG / todo / pending-test | 本文件「文档规范」 |
-| **产品边界**（哪些自己做、哪些交剪映/达芬奇等外部工具） | `docs/content/docs/progress/production-boundary-and-roadmap.md` |
-| **平台定位、页面职责、数据边界、画布是否接入服务端事实链** | `docs/content/docs/progress/platform-positioning.md`（含 D13/D14 决策与待拍板清单） |
-| **术语与口径**（阶段/跑批/模板/画布 的区分；段数=七段；模板=19；素材不出本机而文本可上云） | `docs/content/docs/progress/platform-positioning.md` §2.3 + `domain-contract.md` §3.9 |
-| 已登记问题与拍板记录 | `docs/content/docs/progress/pilot-issues.md` |
-| **给子 agent 派活与验收** | `docs/content/docs/progress/subagent-acceptance-checklist.md` |
-| 借鉴外部先进经验 | `docs/content/docs/progress/spec-kit-adoption-plan.md` |
+| **产品形态与页面串联**（以项目为中心、P0–P3 落地顺序） | `docs/content/docs/progress/project-centric-skeleton.md`（现行权威） |
+| **产品边界**（哪些自己做、哪些交剪映/达芬奇等外部工具） | `docs/content/docs/progress/project-centric-skeleton.md` + `prd.md`；历史草稿见 `progress/archive/production-boundary-and-roadmap.md` |
+| **平台定位、页面职责、数据边界** | `docs/content/docs/progress/project-centric-skeleton.md`；D13/D14 决策记录见 `progress/archive/platform-positioning.md` |
+| **术语与口径**（阶段/跑批/模板/画布 的区分；段数=七段；素材不出本机而文本可上云） | `domain-contract.md` §3.9 + `progress/archive/platform-positioning.md` §2.3 |
+| 已登记问题与拍板记录 | `docs/content/docs/progress/archive/pilot-issues.md`（定格于 2026-10-04；新问题登记进 HANDOFF「下一步」） |
+| **给子 agent 派活与验收** | `docs/content/docs/progress/archive/subagent-acceptance-checklist.md` |
+| 借鉴外部先进经验 | `docs/content/docs/progress/archive/spec-kit-adoption-plan.md` |
 
 
 ## 基本原则
@@ -162,4 +163,4 @@
 - Agent 对话消息必须同时按 `threadId`、`turnId` 和 `itemId` 归属；实时事件只用于补充未物化的 turn，历史快照成为权威后不得重复合并同一条消息。
 - Agent 通信协议版本与消息存储版本必须独立管理；消息存储格式升级时必须先备份再迁移，遇到未知版本、损坏清单或冲突备份时拒绝覆盖原文件，不得按记录数量或文件大小静默裁剪历史元数据。
 - 本地启动或浏览器验收时不要关闭用户已经打开的浏览器窗口或标签页；需要自动化验证时使用独立测试页面，避免打断用户当前页面和对话状态。
-- **应用与网关同源同端口时，不要在反向代理层用 HTTP Basic Auth** —— 网关调用会带 `Authorization: Bearer <apiKey>`（`web/src/services/api/image.ts` 的 `aiHeaders()`），而「本地网关地址」默认值就是 `window.location.origin`，**两者抢同一个 `Authorization` 头，Bearer 会把 Basic 顶掉** → 401 → 浏览器疯狂弹原生认证框（点「开始生产」时并发多个网关调用，每个弹一次）。云实例应使用**网页/应用层认证**；若要保留反代鉴权，须让网关调用**经后端同源转发**（浏览器侧不发 Bearer）。详见 `pilot-issues.md` #55。
+- **应用与网关同源同端口时，不要在反向代理层用 HTTP Basic Auth** —— 网关调用会带 `Authorization: Bearer <apiKey>`（`web/src/services/api/image.ts` 的 `aiHeaders()`），而「本地网关地址」默认值就是 `window.location.origin`，**两者抢同一个 `Authorization` 头，Bearer 会把 Basic 顶掉** → 401 → 浏览器疯狂弹原生认证框（点「开始生产」时并发多个网关调用，每个弹一次）。云实例应使用**网页/应用层认证**；若要保留反代鉴权，须让网关调用**经后端同源转发**（浏览器侧不发 Bearer）。详见 `docs/content/docs/progress/archive/pilot-issues.md` #55。

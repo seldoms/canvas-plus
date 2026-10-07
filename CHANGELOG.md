@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- [新增] **影视流水线新页 `/pipeline` 全量接真实数据并设为默认入口**（2026-10-07）：左栏项目/集/run 三合一可收起侧栏 + 横向步骤条 + 七阶段面板（剧本/分镜/服化道/定妆/关键帧/配音/成片），骨架与条目级动作全部走真实网关接口（run 进度轮询、无 run 自动建 run、单项重跑、镜头编辑保存、定妆确认、合成与导出）；旧版页面移至 `/pipeline-old`。导航精简为 8 项（项目/画布/流水线/AI 图片/AI 视频/提示词/资产/任务），配置入口并入顶栏齿轮弹窗。
+
+- [新增] **canvas-agent `project_*` 工具 7→17，Agent 获得项目全生命周期三层视角**（2026-10-07）：项目级（list_runs / run_status / run_qc / stage_items 条目清单）、阶段级（retry_failed / update_stage_input / assemble）、条目级（regenerate_item 含 promptOverride 守卫 / patch_shot / confirm_casting），全部走网关 HTTP、不依赖前端在线；重响应一律裁剪不回传剧本文本。配套：`agent-instructions.md` 补管线章节（Codex 线程启动注入）、README 更新为 51 工具分组目录、插件新增 `skills/pipeline` 技能与 defaultPrompt 示例。
+
+- [新增] **全局标注悬浮窗**（2026-10-07）：所有页面右下角悬浮钮开启标注模式，点元素钉标记写意见、再点一次取消，可拖动浮窗内管理/导出/清空；标注数据按页面路径分存 localStorage。供调试期收集页面反馈。
+
+- [文档] **文档体系整理**（2026-10-07）：`progress/` 下 24 份已完成的过程性文档（里程碑计划、调研、审计、试跑清单）归档至 `progress/archive/` 并加归档横幅；活文档引用路径全量修正；文档站导航去除死链；根 README 由上游 infinite-canvas 口径重写为 canvas-plus；todo/pending-test 移除已完成项并标注当前验收焦点。
+
 - [调整] 重构影视流水线前端：先选项目与集数并展开场景、镜头、台词上下文，阶段改为横向单阶段工作轨道，模型按能力分类，产物改为可读摘要与图片、音频、视频预览。
 
 - [修复] 独立配音在 H3 英文改写与 Ref2VA 路径仍会重新注入原生台词的问题，补齐 H3 Talk 角色音色/语言参数，并展示实测对白时间和口型处理情况。
@@ -65,7 +73,7 @@
 + [新增] **素材预览全站统一**：图片/视频/音频共用一个预览组件（站内弹窗、方向键切同组），并修掉「预览窗撑破屏」——图片弹窗此前写死 960px、竖版视频被撑到 960×1668 比屏幕还高，现为 `min(960px, 100vw−96px)` + 最高 70vh 等比contain。
 + [优化] **模型列表全站统一**：新增 `lib/model-grouping.ts`，按基座分组、组头只写一次、组内只列能力名、按接口顺序、云端渠道带 ☁️ 标识；此前多处各自渲染清单，样式与顺序不一致。
 + [修复] 任务条目 warning 追加改为按段去重（`appendWarning`）：启动重放会反复执行阶段投影，旧写法让同一段 warning 每次重启都追加一次（潜在无限增长）；本轮曾因此叠加自放大导致启动崩溃、单个 run.json 涨到 529MB。附一次性数据修复脚本 `canvas-server/scripts/repair-bloated-warnings.mjs`（只收缩 warning 字段、先备份再原子写回）。
-+ [文档] 新增 H3 i2v 真实 UI 入队取证单 `docs/content/docs/progress/h3-i2v-ui-evidence.md`：独立测试页点击产生的新 job 与同条目旧 job 新旧稿对照，收口「视频提示词缺真实入队证据」的缺口；残留带台词镜头的逐字台词取证。
++ [文档] 新增 H3 i2v 真实 UI 入队取证单 `docs/content/docs/progress/archive/h3-i2v-ui-evidence.md`：独立测试页点击产生的新 job 与同条目旧 job 新旧稿对照，收口「视频提示词缺真实入队证据」的缺口；残留带台词镜头的逐字台词取证。
 + [调整] **模型清单只读模型注册表，网关不再探测上游**（产品负责人拍板「外部模型探测不实用」）：删除 `probeLlm`/`listLlmModels`/`modelsAt` 与渠道探测缓存、`config.llm.probeTimeoutMs`；`/v1/models`、`/api/llm/models`、`/api/providers.llm.models`、`/api/health.llm` 一律按渠道**声明**的 `models[]` 静态展开成「渠道名::模型名」，启动与渠道表写入时自动同步注册表。死渠道从此既拖不住接口也不需要缓存兜底；代价是本机 Ollama 模型不再被自动发现，需登记为渠道并声明模型 id。
 + [调整] `/api/health` 的 `ok` 改为**存活语义**（网关进程能应答即 true）并新增 `service` 段；`llm` 段改报注册表静态事实并带 `probed:false`，前端「测试连接」的 LLM 行改显示「已登记 N 个文本模型（不探测连通性）」，不再把「已登记」显示成「已连通」。
 + [修复] **改写器不得自造画幅事实**：删除对英文改写稿的正则文本手术（改不干净会留下「开头竖屏、正文横屏」的自相矛盾提示词），改为画幅以「不可改写事实」单独成行交给改写器 + `aspectRatioConflict()` 三条判定检测相反画幅，命中即整稿弃用、回落同步结构稿并记 warning，错误方向不进 PROMPT；`horizontal pan`、`a horizontal band of sky`、`a portrait of a man` 等合法描述不误伤。
@@ -82,7 +90,7 @@
 + [新增] **资产工作区改用服务端 AssetRef 为唯一数据源**并补上缩略图、站内弹窗预览、采用状态与「切换采用候选」入口（此前只有一串 artifact id，这是「生成的图在资产里看不到」的根因）；每条资产显示 role 标签、绑定名、候选数。
 + [新增] **分镜「节奏条」**（对标 zenstory-ai/drama-skills）：一条横向时间线，每镜一格、**格宽按时长等比**、**颜色按景别族**（近景/特写偏暖、中景中性、全景偏冷），点格开镜头详情并与分镜卡联动；镜头详情抽屉新增「机位（结构化）」与「画上文字」两节。
 + [新增] **片段合成跑通并出片**：修复「关键帧结果从未投影进 Project 导致 `assembly` 门禁被永挡」后，「运行「片段合成」」正常放行；实测 `sh1`/`sh5` 两段 768×1376 / 24fps 片段产出，且 **H3 是音画联合模型、产物自带 aac 音轨**（此前误以为 i2v 无声）。
-+ [新增] **语音合成工作流（Qwen3-TTS）与按角色固定音色**：新增模板 `audio_qwen3_tts`（文本 + 音色 → 音频，音色由命名 speaker 与音色描述双重固定，跨镜头复用即同音色），首次使用自动从 ModelScope 下载模型。实测两名角色对白的音色可客观区分（老周中位基频 143.7 Hz 男声区 / 女孩 254.0 Hz 女声区）。另探明 147 上 `video_h3_talk` 可做**音画同出**（首帧图 + 驱动音频 → 口型对齐的带声片段），接线设计见 `docs/content/docs/progress/audio-tts-pipeline-wiring.md`。
++ [新增] **语音合成工作流（Qwen3-TTS）与按角色固定音色**：新增模板 `audio_qwen3_tts`（文本 + 音色 → 音频，音色由命名 speaker 与音色描述双重固定，跨镜头复用即同音色），首次使用自动从 ModelScope 下载模型。实测两名角色对白的音色可客观区分（老周中位基频 143.7 Hz 男声区 / 女孩 254.0 Hz 女声区）。另探明 147 上 `video_h3_talk` 可做**音画同出**（首帧图 + 驱动音频 → 口型对齐的带声片段），接线设计见 `docs/content/docs/progress/archive/audio-tts-pipeline-wiring.md`。
 + [新增] **「集」成为可分区的数据事实**：分镜产出的每个 shot 带 `episodeId`（LLM 写 `ep1`/`第1集`/空 时按 index 兜底归一为真实 `ep_0001` 类 id，无法判定则告警不静默丢弃），并回填 `project.episodes[].shotIds`。
 + [修复] **台词表演注解不再驱动生产参数**（产品负责人反馈「说话速度太慢了」）：分镜台词自带的括号注解（如「（低声、音量低、语速慢、略带关心）」）此前被原样当成 TTS 的 `instruct` 送进去，导致语速真的慢到 2.4 字/秒。现在新增**台词清洗** `splitDialogue`（注解剥成独立 `performance` 字段供人工参考，只把纯台词送去合成）与**显式语速解析** `resolveSpeechSpeed`（优先级 `voiceProfile.speed > options.speed > （显式 honorPerformance 时才看注解）> 1.0`）—— **注解默认完全不参与生产参数**，要采纳须显式开启并夹在 [0.85, 1.15]。改为正常语速后同一句台词实测 3.82s → 2.78s（4.0 字/秒）。
 + [修复] **工作区信息区的跨屏大片空白**（产品负责人报「一行里面为什么有这么多空格」）：根因是共用信息面板用 antd `Descriptions` 的固定宽单元格，值撑不满就留空 —— 改为单条 `flex flex-wrap` 信息条（一行多组「标签 + 值」、状态用彩色圆点 + 值）、去掉重复标签并压缩纵向留白。实测 1440 下信息卡高度 186 → 72px、行内最大空隙 574 → 20px、单行组数 2 → 5；320/768/1440 扫描无横向溢出。
@@ -145,7 +153,7 @@
 + [修复] 片段生成的 `LENGTH` 按 H3 的 17n+5 帧网格计算，不再直接把「秒数 × 帧率」喂给模型；同时去掉无效的 `FRAME_RATE` 参数。
 + [新增] 新增模板 `video_h3_ref2v_image_turbo`：H3 参考图生视频加速版（drbaph Ref2VA 8 步 Turbo LoRA + T8mars BlockCache 缓存节点，缓存阈值 0.3），同机实测同参数任务从 1078 秒降至 961 秒，画质与基线目测一致；原模板保持不变。
 + [新增] 新增长期回归测试：用**真实模板**渲染编排器产出的参数，确保二者契约不再漂移。
-+ [新增] 新增本地能力盘点 `docs/content/docs/progress/local-capability-audit.md`：11 个模板的依赖模型逐项比对、参数建议、101 个 LoRA 归类、缺口与补齐建议。
++ [新增] 新增本地能力盘点 `docs/content/docs/progress/archive/local-capability-audit.md`：11 个模板的依赖模型逐项比对、参数建议、101 个 LoRA 归类、缺口与补齐建议。
 + [新增] 新增模板 `video_h3_talk`（TTS 台词 + 对口型），已真机跑通 480×864 / 56 帧 / H.264 + AAC。
 + [修复] 网关在渲染视频模板前把 WIDTH/HEIGHT 吸附到 32 的倍数（H3 conditioning 硬性要求，否则 720×720 这类尺寸直接 execution_error）。
 + [修复] `video_h3_talk` 模板补登记中文标题「H3 台词对口型」，此前 `/api/providers` 把裸模板名当标题返回，前端「一键接入」的模型列表里显示的是内部名；同时加回归测试锁住「每个工作流模板都必须登记标题」与「H3 参考图生视频的三个引擎变体 token 必须完全一致」。

@@ -44,7 +44,7 @@
 > 《喜宴之外》项目已拆 10 集 70 镜。
 > 10-07 上午复核：后端 1079/1079；分支重跑与可重放 QC API/UI 落地；独立配音三线禁止 `<d>` 原生对白；TTS 回写 ffprobe 实测时长；H3 Talk 固定 VoiceProfile 注入。
 
-### 里程碑进度（M0–M6，权威定义见 `m0-m1-implementation-plan.md` §2）
+### 里程碑进度（M0–M6，权威定义见 `docs/content/docs/progress/archive/m0-m1-implementation-plan.md` §2）
 
 | 里程碑 | 状态 | 提交 |
 | --- | --- | --- |
@@ -174,7 +174,7 @@ M3.5 部署后跑了一条真实 2 段链（`prj_01M3ZZ2MJVQ2TJBRY1K3B0HBXF` / `
 | ⚠️ **「标准资料包」还缺三处**：① 剪辑资料包 `exportDeliveryPackage` **只有 CLI、无 HTTP/UI**；② canvas-agent **33 个工具里没有流水线工具**（Agent 驱动不了七段、拿不到包）；③ **无报告渲染层**（前端只显示原始 JSON、不读 `stage.warnings`） | `development-plan.md` §11.9.4 |
 | ⚠️ **两个必读坑**：① `project.script` 若是 markdown 文本则 `episodes=0`、分镜跑不起来，且重跑剧本阶段会**覆盖 `project.script`**（`projects.js:407`）；② 视频任务历史 5 连 error 全是 `缺少参数：INPUT_IMAGE`（缺首帧） | `development-plan.md` §11.9.5 |
 | ⚠️ **部署纪律（本轮修正）**：远程曾有 11 个提交未推裸仓库（裸仓库 HEAD 停在 `666f0bb`，等于没备份），现已推齐；**部署只走 git**（`git pull /root/repos/canvas-plus.git canvas-plus` + 重启），**不要用 `sync-remote.sh`**（`rsync --delete` 会删掉服务器上未提交的成果）；重启前确认无在跑任务 | `development-plan.md` §11.9.6 |
-| 🧭 **平台定位与页面职责已登记、待拍板**：新文档 **`docs/content/docs/progress/platform-positioning.md`**（草稿 v1）——一句话定位、三层程度、四页唯一职责、"工作流"五种所指、本地能力表、**十条矛盾 C1–C10 + 九条待拍板 P1–P9**。其中两条最硬：**C1 文本链路已走云端 DeepSeek（与 PRD"数据不出本机"冲突）**；**C7 画布与项目在数据模型上无关联 → 画布产物不进 Artifact/AssetRef，"在画布上产出资料包"在数据层就是断的**。摘要见 `development-plan.md` **§11.10** | `platform-positioning.md`；`development-plan.md` §11.10 |
+| 🧭 **平台定位与页面职责已登记、待拍板**：新文档 **`docs/content/docs/progress/archive/platform-positioning.md`**（草稿 v1）——一句话定位、三层程度、四页唯一职责、"工作流"五种所指、本地能力表、**十条矛盾 C1–C10 + 九条待拍板 P1–P9**。其中两条最硬：**C1 文本链路已走云端 DeepSeek（与 PRD"数据不出本机"冲突）**；**C7 画布与项目在数据模型上无关联 → 画布产物不进 Artifact/AssetRef，"在画布上产出资料包"在数据层就是断的**。摘要见 `development-plan.md` **§11.10** | `docs/content/docs/progress/archive/platform-positioning.md`；`development-plan.md` §11.10 |
 
 **2026-10-05 独立审查结论（先读这段，再往下看历史表格）**
 
@@ -182,7 +182,7 @@ M3.5 部署后跑了一条真实 2 段链（`prj_01M3ZZ2MJVQ2TJBRY1K3B0HBXF` / `
 
 | 结论 | 证据 |
 | --- | --- |
-| ✅ **#26 渠道表双写者已修**（历史表格与 todo 里的「根因未修」已失效）：`POST /api/llm/providers` 改为**按 name 增量 upsert** —— 不在请求里的渠道绝不删除、`apiKey` 为空保留原 key、删除走显式 `DELETE`（405/404 可解释），写后立即 `modelRegistry.sync()` | `canvas-server/src/index.js:591-645`；`pilot-issues.md` #26 登记修复 `d9e9501`。前端仍整车提交数组，但服务端合并语义使「冲掉 deepseek」不可复现 |
+| ✅ **#26 渠道表双写者已修**（历史表格与 todo 里的「根因未修」已失效）：`POST /api/llm/providers` 改为**按 name 增量 upsert** —— 不在请求里的渠道绝不删除、`apiKey` 为空保留原 key、删除走显式 `DELETE`（405/404 可解释），写后立即 `modelRegistry.sync()` | `canvas-server/src/index.js:591-645`；`docs/content/docs/progress/archive/pilot-issues.md` #26 登记修复 `d9e9501`。前端仍整车提交数组，但服务端合并语义使「冲掉 deepseek」不可复现 |
 | ✅ **`/api/health` 不再同步等待依赖探测**（「#64 只做了一半」对 health 而言已失效）：comfy / runninghub 走 30s TTL 缓存 + 后台刷新、单次探测硬超时 3s，首次未就绪返回 `pending:true`。⚠️ **但同类问题在 `/api/providers` 仍未收口** —— 它仍同步 `await` ComfyUI 且吃任务级 2h 超时（前端调用无 timeout），ComfyUI「连得上不回包」时模型下拉会挂住，见 #71 | 连打 3 次实测 **1.8 / 1.8 / 2.4 ms**（历史记录为 8s+）；`test/health-async.test.mjs`、`index.js:434-436`、`config.js:24` |
 | ✅ **PRD §2.2 的「五段流水线只有四段半」断链已修**：任务终态经 `jobs.on("change")` + 启动重放回写流水线，`upsertCandidate` / `syncItem` / `recomputeStage` 重建 `item.artifactUrl` 与 `stage.artifacts`，`assembly` 能真正入队 | `canvas-server/src/pipeline.js:1154-1185`、`:1208-1214`、`:3103-3113`。PRD §2.2 描述的是 10-02 的旧事实 |
 | ✅ **D1 时长档位跟模型、D3 关键帧 ≥4 张 + 不达标自动重生成——均已落地**（「产品拍板未实现」已失效） | D1：`src/durations.js` + `src/capability-limits.js:25,89,266` + `GET /api/durations`（`index.js:494`）；D3：`config.js:83 maxKeyframesPerShot: 4` + `pipeline.js:2578` 单镜失败自动重试 |
@@ -209,11 +209,11 @@ M3.5 部署后跑了一条真实 2 段链（`prj_01M3ZZ2MJVQ2TJBRY1K3B0HBXF` / `
 | 结论 | 指针 |
 | --- | --- |
 | **产品拍板：外部模型探测废除，模型清单只读注册表**。`probeLlm`/`listLlmModels`/`modelsAt`/探测缓存/`probeTimeoutMs` 整条删除；`/v1/models`、`/api/llm/models`、`/api/providers.llm.models`、`/api/health.llm` 改读 `textModelIds()`（渠道声明的 `models[]` → `渠道名::模型名`）。`/api/health` 实测 **27ms**（原 8s+），`ok` 改存活语义 + `service` 段，`llm.probed:false`。**代价（已接受）**：本机 Ollama 模型不再自动进清单 | `model-registry-contract.md` §3.1、`canvas-server/README.md` |
-| **画幅改为「只检测不改稿」**：删 GPT 的正则手术（会留下自相矛盾稿），`aspectRatioConflict()` 三条判定命中即整稿弃用 → 回落同步稿 + warning（条目与 job meta 都有）。17 条真实句式取证 + 流水线回归 | `pilot-issues.md` #65 |
-| **H3 i2v 真实 UI 入队证据已取到**：独立 headless 测试页点「换个模型再出一张 → H3 图生视频」，jobs 488→489，新 job 三段式新稿、旧 job 旧拼法可对照；取证后撤销、队列归零 | `docs/content/docs/progress/h3-i2v-ui-evidence.md`、`pilot-issues.md` #66 |
-| 🔴 **自伤事故（已修复）**：warning 追加不去重 + 回灌 plan.warning → 启动重放自我放大 → `RangeError` 启动崩溃，且把 `run-murvf1vq-aqyqm/run.json` 撑到 **529MB**。代码改 `appendWarning()` 去重；数据用一次性脚本修复（run.json 回 930KB），坏文件备份在 `data/runs/run-murvf1vq-aqyqm/run.json.bak-bloated`（**529MB，确认后可删**） | `pilot-issues.md` #67、`canvas-server/scripts/repair-bloated-warnings.mjs` |
+| **画幅改为「只检测不改稿」**：删 GPT 的正则手术（会留下自相矛盾稿），`aspectRatioConflict()` 三条判定命中即整稿弃用 → 回落同步稿 + warning（条目与 job meta 都有）。17 条真实句式取证 + 流水线回归 | `docs/content/docs/progress/archive/pilot-issues.md` #65 |
+| **H3 i2v 真实 UI 入队证据已取到**：独立 headless 测试页点「换个模型再出一张 → H3 图生视频」，jobs 488→489，新 job 三段式新稿、旧 job 旧拼法可对照；取证后撤销、队列归零 | `docs/content/docs/progress/archive/h3-i2v-ui-evidence.md`、`docs/content/docs/progress/archive/pilot-issues.md` #66 |
+| 🔴 **自伤事故（已修复）**：warning 追加不去重 + 回灌 plan.warning → 启动重放自我放大 → `RangeError` 启动崩溃，且把 `run-murvf1vq-aqyqm/run.json` 撑到 **529MB**。代码改 `appendWarning()` 去重；数据用一次性脚本修复（run.json 回 930KB），坏文件备份在 `data/runs/run-murvf1vq-aqyqm/run.json.bak-bloated`（**529MB，确认后可删**） | `docs/content/docs/progress/archive/pilot-issues.md` #67、`canvas-server/scripts/repair-bloated-warnings.mjs` |
 | **测试基线**：后端 `node --test test/*.test.mjs` → **673/673**；前端 `tsc --noEmit` 0 错；`web/dist` 已重建、服务已重启跑在新代码上 | 同上命令 |
-| ~~⚠️ **仍未收口**：① `comfy`/`runninghub` 探测还在 `/api/health` 里同步等待（#64 只做了一半）；⑤ #19 浏览器双写者根因未除~~ → **① 与 ⑤ 已于 2026-10-05 复核为「已修」**（见本节顶部新表）。**仍成立**：② 画幅缺真实任务验收；③ 带台词镜头的视频逐字台词未取证；④ 渠道表里 4 个死渠道仍在（对清单/health 已无害） | `pilot-issues.md` #64/#65/#66 |
+| ~~⚠️ **仍未收口**：① `comfy`/`runninghub` 探测还在 `/api/health` 里同步等待（#64 只做了一半）；⑤ #19 浏览器双写者根因未除~~ → **① 与 ⑤ 已于 2026-10-05 复核为「已修」**（见本节顶部新表）。**仍成立**：② 画幅缺真实任务验收；③ 带台词镜头的视频逐字台词未取证；④ 渠道表里 4 个死渠道仍在（对清单/health 已无害） | `docs/content/docs/progress/archive/pilot-issues.md` #64/#65/#66 |
 | ✅ ~~⚠️ **工作区未提交**~~ → **已全部提交**（2026-10-05 复核 `git status --short` 为空，HEAD `0ca5698`） | `git status --short` |
 
 **2026-10-03 本轮结论（历史）**
@@ -221,13 +221,13 @@ M3.5 部署后跑了一条真实 2 段链（`prj_01M3ZZ2MJVQ2TJBRY1K3B0HBXF` / `
 | 结论 | 指针 |
 | --- | --- |
 | **进度快照**：对着开发计划 §8 工作包逐项对账 —— ✅6 项达成（P0-0/P0-b/P0-d/P1-b/P1-d）／🟡4 项有明确缺口（P0-a/P0-c/P1-a/P1-c）／⬜1 项未开工（P2） | `development-plan.md` §11.1 |
-| **问题台账**：试跑清单第一轮 21 条状态全部复核更新（此前一律记「待讨论」、与实际不符），另追加 **#22–#24** | `pilot-issues.md` |
-| 🔴 **三条成片级缺陷（产品负责人新报，均未解决）**：① 角色**形象**未固定 —— 一致性只存在于文字，**无定妆图/参考图锁脸/seed 锁定/角色 ID**；② 角色**音色**未固定 —— `voice` 是纯文本、**下游零消费**（无 TTS、无音色库、无音频产物）；③ **配乐与配音不一致**（根因未定位） | `pilot-issues.md` #22/#23/#24。**路线图其实已在仓库**（`skills/libraries/doubao-creative-drama`：主角设定图→确认→配角逐位→一致性锚点；总时长>15s 必须出角色台词视频建音色基准），**缺的只是接进 03/04/05 产物契约** |
-| 🔴 **产品拍板 D1/D3 两条硬约束未落**：D1 时长档位跟模型（H3 `24×秒+3`，仅 5/10/15s，档位字段与模型清单同源）；D3 关键帧单镜 **≥4 张** + 不达标自动重生成（现配置 2）。2026-10-03 用户喊停改码，`pipeline.js` 已空出待做 | `pilot-issues.md` §「产品负责人拍板」D1/D3 |
+| **问题台账**：试跑清单第一轮 21 条状态全部复核更新（此前一律记「待讨论」、与实际不符），另追加 **#22–#24** | `docs/content/docs/progress/archive/pilot-issues.md` |
+| 🔴 **三条成片级缺陷（产品负责人新报，均未解决）**：① 角色**形象**未固定 —— 一致性只存在于文字，**无定妆图/参考图锁脸/seed 锁定/角色 ID**；② 角色**音色**未固定 —— `voice` 是纯文本、**下游零消费**（无 TTS、无音色库、无音频产物）；③ **配乐与配音不一致**（根因未定位） | `docs/content/docs/progress/archive/pilot-issues.md` #22/#23/#24。**路线图其实已在仓库**（`skills/libraries/doubao-creative-drama`：主角设定图→确认→配角逐位→一致性锚点；总时长>15s 必须出角色台词视频建音色基准），**缺的只是接进 03/04/05 产物契约** |
+| 🔴 **产品拍板 D1/D3 两条硬约束未落**：D1 时长档位跟模型（H3 `24×秒+3`，仅 5/10/15s，档位字段与模型清单同源）；D3 关键帧单镜 **≥4 张** + 不达标自动重生成（现配置 2）。2026-10-03 用户喊停改码，`pipeline.js` 已空出待做 | `docs/content/docs/progress/archive/pilot-issues.md` §「产品负责人拍板」D1/D3 |
 | **测试基线**：后端 `node --test` → **206 tests / 206 pass / fail 0**（本轮实测）；前端此前 `tsc --noEmit` 0 错、`npm run build` 通过 | `cd canvas-server && node --test test/*.test.mjs` |
 | ⚠️ **工作区仍有 20 个文件未提交**（含 `canvas-server/src/pipeline.js`、`test/pipeline.test.mjs`、`pending-test.mdx`、`skills/04-keyframes/SKILL.md`、7 个前端新文件如 `process-timeline.tsx` / `source-import-modal.tsx`）—— 测试与 tsc 均绿、属"已验证待落盘"，接手者按主题分批提交即可 | `git status --short` |
-| ❌ **出片结果：assembly `partial`（16 镜里 6 镜全废）**：前 10 镜 ✅、`sh11`–`sh16` 全数 ComfyUI `SamplerCustomAdvanced` 报 `VBAR OOM`（147 的 16GB 显存），成片未合 | `pilot-issues.md` #25 |
-| 🔴 **渠道表被前端全量覆盖（实测复现）**：`data/llm-providers.json` 只剩死渠道「默认渠道 → api.openai.com（无 key）」，deepseek 被冲掉 → 这就是「疯狂弹认证」的根因，**#19 上轮标「已修复」是误判**。**已手动恢复**（备份→取回 deepseek→写回→重启）：`/v1/models` 现 10 个（含 `deepseek::deepseek-flash` / `deepseek::deepseek-v4-pro`）、死渠道刷屏停止。**根因（双写者）未修** → **2026-10-05 复核：已修**（后端按 name upsert，见本节顶部新表） | `pilot-issues.md` #26 |
+| ❌ **出片结果：assembly `partial`（16 镜里 6 镜全废）**：前 10 镜 ✅、`sh11`–`sh16` 全数 ComfyUI `SamplerCustomAdvanced` 报 `VBAR OOM`（147 的 16GB 显存），成片未合 | `docs/content/docs/progress/archive/pilot-issues.md` #25 |
+| 🔴 **渠道表被前端全量覆盖（实测复现）**：`data/llm-providers.json` 只剩死渠道「默认渠道 → api.openai.com（无 key）」，deepseek 被冲掉 → 这就是「疯狂弹认证」的根因，**#19 上轮标「已修复」是误判**。**已手动恢复**（备份→取回 deepseek→写回→重启）：`/v1/models` 现 10 个（含 `deepseek::deepseek-flash` / `deepseek::deepseek-v4-pro`）、死渠道刷屏停止。**根因（双写者）未修** → **2026-10-05 复核：已修**（后端按 name upsert，见本节顶部新表） | `docs/content/docs/progress/archive/pilot-issues.md` #26 |
 | ✅ 出片结束后已确认 `在跑 job = 0`，重启 `canvas-server` 已完成（`/v1/models` 修复顺带生效）；工作区已全部提交、干净 | `systemctl is-active canvas-server` |
 | **本轮 git**：`b3874d5`（文档：§11 + 21 条复核 + #22–#24）、`d601800`/`639508a`/`154e0d3`/`2f85b4e`（上一轮） | `git log --oneline` |
 
@@ -282,17 +282,17 @@ M3.5 部署后跑了一条真实 2 段链（`prj_01M3ZZ2MJVQ2TJBRY1K3B0HBXF` / `
 | 生成后端抽象（本地优先 + RunningHub 可选） | 完成 | `/api/backends` 返回 local 可用且默认、runninghub 未配置；显式 runninghub 会明确失败，不静默回落 |
 | RunningHub 适配器（提交/轮询/上传/取消） | 代码完成，**未真机验证** | 13 项 stub 用例通过；旧 Key 已失效，见下 |
 | skill 库导入（script-writing-studio、Luster 岩井俊二美学） | ~~未接线~~ → **已接线**（五阶段技能已接管） | `skills/libraries/README.md` |
-| 本地能力盘点 | 完成 | `docs/content/docs/progress/local-capability-audit.md`（400 行，结论分【实测】/【文档】/【推断】） |
+| 本地能力盘点 | 完成 | `docs/content/docs/progress/archive/local-capability-audit.md`（400 行，结论分【实测】/【文档】/【推断】） |
 | 远程部署 `/sobey/canvas-plus` | 完成 | systemd `active`，远程真实生图成功 |
 
 **进行中 / 未完成**
 
 - ~~**流水线阶段尚未引用导入的 skill 库**~~ → **已完成**：五个阶段技能已接管 `script-writing-studio` 与 `Luster-iwai-aesthetic-prompt`，每阶段新增「内容创作红线（硬约束）」，逐条对照见 `skills/libraries/` 下两份接线说明。
-- ~~**片段合成只有「生成」没有「后期」**~~ → **已完成**：`canvas-server/src/delivery.js` 已实现 ffmpeg concat/xfade 拼接 + 外部音轨 `amix` 混音 + 字幕烧入 + 抽封面 + 可复现拼接清单 + 独立合成接口（前端也已有「合成成片」按钮）。**仍缺**：~~音频无人产生（`plan.audio` 靠外部手工传入）~~ → **2026-10-05 复核：音频已由流水线 `audio` 阶段产出**（`audioTemplate` 入队 TTS Job、`projectAudioCues` 落库）；仍缺响度 / M&E / 多语言音轨，以及视频超分。见 `pilot-issues.md` #23/#24。
+- ~~**片段合成只有「生成」没有「后期」**~~ → **已完成**：`canvas-server/src/delivery.js` 已实现 ffmpeg concat/xfade 拼接 + 外部音轨 `amix` 混音 + 字幕烧入 + 抽封面 + 可复现拼接清单 + 独立合成接口（前端也已有「合成成片」按钮）。**仍缺**：~~音频无人产生（`plan.audio` 靠外部手工传入）~~ → **2026-10-05 复核：音频已由流水线 `audio` 阶段产出**（`audioTemplate` 入队 TTS Job、`projectAudioCues` 落库）；仍缺响度 / M&E / 多语言音轨，以及视频超分。见 `docs/content/docs/progress/archive/pilot-issues.md` #23/#24。
 - **视频速度是最大体验瓶颈**：当前节点图上 H3 480×864 / 56 帧就要 8.2 分钟（【实测】），5s 短剧单镜会更久；上游现成的 `video_h3_i2v_sla` / `_blockcache` 加速模板**未实测**。
 - 前端**还没有 RunningHub 的 UI**（本轮只做了后端接口，`/api/backends`、`/api/runninghub/models`）。
 - 换装精确性不足：`img_boogu_outfit_edit` 已跑通但属**语义重绘**（领口袖型与参考图不一致），精确换装需要 SAM3 遮罩链路（SAM3 在盘，无模板）。
-- ~~`video_h3_ref2v` 只接了 1 张参考图……**流水线根本没把角色定妆图接进去**~~ → **2026-10-05 复核：已接线**（03 产出并绑定正脸特写/三视图/场景母版，04 注入 `REF_IMAGE_1..N` + `stableSeed`）。多图锁角色的剩余缺口见「下一步」第 1 条。见 `pilot-issues.md` #22。
+- ~~`video_h3_ref2v` 只接了 1 张参考图……**流水线根本没把角色定妆图接进去**~~ → **2026-10-05 复核：已接线**（03 产出并绑定正脸特写/三视图/场景母版，04 注入 `REF_IMAGE_1..N` + `stableSeed`）。多图锁角色的剩余缺口见「下一步」第 1 条。见 `docs/content/docs/progress/archive/pilot-issues.md` #22。
 
 ## 下一步（按优先级）
 
@@ -313,8 +313,8 @@ M3.5 部署后跑了一条真实 2 段链（`prj_01M3ZZ2MJVQ2TJBRY1K3B0HBXF` / `
 7. **RunningHub 真机验证**：需要用户提供**新的有效 API Key**（旧 Key 已失效，见「坑」）。拿到后跑一次最小生图任务，确认 submit/query/upload 三条链路。
 8. **收尾清理**：`pipeline.js` 已 3500+ 行、`HANDOFF` 顶部「历史表格」可归档、网关仍无鉴权且监听 `0.0.0.0`（非公网暴露）。
 
-1. **角色形象资产化（收尾，阻断成片）**：参考图链路已通 —— 03 产出并绑定正脸特写/三视图/场景母版，04 注入 `REF_IMAGE_1..N` + `stableSeed` 并切到具备参考图能力的 `img_qwen21_edit`，无参考图能力或缺图时显式 `blocked` 而不假装已锁定。**仍缺**：定妆图尚未成为「用户可逐个确认、可跨集复用」的显式项目资产（03 契约里的 `confirmed` 门禁未完整接入）。见 `pilot-issues.md` #22、§11.1 P1-a。
-2. **角色音色收尾（阻断成片）**：~~TTS 未接进流水线~~ → **2026-10-05 复核已接线**：registry 有独立 `audio` 阶段，`pipeline.js` 按 `audioTemplate` 入队 TTS Job（`:2746`/`:2797`），`projectAudioCues` / `projectVoiceProfiles` 已落库（`audio-track.js`），音色可客观区分（老周 143.7Hz / 女孩 254.0Hz），台词清洗与语速解析已落（注解不再驱动生产参数）。**仍缺**：响度 / M&E / 多语言音轨；配乐与配音一致性根因未定位。见 `pilot-issues.md` #23/#24。
+1. **角色形象资产化（收尾，阻断成片）**：参考图链路已通 —— 03 产出并绑定正脸特写/三视图/场景母版，04 注入 `REF_IMAGE_1..N` + `stableSeed` 并切到具备参考图能力的 `img_qwen21_edit`，无参考图能力或缺图时显式 `blocked` 而不假装已锁定。**仍缺**：定妆图尚未成为「用户可逐个确认、可跨集复用」的显式项目资产（03 契约里的 `confirmed` 门禁未完整接入）。见 `docs/content/docs/progress/archive/pilot-issues.md` #22、§11.1 P1-a。
+2. **角色音色收尾（阻断成片）**：~~TTS 未接进流水线~~ → **2026-10-05 复核已接线**：registry 有独立 `audio` 阶段，`pipeline.js` 按 `audioTemplate` 入队 TTS Job（`:2746`/`:2797`），`projectAudioCues` / `projectVoiceProfiles` 已落库（`audio-track.js`），音色可客观区分（老周 143.7Hz / 女孩 254.0Hz），台词清洗与语速解析已落（注解不再驱动生产参数）。**仍缺**：响度 / M&E / 多语言音轨；配乐与配音一致性根因未定位。见 `docs/content/docs/progress/archive/pilot-issues.md` #23/#24。
 3. ~~**产品拍板 D1 / D3**~~ → **已落地**：D1 = `src/durations.js` + `GET /api/durations` + `capability-limits.js` 按模型吸附 `17k+5` 并在提交前校验；D3 = `config.pipeline.maxKeyframesPerShot` 默认 **4**，`pipeline.js:2578` 做单镜不达标自动重试。
 4. ~~**多 run 与跨路径回填**~~ → **缺口已修**：服务端建 run 时按 `options.projectId` 幂等追加进 `project.runIds`（`index.js:190`／`projects.js:352`／`pipeline.js:593`），前端已有 run 选择器（`workspace-layout.tsx:138`）；`use-project-timeline.ts` 的 `runId` 改为入参，硬编码 `runIds[0]` 与 `workspace-gate-panel.tsx` 均已不存在。渠道表双写者亦已修（按 name upsert）。
 5. **解决视频速度**：turbo（8 步 LoRA + BlockCache@0.3）与 QuantFunc INT4 均已实测（见下方两份实录），当前瓶颈是 **147 的物理内存**而非引擎；先降分辨率出草稿是零成本方案。

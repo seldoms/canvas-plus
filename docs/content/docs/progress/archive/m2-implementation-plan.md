@@ -1,5 +1,8 @@
 # M2 施工计划：Canvas 接入 Project 事实链
 
+> ⚠️ **已归档（2026-10-07）**：过程性文档，内容定格于写作时点，可能滞后于代码。现行权威文档见 `../development-plan.md`、`../project-centric-skeleton.md`、`../domain-contract.md`；本区说明见 `README.md`。
+
+
 > 内部文档，不登记进 `meta.json`。接续 `m0-m1-implementation-plan.md`（M0/M1 已验收）。
 > 依据：`platform-positioning.md` §5.5（D14 已拍板「接」，深度倾向 **B 中度接入**）、P6（项目/流水线一律走网关，浏览器直连只留试验表面）、`domain-contract.md` §3.5/§3.10。
 > 前置调查：画布前端与服务端项目 API 已由两个独立 explore 子 Agent 通读，结论见 §1。

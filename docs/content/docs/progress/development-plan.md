@@ -246,7 +246,7 @@ ComfyUI 模板、外部图像/视频 API、LLM、TTS、ffmpeg 都是 Tool 的不
 
 ### 5.1.1 LibTV 对标后必须吸收的联动方式
 
-- **生产事实在服务端**：LibTV 的项目页、画布入口和 Agent VFS 是一个项目上下文；对本项目而言，原文、剧本、草稿、工作流运行和产物索引应放在 Project 服务端，Canvas 只保存编辑态和引用，避免把生产事实锁在某个浏览器标签页。详见 [`libtv-product-analysis.md`](./libtv-product-analysis.md) §3.2、§3.4、§6.4。
+- **生产事实在服务端**：LibTV 的项目页、画布入口和 Agent VFS 是一个项目上下文；对本项目而言，原文、剧本、草稿、工作流运行和产物索引应放在 Project 服务端，Canvas 只保存编辑态和引用，避免把生产事实锁在某个浏览器标签页。详见 [`archive/libtv-product-analysis.md`](./archive/libtv-product-analysis.md) §3.2、§3.4、§6.4。
 - **模板就是可复制的工作流入口**：LibTV 用 `sourceSpaceId + sourceProjectUuid` 把官方模板复制到用户空间。我们应让短剧模板、角色板、场景板和分镜板成为带版本的 Workflow/Canvas 模板，创建时复制结构和配置，但不复制外部 Artifact 字节。
 - **上下文贯穿工具调用**：从 Project 页进入 Workflow、从 Canvas 选中 Shot 调 Tool、从 Asset 页回到角色/场景绑定，都携带同一个 `projectId` 和稳定的语义 id；工具结果自动回写项目，而不是只返回一个孤立 URL。Agent 的 `write_file`、`nodes_connections_batch` 是我们现有 Agent op 可以吸收的两种语义：项目文件操作和画布批量操作。
 - **工作流与工具分层**：工作流保存“先做什么、依赖什么、何时人工确认”；工具保存“如何调用哪台设备/哪个 API”。替换工具不应改变剧本、镜头和资产引用；同一个工具可以被人工按钮、画布节点和 Agent 调用。
@@ -386,7 +386,7 @@ ReviewNote { id, scope: project|episode|scene|shot, targetId?, stage,
 
 项目尚未上线，**现有画布数据只是用户的测试数据，已确认不要**。因此**不做数据迁移、不写兼容层**：不读浏览器 localforage 里的旧 `CanvasProject` / `Asset`，不建一次性导入适配层，也不设 legacy 导入端点；新 Project 一律由 `/projects` 新建，画布引用由用户在新页面重新登记进 `project.json.canvasIds[]`。
 
-- **撤下 P0-a 的两条规则**：`p0a-project-kernel-plan.md` 的 R1（旧画布数据导入方式）与 R11（迁移时 `Asset → AssetRef` 的 `role`/`bindingId` 兜底）随之作废；该方案 §2.8「旧数据一次性导入」删除、§4.3 改写为「不迁移、不兼容」、M5 里程碑改为「新页面直接接管」。
+- **撤下 P0-a 的两条规则**：`archive/p0a-project-kernel-plan.md` 的 R1（旧画布数据导入方式）与 R11（迁移时 `Asset → AssetRef` 的 `role`/`bindingId` 兜底）随之作废；该方案 §2.8「旧数据一次性导入」删除、§4.3 改写为「不迁移、不兼容」、M5 里程碑改为「新页面直接接管」。
 - **与 §7.3 的关系**：§7.3 末尾「以迁移期适配层收口旧数据」的表述对**旧画布数据**不再适用——新页面不读旧结构，也不需要适配层；旧 localforage 数据原样留在浏览器，不处理也不删。
 - **边界**：不做数据迁移 ≠ 旧页面立刻下线。P0-a 期间 `/canvas`、`/assets` 等旧页面仍可打开使用，只是不再接入 Project；旧页面的移除属 P2。
 
@@ -395,7 +395,7 @@ ReviewNote { id, scope: project|episode|scene|shot, targetId?, stage,
 **图像 / 视频 / 音频与私有素材不出本机；文本链路（剧本 / 分镜 / 服化道 / 提示词改写）可以用云端 LLM**，本地模型保留给特殊场景（离线、隐私敏感、降本）。
 
 - **背景**：此前 PRD 写"网关 + ComfyUI + Ollama 全在内网"，但实现上 `config.llm.defaultModel='deepseek::deepseek-v4-pro'`（`index.js:88` 在 `pipeline.llmModel` 为空时兜底注入）→ 文本实际发往 `https://api.deepseek.com`。本轮把口径改成"如实描述"，而不是把实现改回全本地。
-- **落地**：`prd.md` §1 已加"数据边界"行；`platform-positioning.md` C1 由"矛盾"转为"已决策"。
+- **落地**：`prd.md` §1 已加"数据边界"行；`archive/platform-positioning.md` C1 由"矛盾"转为"已决策"。
 - **仍需清理**：其它写"全内网 / 数据不出机器"的文档按此口径逐个对齐。
 - **若要切本地**：把 `config.pipeline.llmModel` 指向本地模型即可；代价是实测 **14.45 t/s**、`numCtx=32768` 吃 **14.9GB/16GB** 显存，且与 ComfyUI 争卡。
 
@@ -404,7 +404,7 @@ ReviewNote { id, scope: project|episode|scene|shot, targetId?, stage,
 **画布必须接入服务端事实链**。产品负责人明确"这关系重大"，并希望先交外部更高维度评审再定**集成深度**。
 
 - **现状（为什么这是大事）**：画布与项目在数据模型上完全没有关联 —— `CanvasProject` 无 `projectId`、`Project.canvasIds` 无写入方、canvas-agent 传的 "projectId" 实为画布 id、画布生成走**浏览器直连**（无队列/刷新即丢）、画布产物**不进 `Artifact/AssetRef`**（`/assets`、`/tasks` 看不到）、画布"资产"与服务端资产**双轨**。因此"在画布上产出资料包"目前**在数据层就是断的**。
-- **三档深度**（详见 `platform-positioning.md` §5.5）：**A 最小**（产物登记 + `projectId`）｜**B 中度**（A + 画布生成改走服务端队列，收敛三套提交链）｜**C 重度**（B + 画布节点图由服务端持有；与 D7"画布单写者"、§7「画布是可替换的编辑表面」冲突）。
+- **三档深度**（详见 `archive/platform-positioning.md` §5.5）：**A 最小**（产物登记 + `projectId`）｜**B 中度**（A + 画布生成改走服务端队列，收敛三套提交链）｜**C 重度**（B + 画布节点图由服务端持有；与 D7"画布单写者"、§7「画布是可替换的编辑表面」冲突）。
 - **工程侧倾向 B**；**拍板前不要在画布侧写资料包入口**（会被现状挡着）。
 
 ### D15 声音生产默认分离，口型同步可选 【用户已定，2026-10-05】
@@ -424,7 +424,7 @@ ReviewNote { id, scope: project|episode|scene|shot, targetId?, stage,
 - Skill 输出先落成结构化事实对象（StoryBible、VisualBible、CharacterBible、SceneBible、PropBible、DialogueBook、ShotPlan），再由 Compiler 按 Provider 能力编译；前端不暴露编译细节。
 - 每个续接连接点记录音频相关性、响度突变、冻结检测、运动漂移和人工复核，链深衰减或剧情转折不合格时必须允许重新开链。
 
-该决定对应 `project-integration-implementation-guide.md` 的 M3.5/M3.6，并把真实 60～90 秒闭环验收提升为 M6；在 M3.5 POC 完成前，不把任何 H3 custom node 直接写入主工作流。
+该决定对应 `archive/project-integration-implementation-guide.md` 的 M3.5/M3.6，并把真实 60～90 秒闭环验收提升为 M6；在 M3.5 POC 完成前，不把任何 H3 custom node 直接写入主工作流。
 
 ### 7.1 用户故事：从小说到可交付短剧
 
@@ -592,11 +592,11 @@ ReviewNote { id, scope: project|episode|scene|shot, targetId?, stage,
 > 本章回答两个问题：**做到什么程度**、**遇到哪些问题**。§8 写的是「要做什么 + 验收标准」，本章写「实际到哪了」。
 > **复核方式**：读代码 + 跑后端测试 + 打接口，不采信 CHANGELOG 自述。
 > **复核基线**：本轮提示词策略复核在允许回环监听的受控环境执行 `cd canvas-server && node --test test/*.test.mjs` → 当时 **667 tests / 667 pass / fail 0 / 4.31s**（**2026-10-05 独立复核：860 tests / 860 pass / 0 fail / 5.36s**）。更早的 206/206 是旧快照。
-> 问题详情与整改单在 `pilot-issues.md`（只追加、不替换）；本章只做**汇总与分级**。
+> 问题详情与整改单在 `archive/pilot-issues.md`（只追加、不替换）；本章只做**汇总与分级**。
 
 > ⚠️⚠️ **本节是 2026-10-03 傍晚的快照，下列结论已被后续代码超越。**
 > 2026-10-04 由小代**读代码 + 打接口 + 跑测试**逐条复核，权威结论见
-> `pilot-issues.md` 的「2026-10-04 第四轮 · 独立验收总账」与 `platform-flow.md` §8。**引用本节前先看这张修正表：**
+> `archive/pilot-issues.md` 的「2026-10-04 第四轮 · 独立验收总账」与 `archive/platform-flow.md` §8。**引用本节前先看这张修正表：**
 >
 > | §11 原文（旧） | 2026-10-04 复核后的实况 |
 > |---|---|
@@ -621,7 +621,7 @@ ReviewNote { id, scope: project|episode|scene|shot, targetId?, stage,
 
 图例：✅ 验收达成 ｜ 🟡 主体可用但有明确缺口 ｜ ⬜ 未开始
 
-> ⚠️ **口径校正（2026-10-03）**：本节 P1-c 里提到的「**D1 时长档位**」「**D3 关键帧 ≥4 张**」**不是** §7 决策登记里的 D1/D3（那是「D1 命名：Project=剧」「D3 生产事实：服务端权威」）。它们出自 `pilot-issues.md` 的「**产品负责人拍板（2026-10-03）**」章节，是产品负责人当面的四条硬约束，**条号与 §7 撞号**。引用时请写明来源，避免歧义：
+> ⚠️ **口径校正（2026-10-03）**：本节 P1-c 里提到的「**D1 时长档位**」「**D3 关键帧 ≥4 张**」**不是** §7 决策登记里的 D1/D3（那是「D1 命名：Project=剧」「D3 生产事实：服务端权威」）。它们出自 `archive/pilot-issues.md` 的「**产品负责人拍板（2026-10-03）**」章节，是产品负责人当面的四条硬约束，**条号与 §7 撞号**。引用时请写明来源，避免歧义：
 > - **时长档位（pilot-issues D1）**：档位**跟着模型走**（模型能力元数据），`24×秒+3` 后按模型网格吸附；H3 推荐 5/10/15s，实际训练区间与合法长度读取模型元数据（不是仅允许三个秒数）；**先算时长再填内容**，Σ段时长必须等于骨架。
 > - **关键帧 ≥4 张（pilot-issues D3）**：单镜一次生成 ≥4 个候选，**不达标自动重新生成**，不停下等人挑。
 
@@ -630,7 +630,7 @@ ReviewNote { id, scope: project|episode|scene|shot, targetId?, stage,
 | 工作包 | 实际状态 | 一手证据 / 缺口 |
 | --- | --- | --- |
 | **P0-0** 冻结领域契约 | ✅ | `contracts.js`(6.5KB)、`web/src/types/domain.ts`、`domain-contract.md`；阶段 ID `plan/script/storyboard/design/keyframe/assembly/post` 冻结；D1–D12 登记。⟶ 复核：今日新增 `blocked` 阶段状态与 `Shot.episodeId`，均已同步进契约 |
-| **P0-a** Project 内核 | 🟡 | `projects.js` 原子写 + 乐观版本；`/api/projects` 列表/创建/详情/上下文/归档；工作区页 + 门禁。建项目绑定 run 时按 `options.projectId` 幂等追加 `runIds[]`。流水线新增项目/集选择尚未通过用户验收：历史 run 未驱动选择器、集级生成范围未接通、制作事实未完整快照、镜头读取形状有误；具体缺口见 `pipeline-feature-api-inventory.md`。多 run 展示与旧页面收敛亦未完成 |
+| **P0-a** Project 内核 | 🟡 | `projects.js` 原子写 + 乐观版本；`/api/projects` 列表/创建/详情/上下文/归档；工作区页 + 门禁。建项目绑定 run 时按 `options.projectId` 幂等追加 `runIds[]`。流水线新增项目/集选择尚未通过用户验收：历史 run 未驱动选择器、集级生成范围未接通、制作事实未完整快照、镜头读取形状有误；具体缺口见 `archive/pipeline-feature-api-inventory.md`。多 run 展示与旧页面收敛亦未完成 |
 | **P0-b** Job→Artifact→Slot 回写断链 | ✅ | 终态重放 + `registerArtifacts` 幂等回写；阶段状态以任务终态为准。**活证据**：本项目 keyframe `artifacts=17`、assembly 2 条 clip done。⟶ 复核：今日补上 **keyframe→`episodes[].shots[].generationSlots`** 投影（此前缺失导致 `assembly` 门禁被永挡，见 #48）；幂等守卫「已存在≠已完成」缺陷亦修（#41） |
 | **P0-c** run 可恢复 | 🟡 | 异步 run（202）+ `progress.json` + `GET /runs/:id/progress` + 取消贯通 + 断点续跑 + `run.estimate` + 启动 `reconcileRunning()`。项目绑定 run 已回填，前端已有 run 选择器；新增阶段分支入口后，旧 run 与新 run 可分别选择恢复。仍待服务重启和真实分支链的页面验收 |
 | **P0 prompt strategy** 模型提示词编译与门禁同源 | ✅ | 模型规则表、编译器、外部 LLM 改写客户端与入队接线已在工作区；阶段运行面板点击前重新读取当前 run 的服务端 `/gates`，服务不可达保持 unknown 不放行。后端 667/667 通过，前端 `tsc` 与 build 通过；DeepSeek `deepseek-flash` 真调用返回 `finishReason=stop/chars=3045`，Qwen 改写器返回 `untranslated=false`；生产重载后 CDP 真实点击关键帧使 job **177→282**，并核对新 `img_qwen21_edit` job 的完整英文 PROMPT。同步降级去重/去旧尾巴、编译快照落盘、重跑强制新编译、撤销候选回退、历史进度旧字数清洗均已验证。仍缺 H3 真实 UI 全文与 #56 返回入口专项交互。 |
@@ -653,7 +653,7 @@ ReviewNote { id, scope: project|episode|scene|shot, targetId?, stage,
 
 ### 11.2 遇到哪些问题（按严重度分级，仅列**当前仍未解决**的）
 
-> 完整历史（含已修复项与四视角会诊结论）见 `pilot-issues.md`。以下只列此刻还压着流程的。
+> 完整历史（含已修复项与四视角会诊结论）见 `archive/pilot-issues.md`。以下只列此刻还压着流程的。
 
 **🔴 阻断级（流程走不通 / 成片不可用）**
 
@@ -1070,11 +1070,11 @@ const provenance = {
 
 真实 CDP 页面点击关键帧按钮前，该 run 有 177 个历史 job；点击后增至 282 个，新增任务使用 `img_qwen21_edit`。抽取任务 `run-murvf1vq-aqyqm-sh17-start-musdrodb-14d74` 的 `params.PROMPT` 为 2785 字单一英文正文：无重复风格锚点、无中英混写、无旧英文尾巴、无 `[untranslated]`。同一轮的降级条目 `sh17-end` 使用 470 字结构化中文，warning 留在 job meta，标记未进入模型输入。点击取消后阶段为 `partial`，旧 QC 通过候选仍保留，147 队列回到 `running=[] / pending=[]`。
 
-任务参数继续采用创建时快照；阶段重跑与逐条 regenerate 强制创建新 attempt 并重新编译，旧 job 不被覆盖。历史 `progress.json` 中的旧「提示词 N 字」后缀由前端兼容清洗，真实页面刷新后只显示「模型生成中」。H3 真实入队提示词全文已于 2026-10-04 取证（`h3-i2v-ui-evidence.md`）；仍待单独补测的只有带台词镜头的视频逐字台词，以及生图工作台「正在生成中 N 张」返回入口的专项 CDP 交互。
+任务参数继续采用创建时快照；阶段重跑与逐条 regenerate 强制创建新 attempt 并重新编译，旧 job 不被覆盖。历史 `progress.json` 中的旧「提示词 N 字」后缀由前端兼容清洗，真实页面刷新后只显示「模型生成中」。H3 真实入队提示词全文已于 2026-10-04 取证（`archive/h3-i2v-ui-evidence.md`）；仍待单独补测的只有带台词镜头的视频逐字台词，以及生图工作台「正在生成中 N 张」返回入口的专项 CDP 交互。
 
 ### 11.7 当前问题登记：健康检查边界与生产事实
 
-**状态：部分整改完成（2026-10-03 夜），2026-10-04 收口移交。** 产品负责人就「外部模型探测」拍板：**探测不实用，模型清单只读注册表**（见 `model-registry-contract.md` §3.1）。据此 LLM 侧探测链路（`probeLlm`/`listLlmModels`/`modelsAt`/探测缓存/`config.llm.probeTimeoutMs`）已整条删除，四处清单接口改为读注册表静态展开；「画幅校正尝试」已由**只检测不改稿**的 `aspectRatioConflict()` 取代。后端 `node --test test/*.test.mjs` → 当时 **673/673**（4.46s；2026-10-05 复核 **860/860**、5.36s）。~~**残留**：`comfy`/`runninghub` 仍是同步探测（存活接口还会等这两项）~~ → **2026-10-05 复核：已改 30s TTL 缓存 + 后台刷新 + 3s 硬超时，实测约 2ms**；画幅与 H3 视频提示词仍缺真实任务验收。本轮维护到此结束，移交清单见 `HANDOFF.md`「2026-10-04 本轮结论」与 `pilot-issues.md` #64–#67。
+**状态：部分整改完成（2026-10-03 夜），2026-10-04 收口移交。** 产品负责人就「外部模型探测」拍板：**探测不实用，模型清单只读注册表**（见 `model-registry-contract.md` §3.1）。据此 LLM 侧探测链路（`probeLlm`/`listLlmModels`/`modelsAt`/探测缓存/`config.llm.probeTimeoutMs`）已整条删除，四处清单接口改为读注册表静态展开；「画幅校正尝试」已由**只检测不改稿**的 `aspectRatioConflict()` 取代。后端 `node --test test/*.test.mjs` → 当时 **673/673**（4.46s；2026-10-05 复核 **860/860**、5.36s）。~~**残留**：`comfy`/`runninghub` 仍是同步探测（存活接口还会等这两项）~~ → **2026-10-05 复核：已改 30s TTL 缓存 + 后台刷新 + 3s 硬超时，实测约 2ms**；画幅与 H3 视频提示词仍缺真实任务验收。本轮维护到此结束，移交清单见 `HANDOFF.md`「2026-10-04 本轮结论」与 `archive/pilot-issues.md` #64–#67。
 
 #### P0：网关存活、依赖连通与生产就绪混为一谈
 
@@ -1109,7 +1109,7 @@ const provenance = {
 
 **验收**：使用隔离实例与独立测试页面，队列空闲时通过真实页面触发片段生成，记录点击前后 Job 增量、Job ID、模板、编译输入指纹与完整 PROMPT。按权威调研核对关键帧对齐行、两位小数时间、三字段固定顺序、`<Picture 1>`、运镜、说话人、逐字台词、目标总时长与画幅；保留证据后结束测试任务。生产重载另行安排，不能与占用中的队列冲突。
 
-**本轮落地**：已按上述口径取证，全文与逐项核对见 `h3-i2v-ui-evidence.md` —— 独立 headless 测试页（不碰人工标签）在「片段合成」条目上点「换个模型再出一张 → H3 图生视频」，jobs 488→489，新 job `run-murpt28o-46f5q-sh1-clip-musnttqs-fhw1j` 的 PROMPT 为三段式新稿（对齐行 `0.00` 两位小数、`<Picture 1>`、运镜自然句、`non_diegetic_music: N/A`、`vertical portrait / 9:16` 与项目画幅一致、`LENGTH=90` 帧为 4s@24fps 的 H3 帧网格），同条目旧 job 的旧拼法并存可对照；取证后即撤销、队列归零。**残留**：带台词镜头的视频逐字台词（`(S1)` + `<d>[English]…</d>`）尚未取证。
+**本轮落地**：已按上述口径取证，全文与逐项核对见 `archive/h3-i2v-ui-evidence.md` —— 独立 headless 测试页（不碰人工标签）在「片段合成」条目上点「换个模型再出一张 → H3 图生视频」，jobs 488→489，新 job `run-murpt28o-46f5q-sh1-clip-musnttqs-fhw1j` 的 PROMPT 为三段式新稿（对齐行 `0.00` 两位小数、`<Picture 1>`、运镜自然句、`non_diegetic_music: N/A`、`vertical portrait / 9:16` 与项目画幅一致、`LENGTH=90` 帧为 4s@24fps 的 H3 帧网格），同条目旧 job 的旧拼法并存可对照；取证后即撤销、队列归零。**残留**：带台词镜头的视频逐字台词（`(S1)` + `<d>[English]…</d>`）尚未取证。
 
 
 ---
@@ -1118,7 +1118,7 @@ const provenance = {
 
 > **触发**：产品负责人口径 —— 「用户只管提内容要求；系统要能联系上下文自动补全这个模型需要的内容，
 > 把素材和信息交给一个**全能的提示词接口**，让它翻译成该模型需要的标准」。
-> **依据**：同一镜头对 9 模板真编译倒查（`pilot-issues.md` 第七轮 #82–#95，全部一手证据）。
+> **依据**：同一镜头对 9 模板真编译倒查（`archive/pilot-issues.md` 第七轮 #82–#95，全部一手证据）。
 > **状态**：方案已登记，**待产品负责人过 M1 基准后再动代码**。
 
 ### 11.8.0 一句话目标
@@ -1243,18 +1243,18 @@ const provenance = {
 ### 11.9.6 版本控制与部署纪律（本轮修正）
 
 - 远程工作区曾有 **11 个提交从未推给裸仓库**（`/root/repos/canvas-plus.git` 的 HEAD 还停在旧的 `666f0bb`，等于没有备份）。现已推齐：**本地 = 裸仓库 = 远程工作区 = `5e1d3a4`**。
-- 另一会话在服务器上的未提交成果（`prompt-sanitize.js` + 测试 + `research/prompt-elements/`）已固定为 `a987cea`，本轮的 `02b0eba` 叠在它之上。
+- 另一会话在服务器上的未提交成果（`prompt-sanitize.js` + 测试 + `archive/research/prompt-elements/`）已固定为 `a987cea`，本轮的 `02b0eba` 叠在它之上。
 - **部署只走 git**：本地提交 → 推裸仓库 → 远程 `git pull /root/repos/canvas-plus.git canvas-plus`（公网 remote 会因 host key 校验失败）→ `systemctl restart canvas-server`。**不要用 `scripts/sync-remote.sh`**：它是 `rsync -a --delete`，会把服务器上未提交的成果**删掉**。
 - 重启前先确认无 running/queued 任务（重启会把在跑任务判失败）。
 
 ## 11.10 平台定位与页面职责（待产品负责人拍板，2026-10-05 登记）
 
 > 产品负责人本轮要求：**停下来先想清楚定位**（它决定不同页面放什么功能）、**现阶段与未来的程度**，并捋清 **画布 / 工作流 / 生图工作台 / 生视频工作台** 四者关系，以及**本地模型能力边界与何时该走外部 API**。
-> 完整分析见新文档 **`platform-positioning.md`**（草稿 v1，未拍板）。本节只登记结论清单，避免两处写重。
+> 完整分析见新文档 **`archive/platform-positioning.md`**（草稿 v1，未拍板）。本节只登记结论清单，避免两处写重。
 
 **一句话定位（建议稿）**：本地化的 AI 短剧**前期生产 + 交付打包**平台——把原文做成**能被专业剪辑接手的一集素材包**；图像/视频/音频必须本地，**文本与提示词改写可走云端**（现状已在走），精剪永远交剪映/达芬奇。现阶段只锁一件事：**B 包（剪辑资料包）能出**。
 
-**十条已登记矛盾（C1–C10，详情见 `platform-positioning.md` §3）**
+**十条已登记矛盾（C1–C10，详情见 `archive/platform-positioning.md` §3）**
 
 | # | 一句话 |
 | --- | --- |
@@ -1262,14 +1262,14 @@ const provenance = {
 | C2 | 四页职责无权威定义：只有项目页有定位；**生视频工作台连一段职责描述都没有**；画布与两个工作台功能重叠 |
 | C3 | "工作流"一词**五种所指**（契约 DAG / 跑批 run / ComfyUI 模板 / 画布节点图 / registry.json 阶段编排），且 `DP:575` 的"四类注册表"与 `registry.js`（Tool/Provider/Device 三张 Map）**不符** |
 | C4 | 文档大面积过期于代码：`PF §8` 已列 9 条；模板数 6 份文档写 11/16，实际 **19**；段数有"五/六/七段"三种说法 |
-| C5 | 两套 M1–M5 里程碑同名不同义（`p0a-project-kernel-plan.md:380` vs 本文件 §11.8.5） |
-| C6 | BR（`production-boundary-and-roadmap.md`）仍是**草稿 v1**，§7 六条拍板（A–F）没有登记结果 |
+| C5 | 两套 M1–M5 里程碑同名不同义（`archive/p0a-project-kernel-plan.md:380` vs 本文件 §11.8.5） |
+| C6 | BR（`archive/production-boundary-and-roadmap.md`）仍是**草稿 v1**，§7 六条拍板（A–F）没有登记结果 |
 | C7 | 🔴 **画布与项目在数据模型上没有关联**：`CanvasProject` 无 `projectId`、`Project.canvasIds` 无写入方、canvas-agent 传的 "projectId" 其实是画布 id、画布资产与服务端 `AssetRef` 双轨、画布产物**不进 `Artifact/AssetRef`**（`/assets`、`/tasks` 看不到）→ **"在画布上产出资料包"在数据层就是断的** |
 | C8 | 外部 API 三种形态并存无口径：网关 RunningHub（默认关/未验证）、前端浏览器直连第三方渠道、`canvas-proxy` 旁路 |
 | C9 | 契约与实现三方不一致：`domain-contract.md:211` 冻结 6 个阶段 ID，`registry.json` 实为 **7 段**（含 casting/audio），`gates.js` 又没有 casting/audio；前端兜底 `design.requires` 与 registry 冲突 |
 | C10 | 三条并行生成提交链：画布直连（无队列/不可恢复/不进资产）、工作台服务端队列、流水线阶段入队 |
 
-**九条待拍板（P1–P9，含建议与代价，见 `platform-positioning.md` §6）**
+**九条待拍板（P1–P9，含建议与代价，见 `archive/platform-positioning.md` §6）**
 
 | # | 议题 | 建议 |
 | --- | --- | --- |
@@ -1277,11 +1277,11 @@ const provenance = {
 | P2 | 四页唯一职责表 | 照 §5.1 收敛：项目=主线事实、画布/工作台=可丢弃的编辑与试验表面、流水线=跑批控制台 |
 | P3 ✅ | "工作流"统一叫法 | **已拍板并落实**：统一为 **阶段 / 跑批 / 模板 / 画布**（写进 `domain-contract.md` §3.9）；UI 本来就没有"工作流"字样 |
 | P4 | 本期目标锁定 **B 包能出** | 认同；给 `edit-export` 接 HTTP + UI + Agent 工具（现在只有 CLI） |
-| P5 | 是否补 **Agent 的流水线工具** | **建议补 Project 作用域工具**：项目上下文/阶段门禁/Job 与 Artifact 状态/跑阶段/取消/采用候选/导出包；否则“Agent 产出资料包”无从谈起。具体权限、幂等和审计见 `project-integration-implementation-guide.md` §7 |
+| P5 | 是否补 **Agent 的流水线工具** | **建议补 Project 作用域工具**：项目上下文/阶段门禁/Job 与 Artifact 状态/跑阶段/取消/采用候选/导出包；否则“Agent 产出资料包”无从谈起。具体权限、幂等和审计见 `archive/project-integration-implementation-guide.md` §7 |
 | P6 | 外部 API 口径（C8） | RunningHub 不投入；浏览器直连渠道只保留在工作台，项目/流水线一律走网关 |
 | P7 | BR 草稿 A–F 正式拍板或归档（C6） | 逐条给结论，或把 BR 降级为"参考"并在文首标注 |
 | P8 ✅ | 文档过期清理（C4/C5/C9） | **已拍板并部分落实**：段数统一"七段"（`domain-contract.md` §3.9 口径 + PRD 数据边界）；**代码侧仍存**：`gates.js` 缺 casting/audio（已入册 **#96**）、前端 fallback requires 冲突（**#97**）（待施工） |
-| P9 ✅ | **画布是否接入服务端事实链**（C7/C10） | **已拍板 D14：接**。深度分 A/B/C 三档（`platform-positioning.md` §5.5），工程侧倾向 **B**，产品负责人要求**先交外部评审**；拍板前不要在画布侧写资料包入口 |
+| P9 ✅ | **画布是否接入服务端事实链**（C7/C10） | **已拍板 D14：接**。深度分 A/B/C 三档（`archive/platform-positioning.md` §5.5），工程侧倾向 **B**，产品负责人要求**先交外部评审**；拍板前不要在画布侧写资料包入口 |
 
 **拍板前不要做的事**：不要在"画布能不能出包"这个问题上继续写代码——P9 没定之前，画布侧的任何资料包入口都建不起来（C7 挡着）。
 

@@ -1,5 +1,8 @@
 > ⚠️ **时点快照，内容已过期（2026-10-05 独立复核）**：本文写于 2026-10-02/03，其中多条结论已被后续代码超越（模板数与测试基线、`delivery.js` 成片执行体、skill 库接线、`runIds` 回填、流水线段数 等）。**引用前请以 `HANDOFF.md` 的「2026-10-05 独立审查结论」、`development-plan.md` §11.1 的修正表、以及 live `GET /api/providers` / `GET /api/pipeline/stages` 为准**；本文只作演变记录保留。
 
+> ⚠️ **已归档（2026-10-07）**：过程性文档，内容定格于写作时点，可能滞后于代码。现行权威文档见 `../development-plan.md`、`../project-centric-skeleton.md`、`../domain-contract.md`；本区说明见 `README.md`。
+
+
 # 第四轮补验报告：片段合成 → 成片合成 → 下载成片（2026-10-04）
 
 > **补的是上一轮（`acceptance-round4.md`）没验到的最后两段**：那轮卡在关键帧没跑完，

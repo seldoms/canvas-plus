@@ -1,5 +1,8 @@
 # 本地 Agent 固化与接入（2026-10-06 实测固化）
 
+> ⚠️ **已归档（2026-10-07）**：过程性文档，内容定格于写作时点，可能滞后于代码。现行权威文档见 `../development-plan.md`、`../project-centric-skeleton.md`、`../domain-contract.md`；本区说明见 `README.md`。
+
+
 ## 一、为什么要固化
 
 之前 canvas-agent 是我手动 `node dist/index.js` 起的：

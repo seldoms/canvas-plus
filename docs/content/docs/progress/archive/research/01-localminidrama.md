@@ -1,5 +1,8 @@
 # LocalMiniDrama 深度拆解（供融合路线会诊）
 
+> ⚠️ **已归档（2026-10-07）**：过程性文档，内容定格于写作时点，可能滞后于代码。现行权威文档见 `../../development-plan.md`、`../../project-centric-skeleton.md`、`../../domain-contract.md`；本区说明见 `../README.md`。
+
+
 > 调研对象：`xuanyustudio/LocalMiniDrama` —「本地 AI 短剧 & 漫剧生成工具」
 > 一手来源：`git clone --depth 1` 到 `/tmp/LocalMiniDrama`（只读分析，未改动任何仓库）。
 > 提交：`755192a` （2026-10-02），版本 **v1.2.8**（CHANGELOG 最新条目 2026-07-01）。

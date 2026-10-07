@@ -1,5 +1,8 @@
 # Project 主线整合实施蓝图
 
+> ⚠️ **已归档（2026-10-07）**：过程性文档，内容定格于写作时点，可能滞后于代码。现行权威文档见 `../development-plan.md`、`../project-centric-skeleton.md`、`../domain-contract.md`；本区说明见 `README.md`。
+
+
 > 面向 Kimi、千问和后续开发者的执行文档。本文把 `Project / Canvas / Workflow / Tool / 生图工作台 / 生视频工作台 / 流水线` 统一到一条可实现的生产链上。
 >
 > 本文不是新的领域契约。字段名、状态和阶段 ID 以 [`domain-contract.md`](./domain-contract.md) 为准；产品范围以 [`prd.md`](./prd.md) 为准；执行优先级以 [`development-plan.md`](./development-plan.md) 为准。本文只补充“怎样接起来”和“怎样证明接对了”。

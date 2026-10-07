@@ -8,7 +8,7 @@
 > 内部文档，**有意不登记进 `meta.json`**，不进文档站导航。
 > 版本：v1（2026-10-02）**+ 2026-10-05 独立复核（基线 `0ca5698`）**。本文描述**现状**与**目标架构**，是后续所有开发的对齐基准。
 > ⚠️ **凡标注「现状」的段落，先读 §2.2 的复核表与 `development-plan.md` §11.1 的修正表** —— 两处列出的旧缺口多数已闭环（回写断链、ffmpeg 拼接、run 持久化、方法论接线、活扣候选、D1/D3 拍板约束等），别照旧结论重做。
-> 姊妹文档：`local-asset-inventory.md`（对内资产盘点）、`gateway-api-benchmark.md`（对外能力对标）。
+> 姊妹文档：`archive/local-asset-inventory.md`（对内资产盘点）、`archive/gateway-api-benchmark.md`（对外能力对标）。
 >
 > 现状描述全部经代码或真机核实，标注 `file:line` 或任务 id。
 
@@ -119,7 +119,7 @@ H3 首尾帧视频 → clip.mp4（画面为主，原生音频只作候选）
 | 画布插件 SDK + 第一个插件 | `plugin-node-context.ts`；`plugins/canvas/storyboard-studio`（分镜工作台） |
 | Agent 批量画布 op | `applyCanvasAgentOps` + 8 个 op，等价于对标产品的 `nodes_connections_batch` |
 
-### 2.2 已知缺口（详见 `local-asset-inventory.md` §D 与 `development-plan.md`）
+### 2.2 已知缺口（详见 `archive/local-asset-inventory.md` §D 与 `development-plan.md`）
 
 > **2026-10-05 复核（独立代码审查，基线 `0ca5698`，后端 860/860 pass）**：本节原先列的缺口**绝大多数已闭环**，逐条状态如下 —— 只剩最后一行仍然成立。
 
