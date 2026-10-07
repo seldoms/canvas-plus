@@ -52,7 +52,16 @@ export type ImageEnqueueBody = {
     size?: string;
     references?: Array<{ url: string }>;
     seed?: number;
+    /**
+     * 生成归因（P2-B4）：五元组齐全时任务终态自动投影为项目槽位候选。
+     * 服务端口径与 /api/generate/* 一致（contextFromBody）；**不要传 runId/stageId**，
+     * 那会让服务端跳过画布投影分支。
+     */
     projectId?: string;
+    episodeId?: string;
+    sceneId?: string;
+    shotId?: string;
+    slotId?: string;
 };
 
 export type ImageEnqueueResult = { jobs: Array<{ id: string; status: ImageJobStatus; template: string }> };

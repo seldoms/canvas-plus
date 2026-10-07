@@ -119,6 +119,8 @@ export function CanvasNodeHoverToolbar({
     const hasVideo = isVideo && Boolean(node.metadata?.content);
     const hasAudio = isAudio && Boolean(node.metadata?.content);
     const isText = node.type === CanvasNodeType.Text;
+    // P2-B5：带镜头归因的节点（分镜镜头发到画布落成的文本节点）。
+    const isShotNode = Boolean(node.metadata?.shotRef?.shotId);
     const isConfig = node.type === CanvasNodeType.Config;
     const canRetry = node.metadata?.status === "error" && !(isVideo && Boolean(node.metadata?.videoTaskId) && !hasVideo);
     const canQueryVideoTask = isVideo && Boolean(node.metadata?.videoTaskId) && !hasVideo && node.metadata?.status !== "loading";
@@ -151,7 +153,9 @@ export function CanvasNodeHoverToolbar({
         ...(hasImage || hasVideo || isText ? [{ id: "saveAsset", title: t("common.addToAssets"), label: t("canvas.nodeToolbar.saveAsset"), icon: <FolderPlus className="size-4" />, onClick: () => onSaveAsset(node) }] : []),
         ...(hasImage || hasVideo || hasAudio ? [{ id: "download", title: t(hasAudio ? "canvas.nodeToolbar.downloadAudio" : hasVideo ? "canvas.nodeToolbar.downloadVideo" : "canvas.nodeToolbar.downloadImage"), label: t("common.download"), icon: <Download className="size-4" />, onClick: () => onDownload(node) }] : []),
         ...(isVideo ? [{ id: "edit", title: t("common.edit"), label: t("common.edit"), icon: <MessageSquare className="size-4" />, onClick: () => onToggleDialog(node) }] : []),
-        ...(isText ? [{ id: "generateImage", title: t("canvas.node.generateImage"), label: t("canvas.node.generate"), icon: <ImageIcon className="size-4" />, onClick: () => onGenerateImage(node) }] : []),
+        // 镜头节点是**分镜说明**，不是提示词：正文是中文（"景别：中景 / 机位：固定机位"），
+        // 拿它去生图会出一坨废图。镜头的正确动作是「回写分镜」，在下面 onAddProjectCandidate 那条里。
+        ...(isText && !isShotNode ? [{ id: "generateImage", title: t("canvas.node.generateImage"), label: t("canvas.node.generate"), icon: <ImageIcon className="size-4" />, onClick: () => onGenerateImage(node) }] : []),
         ...(isConfig ? [{ id: "config", title: t("canvas.configNode.title"), label: t("canvas.configNode.title"), icon: <Settings2 className="size-4" />, onClick: () => onToggleDialog(node) }] : []),
         ...(isText ? [{ id: "decreaseFont", title: t("canvas.nodeToolbar.decreaseFont"), label: t("canvas.nodeToolbar.zoomOut"), icon: <Minus className="size-4" />, onClick: () => onDecreaseFont(node) }] : []),
         ...(isText ? [{ id: "increaseFont", title: t("canvas.nodeToolbar.increaseFont"), label: t("canvas.nodeToolbar.zoomIn"), icon: <Plus className="size-4" />, onClick: () => onIncreaseFont(node) }] : []),
@@ -161,8 +165,17 @@ export function CanvasNodeHoverToolbar({
         ...(hasImage ? imageTools.map((tool) => ({ id: tool.id, title: tool.title, label: tool.label, icon: tool.icon, active: tool.active, onClick: tool.onClick })) : []),
     ];
     const toolbarTools = hasImage ? [...baseToolbarTools, ...nodeToolbarTools].filter((tool) => quickImageToolIdSet.has(tool.id as ImageQuickToolId)) : [...baseToolbarTools, ...nodeToolbarTools, ...extraTools];
-    // 绑定画布才有的「加入项目候选…」：上下文动作，不进快捷工具配置（hasImage 时上面已被快捷清单过滤）。
-    if (hasImage && onAddProjectCandidate) toolbarTools.push({ id: "addProjectCandidate", title: t("canvas.nodeToolbar.addCandidateTitle"), label: t("canvas.nodeToolbar.addCandidate"), icon: <ListPlus className="size-4" />, onClick: () => onAddProjectCandidate(node) });
+    // 与项目事实挂上的上下文动作，不进快捷工具配置（hasImage 时上面已被快捷清单过滤）。
+    // P2-B5：镜头节点（带 shotRef 的文本节点）也给这个动作，但语义是「回写分镜」而不是「加入候选」。
+    if (onAddProjectCandidate && (hasImage || isShotNode)) {
+        toolbarTools.push({
+            id: "addProjectCandidate",
+            title: t(isShotNode ? "canvas.nodeToolbar.writebackShotTitle" : "canvas.nodeToolbar.addCandidateTitle"),
+            label: t(isShotNode ? "canvas.nodeToolbar.writebackShot" : "canvas.nodeToolbar.addCandidate"),
+            icon: <ListPlus className="size-4" />,
+            onClick: () => onAddProjectCandidate(node),
+        });
+    }
     const selectableImageToolbarTools = [...baseToolbarTools, ...nodeToolbarTools].filter((tool) => tool.id !== "retry") as ImageToolbarSettingsTool[];
 
     const closeImageToolSettings = () => {

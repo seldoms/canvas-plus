@@ -85,6 +85,54 @@ function resolveAudioProfile(cue, shot, { profileById, profileByCharacter, chara
 /** Job 终态：只有落到这里才回写流水线。 */
 const TERMINAL_JOB = new Set(["done", "error", "canceled"]);
 
+/**
+ * 分镜改字段 → 下游产物失效（P2）。
+ *
+ * 为什么需要这张表：`patchStageShot` 此前只做「合并 + 双写」，改了 prompt / durationSec 之后
+ * keyframes.json 与 assembly.json **原样留着**，于是用户看到的是「改完了，关键帧也在这儿」——
+ * 实际上画面与新分镜已经对不上，而且系统一声不吭。这不是 QC 能覆盖的：QC 量的是当前产物自洽性。
+ *
+ * 口径：只标记**确实消费了该字段**的下游阶段，绝不一刀切标全部。
+ *   - prompt/negativePrompt/textOverlays/shotSize/camera/cameraSpec → 关键帧（画面）
+ *   - action/dialogue/audio → 关键帧（画面）+ 配音（声音）
+ *   - durationSec                      → 配音 + 合成（时长变了音画必然错位）
+ * 标记语义用 contracts.js §11.5.3 的 stale（fresh=可复用 / stale=输入已变需重跑），不等于删除或失败。
+ *
+ * **撤销靠指纹，不靠「谁改的」**：改回原值时系统无法凭字段名判断哪个值才是原始的
+ * （先后两次改都是「变化」）。所以每次标记都记下改动前该镜的内容指纹（`shotHash`），
+ * 改回来后指纹重新对上 → 失效自动撤销。对不上就继续提示需重跑。
+ * 这与既有 QC 的 inputHash/outputHash 同一套思路（产出时记指纹，读时对账）。
+ */
+const SHOT_FIELD_DOWNSTREAM = Object.freeze({
+    prompt: ["keyframe"],
+    negativePrompt: ["keyframe"],
+    textOverlays: ["keyframe"],
+    shotSize: ["keyframe"],
+    camera: ["keyframe"],
+    cameraSpec: ["keyframe"],
+    // cuts 被提示词编译器消费（拼切镜点时间码，prompt-compiler.js:718/1006），
+    // 且切点变了画面就对不上 → 关键帧与合成都要重跑。
+    cuts: ["keyframe", "assembly"],
+    // action 既是画面信息（关键帧），也进音频上下文（动作线索用于表演推断）。
+    action: ["keyframe", "audio"],
+    // audio 是镜头的**声音意图描述**（"本镜无对白" / 环境音说明），
+    // 被提示词编译器读（prompt-compiler.js:677）—— 消费方是关键帧，不是配音阶段。
+    audio: ["keyframe"],
+    dialogue: ["audio"],
+    dialogueLines: ["audio"],
+    // 说话人归属决定用谁的音色（audio.js:249/446）→ 改了必须重跑配音。
+    characterId: ["audio"],
+    characterIds: ["audio"],
+    voiceProfileId: ["audio"],
+    durationSec: ["audio", "assembly"],
+});
+
+/** 可定点编辑的镜头字段白名单（C11/C12）：不在表内的键一律 400。 */
+const SHOT_PATCH_FIELDS = new Set(Object.keys(SHOT_FIELD_DOWNSTREAM));
+
+/** 结构位字段：改它等于换了镜/集的归属结构，绝不能静默接受（契约 §3.4 id 稳定，另两类同理）。 */
+const SHOT_STRUCTURAL_FIELDS = Object.freeze(["episodeId", "sceneId", "index"]);
+
 /** 01 剧本阶段的三个显式子步骤：读原文 → 分集规划 → 逐集剧本。进度与产物都按这三个 id 组织。 */
 const SCRIPT_STEPS = Object.freeze([
     { id: "analyze", title: "读原文" },
@@ -557,6 +605,12 @@ export function createPipeline({ config, skillsDir, jobs, comfy, llm, llmCall, r
     /**
      * 分镜定点编辑：按 shotId 局部更新 storyboard 阶段产物里的单个 shot，而不是整段 setStageInput 替换 JSON。
      * 只合并传入字段、保留 shot.id（契约 §3.4：Shot.id 稳定不可改）；其它 shot 与阶段其余字段一律不动。
+     *
+     * P2：同时做三件此前缺失的事 ——
+     *  ① 结构位字段（episodeId/sceneId/index）显式拒绝，避免一次手滑把镜头挪到别的集里；
+     *  ② 消费了下游字段时给 keyframe/audio/assembly 打 stale 标记，并记下**改前**的镜头内容指纹；
+     *  ③ 镜头内容回到该指纹（改回原值）时自动撤销失效 —— 靠指纹对账，不靠「谁改的」去猜。
+     * 返回值里的 changedFields / downstreamStale 是给调用方（画布回写 / Agent / 前端）如实上报的。
      */
     function patchStageShot(runId, stageId, shotId, patch = {}) {
         const run = requireRun(runId);
@@ -570,11 +624,127 @@ export function createPipeline({ config, skillsDir, jobs, comfy, llm, llmCall, r
         if (index < 0) throw gateError(`分镜里没有镜头：${id}`, 404);
         const body = patch && typeof patch === "object" ? patch : {};
         if (body.id !== undefined && String(body.id) !== id) throw gateError("镜头 id 稳定不可改");
+        const structural = SHOT_STRUCTURAL_FIELDS.filter((field) => body[field] !== undefined);
+        if (structural.length) throw gateError(`镜头归属结构（${structural.join("、")}）不可定点改：会让既有产物指向错的集/场，请改用剧本阶段重跑`);
+        // C11/C12 白名单：只接受镜头内容字段。
+        // 不加白名单的话，外部可注入 generationSlots / status / staleFrom ——
+        // staleFrom 尤其危险：传 null 抹掉撤销依据，改回原值也清不掉失效标记。
+        const unknown = Object.keys(body).filter((field) => !SHOT_PATCH_FIELDS.has(field) && field !== "id");
+        if (unknown.length) throw gateError(`镜头字段不可编辑：${unknown.join("、")}（可编辑：${[...SHOT_PATCH_FIELDS].join("、")}）`);
         const merged = { ...shots[index], ...body, id };
+        // 「值真的变了才算」：先按原 shot 比出字段清单，再写回。传同值不该惊动用户重跑流水线。
+        const changed = Object.keys(body).filter((field) => JSON.stringify(shots[index][field]) !== JSON.stringify(body[field]));
+        // 字段级基线：每个改动字段记下**它自己**的改前值。
+        // 这里必须逐字段取，而不是存一个整镜指纹 —— 整镜指纹会让字段互相拖累：
+        // 同一镜改了 prompt 又改了 durationSec 时，光改回 prompt 指纹仍然对不上，
+        // 撤销永远失效（同一次 patch 多字段还共享同一份基线，更分不清谁是谁）。
+        const baselines = {};
+        for (const field of changed) baselines[field] = cloneValue(shots[index][field]);
         shots[index] = merged;
         saveOutput(run.id, def.id, stage.output);
+
+        // 撤销与打标合成单 pass：先按字段级基线算出「哪些来源已回到打标时的样子」，
+        // 再把剩余来源原样留下、本次新增的补上。两段逻辑分开写会互相回写出脏来源。
+        const downstreamStale = [];
+        const revertedStages = [];
+        const revertedFields = new Set();
+        const touchedStages = new Map();
+        for (const [stageId2, stage2] of Object.entries(run.stages || {})) {
+            const sources = Array.isArray(stage2?.staleSources) ? stage2.staleSources : [];
+            const mine = sources.filter((item) => item.shotId === id);
+            if (!mine.length) continue;
+            // 字段级撤销判定：当前值与该来源记录的基线值一致 → 这一条来源不再成立。
+            const kept = sources.filter((item) => {
+                if (item.shotId !== id) return true;
+                if (!changed.includes(item.field)) return true;
+                if (sameValue(item.baseValue, merged[item.field])) {
+                    revertedFields.add(item.field);
+                    return false;
+                }
+                return true;
+            });
+            if (kept.length !== sources.length) revertedStages.push(stageId2);
+            // 关键：纯撤销时本次不会进打标分支，若不在这里写回，摘掉的来源就白摘了
+            // （表现就是「改回原值，失效提示纹丝不动」）。
+            touchedStages.set(stageId2, kept);
+            stage2.staleSources = kept;
+        }
+
+        // 打标时必须跳过「本次就是撤销」的字段：
+        // 改回原值时 changed 同样非空（值确实变了），若不跳过，撤销完立刻又被打上标记，
+        // 用户看到的就是「怎么改都一直提示需重跑」。
+        const newlyChanged = changed.filter((field) => !revertedFields.has(field));
+        if (newlyChanged.length) {
+            for (const field of newlyChanged) {
+                for (const downstreamId of SHOT_FIELD_DOWNSTREAM[field] || []) {
+                    const downstream = run.stages?.[downstreamId];
+                    if (!downstream || downstream.output === undefined || downstream.output === null) continue;
+                    const sources = touchedStages.get(downstreamId) ?? (Array.isArray(downstream.staleSources) ? downstream.staleSources : []);
+                    if (!sources.some((item) => item.shotId === id && item.field === field)) {
+                        sources.push({ shotId: id, field, baseValue: baselines[field] });
+                    }
+                    downstream.stale = true;
+                    downstream.staleSources = sources;
+                    downstream.staleReason = `上游镜头 ${sources.map((item) => `「${item.shotId}」的 ${item.field}`).join("、")} 已修改，需重跑本阶段`;
+                    downstream.staleAt = nowIso();
+                    if (!downstreamStale.includes(downstreamId)) downstreamStale.push(downstreamId);
+                }
+            }
+        }
+
+        // 摘完撤销的来源后，某个阶段可能一个来源都不剩 → 标记与原因一并清掉（不留假话）。
+        for (const [stageId2, sources] of touchedStages) {
+            const downstream = run.stages?.[stageId2];
+            if (!downstream) continue;
+            if (sources.length) continue;
+            delete downstream.stale;
+            delete downstream.staleReason;
+            delete downstream.staleAt;
+            delete downstream.staleSources;
+        }
+
+        // 本镜自己的留痕：还有任一来源成立才留。
+        const stillStale = Object.values(run.stages || {}).some((stage2) => (Array.isArray(stage2?.staleSources) ? stage2.staleSources : []).some((item) => item.shotId === id));
+        if (stillStale) merged.staleFrom = { fields: changed, stages: downstreamStale, at: nowIso() };
+        else delete merged.staleFrom;
+        shots[index] = merged;
+        saveOutput(run.id, def.id, stage.output);
+
+        if (changed.length) {
+            appendRunLog(runsDir, run.id, {
+                op: "storyboard.patch",
+                actor: "local",
+                stage: def.id,
+                ok: true,
+                message: revertedStages.length
+                    ? `镜头「${id}」改 ${changed.join("、")} → 撤销 ${revertedStages.join("、")} 的部分失效来源${downstreamStale.length ? `，${downstreamStale.join("、")} 仍需重跑` : ""}`
+                    : `镜头「${id}」改 ${changed.join("、")}${downstreamStale.length ? ` → 需重跑 ${downstreamStale.join("、")}` : ""}`,
+            });
+        }
         saveRun(run);
-        return { run, shot: merged };
+        return { run, shot: merged, changedFields: changed, downstreamStale };
+    }
+
+    /** 深拷贝一个字段值（撤销基线必须是快照，不能与后续写回共享引用）。 */
+    function cloneValue(value) {
+        return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+    }
+
+    /** 结构化相等（键序无关）：比 JSON 字符串会被 {"a":1,"b":2} vs {"b":2,"a":1} 判成不同。 */
+    function sameValue(a, b) {
+        if (a === b) return true;
+        if (a === undefined || b === undefined) return false;
+        if (a === null || b === null) return a === b;
+        if (typeof a !== "object" || typeof b !== "object") return false;
+        return stableStringify(a) === stableStringify(b);
+    }
+
+    /** 递归排序键后序列化，保证对象键序不影响比较结果。 */
+    function stableStringify(value) {
+        if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
+        if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+        const keys = Object.keys(value).sort();
+        return `{${keys.map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(",")}}`;
     }
 
     /**
@@ -1341,6 +1511,33 @@ ${JSON.stringify(partials, null, 2)}
     }
 
     /**
+     * A5：本阶段已产出与当前上游匹配的产物 → 上游改动造成的 stale 不再成立，连同来源一并清掉。
+     *
+     * 只在「真的跑完了」时清：partial / blocked / error 产物还不全，留着提示才是实话。
+     * 触发点选在 recomputeStage 的两个出口 —— 它是**所有**回写路径的收口
+     * （projectJob / attachGeneration / executeRegenerate 都经过），
+     * 只在 executeStage 清的话，「异步任务跑完那条路」会漏。
+     * 镜头侧的 staleFrom 是阶段级标记的镜像，不同步收就留下脏数据。
+     */
+    function clearStaleOnDone(stage, run) {
+        if (!stage || stage.stale === undefined && stage.staleSources === undefined) return;
+        delete stage.stale;
+        delete stage.staleReason;
+        delete stage.staleAt;
+        delete stage.staleSources;
+        const shotList = run?.stages?.storyboard?.output?.shots;
+        if (!Array.isArray(shotList)) return;
+        let touched = false;
+        for (const shot of shotList) {
+            if (shot && shot.staleFrom) {
+                delete shot.staleFrom;
+                touched = true;
+            }
+        }
+        if (touched) saveOutput(run.id, "storyboard", run.stages.storyboard.output);
+    }
+
+    /**
      * 阶段状态以任务终态为准：必需 Job 全部成功才 done；
      * 全部进行中 running、部分成功 partial、全失败 error、有取消 canceled、参考图能力/素材缺失 blocked。重算 artifacts。
      * artifacts 会重建为「条目产物 + 成片条目」，成片信息由 filmArtifacts 从 assembly 派生，天然幂等。
@@ -1359,6 +1556,10 @@ ${JSON.stringify(partials, null, 2)}
             if (blockedItems.length) {
                 stage.status = "blocked";
                 stage.error = blockedItems.map((item) => `${item.id}：${item.blockedReason || "缺少参考图"}`).join("；");
+            } else {
+                // 无候选但也无阻塞 = 本阶段已完成（产物是直接落库的，不是走 Job 候选）。
+                // 不清 stale 的话，这条路径下的重跑会永远留着「需重跑」。
+                clearStaleOnDone(stage, run);
             }
             return;
         }
@@ -1373,6 +1574,7 @@ ${JSON.stringify(partials, null, 2)}
         else if (statuses.includes("canceled")) stage.status = "canceled";
         else stage.status = "error";
         if (TERMINAL_JOB.has(stage.status)) stage.finishedAt = stage.finishedAt || nowIso();
+        if (stage.status === "done") clearStaleOnDone(stage, run);
         // 关键帧终态：把 frames[] 产物投影进 Project 侧 shots[].generationSlots[]（#48 门禁依据）。
         // 放在 recomputeStage 收口 = 全部回写路径（projectJob / attachGeneration / executeRegenerate）都覆盖；
         // 对「已跑完的历史 run」由 bindJobs() 启动重放终态 Job 时同样命中。

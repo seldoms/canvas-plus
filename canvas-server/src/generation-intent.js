@@ -12,10 +12,57 @@
  */
 
 const INTENT_SOURCES = new Set(["project", "canvas", "workbench", "api"]);
+
+/**
+ * source 白名单**按前缀**判定（P2 修复一次真实回归）。
+ *
+ * 此前是精确匹配：工作台把 `source: "video-workbench"` 放进 meta，而 `/api/generate/*` 读
+ * `body.source ?? meta.source`，于是 createGenerationIntent 直接 400 —— **视频工作台一条都提交不了**
+ * （真机实测：只传 meta.source → 400，顶层传合法 source → 201）。
+ * 精确匹配让「在合法来源上加个后缀区分具体页面」这种合理做法直接崩掉主链路。
+ *
+ * 现在：`<合法来源>`、`<合法来源>-<子标识>`、`<子标识>-<合法来源>`（如真实的
+ * `video-workbench` / `image-workbench`）都放行，不含合法段的仍拒。
+ * 分段校验保留了「未知来源不许进」的底线，不是无边界放行。
+ */
+function isIntentSource(value) {
+    if (INTENT_SOURCES.has(value)) return true;
+    // 按 `-` 分段，任一段命中合法来源即放行。
+    // 为什么不能只认「合法来源开头」：真实来源名是 `video-workbench` / `image-workbench`，
+    // 子标识（区分哪个页面）在**前**、来源名在后 —— 只做 startsWith 的话这两个全被拒，
+    // 而它们恰恰是生图/生视频工作台一直在用的名字（P0 回归，真机实测 400）。
+    // 仍然保留底线：`foo-bar`、`workbenchish` 这类不含合法段的仍拒。
+    return value.split("-").some((part) => INTENT_SOURCES.has(part));
+}
 const INTENT_KINDS = new Set(["image", "video", "audio"]);
 
 /** 归属字段：context → job.meta 的直通清单（契约 §3.10，有值才写）。 */
 const CONTEXT_FIELDS = ["projectId", "episodeId", "sceneId", "shotId", "slotId", "runId", "stageId"];
+
+/**
+ * 从提交体里抽归属上下文（P2-B4）。
+ *
+ * 为什么不各写各的：`/api/generate/*`（index.js）、`/api/images/enqueue`（workbench-jobs.js）
+ * 此前各读各的字段，前者支持 7 个、后者只认 `body.projectId` 单个 —— 归因在生图工作台静默失效
+ * （shotId/slotId 传了也到不了 job.meta，任务终态无法投影为项目槽位候选）。
+ * 三条提交链（generate / enqueue / artifacts import）统一从这里取，口径只有这一份。
+ *
+ * 顶层字段优先于 `body.meta`：与 index.js 既有口径一致（顶层是显式归因，meta 是留痕袋）。
+ * 空串 / undefined / 非标量一律丢弃，由 asId 归一。
+ */
+export function contextFromBody(body = {}) {
+    const meta = body?.meta && typeof body.meta === "object" ? body.meta : {};
+    const read = (field) => asId(body?.[field] ?? meta[field]);
+    return {
+        projectId: read("projectId"),
+        episodeId: read("episodeId"),
+        sceneId: read("sceneId"),
+        shotId: read("shotId"),
+        slotId: read("slotId"),
+        runId: read("runId"),
+        stageId: read("stageId"),
+    };
+}
 
 /** 契约错误：形状参照 production-contracts.js（路由层可直接用 .status 回响应）。 */
 function contractError(message, field) {
@@ -39,7 +86,7 @@ export function createGenerationIntent(input = {}) {
     const template = typeof input.template === "string" ? input.template.trim() : "";
     if (!template) throw contractError("缺少 template", "template");
     const source = asId(input.source) || "api";
-    if (!INTENT_SOURCES.has(source)) throw contractError(`非法 source（须为 project|canvas|workbench|api）：${source}`, "source");
+    if (!isIntentSource(source)) throw contractError(`非法 source（须为 project|canvas|workbench|api，可带 -子标识 后缀）：${source}`, "source");
     const context = input.context && typeof input.context === "object" ? input.context : {};
     return {
         id: asId(input.id) || `intent_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`,

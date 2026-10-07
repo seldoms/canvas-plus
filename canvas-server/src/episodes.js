@@ -229,12 +229,32 @@ export function createEpisodes(store) {
 
     const SHOT_MUTABLE = new Set(["sceneId", "index", "storyboard", "status"]);
 
+    /**
+     * 分镜内容字段：前端 `ShotPatchInput` 声明的就是这批平铺字段（durationSec/shotSize/prompt…），
+     * 但服务端此前只认 `storyboard` 嵌套对象 —— 于是**前端按自己的类型传平铺字段会被 400 拒**。
+     * 这里把平铺字段合并进 shot.storyboard（嵌套对象优先，可显式传 storyboard 覆盖整块），
+     * 两个口径都留着，避免再次漂移。
+     */
+    const SHOT_STORYBOARD_FIELDS = new Set([
+        "durationSec",
+        "shotSize",
+        "camera",
+        "cameraSpec",
+        "action",
+        "dialogue",
+        "dialogueLines",
+        "audio",
+        "prompt",
+        "negativePrompt",
+        "textOverlays",
+    ]);
+
     function updateShot(projectId, shotId, patch = {}) {
         const found = findShot(projectId, shotId);
         if (!found) throw badRequest(`镜头不存在：${shotId}`);
         const { project, dir, episode, shot } = found;
         const body = patch && typeof patch === "object" ? patch : {};
-        for (const key of Object.keys(body)) if (!SHOT_MUTABLE.has(key)) throw badRequest(`未知字段：${key}`);
+        for (const key of Object.keys(body)) if (!SHOT_MUTABLE.has(key) && !SHOT_STORYBOARD_FIELDS.has(key)) throw badRequest(`未知字段：${key}`);
         if (body.sceneId !== undefined) {
             const target = String(body.sceneId);
             if (!(episode.scenes || []).some((item) => item.id === target)) throw badRequest(`镜头引用的 sceneId 不在本集：${target}`);
@@ -244,6 +264,12 @@ export function createEpisodes(store) {
             const index = Number(body.index);
             if (!(index > 0)) throw badRequest("index 必须是正数");
             shot.index = index;
+        }
+        const flat = {};
+        for (const key of Object.keys(body)) if (SHOT_STORYBOARD_FIELDS.has(key)) flat[key] = body[key];
+        if (Object.keys(flat).length) {
+            const base = shot.storyboard && typeof shot.storyboard === "object" ? shot.storyboard : {};
+            shot.storyboard = { ...base, ...flat };
         }
         if (body.storyboard !== undefined) shot.storyboard = body.storyboard ?? {};
         if (body.status !== undefined) shot.status = String(body.status);

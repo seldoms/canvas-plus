@@ -324,8 +324,41 @@ export async function callProjectTool(name: ToolName, input: Json) {
             if (!shotId) throw new Error("缺少 shotId（先用 project_stage_items 拿）");
             const patch = input.patch && typeof input.patch === "object" ? (input.patch as Json) : {};
             if (!Object.keys(patch).length) throw new Error("patch 不能为空");
-            const payload = await gateway(`/api/pipeline/runs/${encodeURIComponent(runId)}/steps/${encodeURIComponent(stage)}/shots/${encodeURIComponent(shotId)}`, { method: "PATCH", body: patch });
-            return { runId, stage, shotId, patched: Object.keys(patch), shot: payload.shot ?? null };
+            const payload = (await gateway(`/api/pipeline/runs/${encodeURIComponent(runId)}/steps/${encodeURIComponent(stage)}/shots/${encodeURIComponent(shotId)}`, { method: "PATCH", body: patch })) as {
+                shot?: Json;
+                changedFields?: string[];
+                downstreamStale?: string[];
+            };
+            // downstreamStale 必须回给 Agent：改了 prompt/durationSec 之类被下游消费的字段后，
+            // 关键帧/配音/合成的既有产物已经对上了「旧分镜」，不报出来等于骗它说改完就好了。
+            const stale = payload.downstreamStale || [];
+            return { runId, stage, shotId, patched: Object.keys(patch), shot: payload.shot ?? null, changedFields: payload.changedFields || [], downstreamStale: stale, ...(stale.length ? { hint: "上述阶段已标 stale，需要重跑才与新分镜一致" } : {}) };
+        }
+        case "project_shots_to_canvas": {
+            const runId = String(input.runId || "").trim();
+            const projectId = String(input.projectId || "").trim();
+            const stage = String(input.stage || "storyboard").trim() || "storyboard";
+            if (!runId) throw new Error("缺少 runId");
+            if (!projectId) throw new Error("缺少 projectId");
+            const shotIds = Array.isArray(input.shotIds) ? input.shotIds.map((id) => String(id).trim()).filter(Boolean) : [];
+            if (!shotIds.length) throw new Error("缺少 shotIds（先用 project_stage_items 拿）");
+            // 投递单要落到浏览器 IndexedDB 里的画布，服务端没有对应存储 ——
+            // 因此这一工具只负责「把镜头内容 + 归因」取出来交给前端，网页侧由前端落到画布。
+            // 不在这里假装已经"发到画布"：那是前端节点数据，Agent 无权声称已写入。
+            const envelope = (await gateway(`/api/pipeline/runs/${encodeURIComponent(runId)}`, {})) as { run?: { stages?: Record<string, { output?: { shots?: unknown } }> } };
+            const output = envelope?.run?.stages?.[stage]?.output;
+            const shots = output && typeof output === "object" && Array.isArray((output as { shots?: unknown }).shots) ? ((output as { shots: Array<Record<string, Json>> }).shots) : [];
+            if (!shots.length) throw new Error("分镜阶段还没有镜头产物，先跑分镜阶段");
+            const picked = shotIds.length === shots.length ? shots : shots.filter((shot) => shotIds.includes(String(shot.id)));
+            if (!picked.length) throw new Error(`分镜里没有这些镜头：${shotIds.join("、")}`);
+            return {
+                runId,
+                stage,
+                projectId,
+                ready: true,
+                shots: picked.map((shot) => ({ id: shot.id, index: shot.index, episodeId: shot.episodeId, sceneId: shot.sceneId, shotSize: shot.shotSize, durationSec: shot.durationSec, action: shot.action, dialogue: shot.dialogue, prompt: shot.prompt })),
+                nextStep: "在网页的分镜页选这些镜头点「发到画布」，或在画布上调整后回写 project_patch_shot；Agent 无法直接写浏览器本地画布",
+            };
         }
         case "project_confirm_casting": {
             const runId = String(input.runId || "").trim();
@@ -472,6 +505,7 @@ export const PROJECT_TOOL_NAMES: readonly ToolName[] = [
     "project_update_stage_input",
     "project_regenerate_item",
     "project_patch_shot",
+    "project_shots_to_canvas",
     "project_confirm_casting",
     "project_assemble",
     "project_adopt_candidate",

@@ -44,6 +44,9 @@ import { CanvasSidePanel } from "@/components/canvas/canvas-side-panel";
 import { CanvasZoomControls } from "@/components/canvas/canvas-zoom-controls";
 import { useAgentStore } from "@/stores/use-agent-store";
 import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
+import { buildShotNode, partitionDropShots, shotGridPosition, shotRefOf } from "@/lib/canvas/shot-bridge";
+import { useShotDropStore } from "@/stores/use-shot-drop-store";
+import { ShotWritebackPanel } from "./components/shot-writeback-panel";
 import { useAgentBridge } from "@/pages/canvas/hooks/use-agent-bridge";
 import { usePluginHost } from "@/pages/canvas/hooks/use-plugin-host";
 import { buildNodeMentionReferences, getGroupResourceNodes, isCanvasReferenceNode, type CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
@@ -268,6 +271,8 @@ function InfiniteCanvasPage() {
     const [bindModalOpen, setBindModalOpen] = useState(false);
     const [slotDialogNodeId, setSlotDialogNodeId] = useState<string | null>(null);
     const [boundProjectTitle, setBoundProjectTitle] = useState<string | null>(null);
+    /** P2-B5：「回写分镜」面板当前作用的镜头节点（null = 关闭）。 */
+    const [writebackNodeId, setWritebackNodeId] = useState<string | null>(null);
 
     const nodesRef = useRef(nodes);
     const connectionsRef = useRef(connections);
@@ -834,6 +839,32 @@ function InfiniteCanvasPage() {
     /* ---- M2 绑定与槽位接线（不动既有浏览器直连生成链路） ---- */
     const boundProjectId = currentProject?.serverProjectId || null;
     const slotDialogNode = slotDialogNodeId ? nodeById.get(slotDialogNodeId) || null : null;
+
+    /* ---- P2-B5：消费「分镜镜头发到画布」的投递单 ----
+     * 投递单是一次性的（不落 IndexedDB），所以只在挂载时取一次；取到就把镜头节点按网格铺进去。
+     * 已带 shotRef 的同一镜不再重复插：刷新后节点还在，投递单也还在（内存未丢的场景），
+     * 幂等判断避免画布上出现两份同一镜。
+     */
+    useEffect(() => {
+        if (!projectLoaded) return;
+        const pendingDrop = useShotDropStore.getState().take(projectId);
+        if (!pendingDrop || !pendingDrop.shots.length) return;
+        // 去重逻辑在 shot-bridge 的纯函数里（那份有单测锁着），这里只做铺节点与如实提示。
+        let freshCount = 0;
+        let duplicateCount = 0;
+        setNodes((current) => {
+            const seen = current.map((node) => node.metadata?.shotRef?.shotId).filter(Boolean) as string[];
+            const { fresh, duplicateCount: dup } = partitionDropShots(seen, pendingDrop.shots);
+            freshCount = fresh.length;
+            duplicateCount = dup;
+            if (!fresh.length) return current;
+            const added = fresh.map((shot, index) => buildShotNode(shot, shotGridPosition(current.length + index), pendingDrop.ref));
+            return [...current, ...added];
+        });
+        // 报实际新增数，不是投递总数 —— 重复投递时一个都没新增却说「已排布 N 个镜头」是假反馈。
+        if (freshCount > 0) message.success(t("shotBridge.received", { count: freshCount }));
+        else message.info(t("shotBridge.allPresent", { count: pendingDrop.shots.length }));
+    }, [message, projectLoaded, projectId, setNodes, t]);
 
     useEffect(() => {
         if (!boundProjectId) {
@@ -3344,7 +3375,12 @@ function InfiniteCanvasPage() {
                     onToggleFreeResize={(node) => toggleNodeFreeResize(node.id)}
                     onDelete={(node) => deleteNodes(new Set([node.id]))}
                     onUngroup={(node) => ungroupSelection(new Set([node.id]))}
-                    onAddProjectCandidate={boundProjectId ? (node) => setSlotDialogNodeId(node.id) : undefined}
+                    onAddProjectCandidate={(node) => {
+                        // P2-B5：镜头节点走「回写分镜」，图像节点仍走「加入项目候选」。
+                        // 两者都是"把这东西和项目事实挂上"，但落点不同，不该混成一个按钮的两种含义。
+                        if (shotRefOf(node)) setWritebackNodeId(node.id);
+                        else if (boundProjectId) setSlotDialogNodeId(node.id);
+                    }}
                 />
 
                 {hasMultipleSelectedNodes && !selectionBox ? (
@@ -3472,6 +3508,13 @@ function InfiniteCanvasPage() {
 
                 <CanvasBindProjectModal open={bindModalOpen} canvasId={projectId} boundProjectId={boundProjectId} boundProjectTitle={boundProjectTitle} onBound={handleProjectBound} onClose={() => setBindModalOpen(false)} />
                 {boundProjectId ? <CanvasSlotDialog open={Boolean(slotDialogNode)} node={slotDialogNode} projectId={boundProjectId} projectTitle={boundProjectTitle} onGenerated={handleSlotGenerated} onClose={() => setSlotDialogNodeId(null)} /> : null}
+                <ShotWritebackPanel
+                    node={writebackNodeId ? nodeById.get(writebackNodeId) || null : null}
+                    projectId={projectId}
+                    boundProjectId={boundProjectId}
+                    onNodeChange={(nodeId, patch) => setNodes((current) => current.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, ...patch } } : node)))}
+                    onClose={() => setWritebackNodeId(null)}
+                />
             </section>
         </main>
     );

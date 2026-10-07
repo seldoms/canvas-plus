@@ -11,7 +11,10 @@
  * 编译失败/超时的降级策略**照搬 pipeline.js**：结构照旧产出 + 记 warning，绝不阻塞入队。
  *
  * 契约（冻结）：
- *   Request : { template, prompt, count?, size?, references?[{url}], seed?, projectId? }
+ *   Request : { template, prompt, count?, size?, references?[{url}], seed?,
+ *               projectId?, episodeId?, sceneId?, shotId?, slotId? }
+ *     归属字段与 /api/generate/* 同口径（contextFromBody）读入 job.meta，
+ *     任务终态即可自动投影为项目槽位候选（slot-candidates.js）。
  *   Response: { jobs: [{ id, status, template }] }
  */
 
@@ -20,7 +23,7 @@ import { existsSync } from "node:fs";
 import { safeJoin } from "./files.js";
 import { extractTokens } from "./providers/comfy.js";
 import { compilerFor, compilePromptForTemplate, compilePromptForTemplateAsync, stripUntranslatedMarker } from "./prompt-compiler.js";
-import { createGenerationIntent, submitGenerationIntent } from "./generation-intent.js";
+import { createGenerationIntent, contextFromBody, submitGenerationIntent } from "./generation-intent.js";
 import { readJson, sendError, sendJson } from "./http.js";
 
 /** 单次提交最多几张（与前端 generationCount 的 1..10 对齐）。 */
@@ -206,10 +209,13 @@ export function createImageEnqueue({ config, jobs, runJob, registry, llmCall, ge
             if (Number.isFinite(seed)) jobParams.SEED = seed;
             // 统一提交链（M1）：编译结果经 params.PROMPT 传入 → submit 跳过重复编译；
             // 归属字段（source/projectId/toolId）由 submit 统一写入 meta。
+            // 归属上下文与 /api/generate/* 同口径抽：此前这里硬编码只读 body.projectId，
+            // episodeId/sceneId/shotId/slotId 传了也到不了 meta → 生图工作台的产物
+            // 无法投影为项目槽位候选（P2-B4）。
             const intent = createGenerationIntent({
                 source: "workbench",
                 kind: "image",
-                context: { projectId: body?.projectId },
+                context: contextFromBody(body),
                 toolId: template,
                 template,
                 params: jobParams,

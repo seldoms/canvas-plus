@@ -11,6 +11,8 @@ import { ModelPicker } from "@/components/model-picker";
 import { PromptSelectDialog } from "@/components/prompts/prompt-select-dialog";
 import { SlotCandidateDialog } from "./slot-candidate-dialog";
 import { AttachAssetModal } from "@/components/attach-asset-modal";
+import { AttributionPicker, attributionFields } from "@/components/attribution-picker";
+import type { SlotCascadeTarget } from "@/components/project-slot-cascade";
 import { AssetPickerModal, type InsertAssetPayload } from "@/components/canvas/asset-picker-modal";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { formatTaskTime } from "@/lib/task-time";
@@ -50,6 +52,12 @@ type TaskSnapshot = {
     seed?: number;
     /** 提交时表单里显示的模型名（人读）；config 里存裸模板名。 */
     modelLabel?: string;
+    /**
+     * 提交那一刻的归因快照（P2-B4）。存进 snapshot 而不是读实时 state：
+     * 重试要拿**当初那次**的归属（用户后来改了选择器，不该把老记录改成新镜头）；
+     * 记录面板里也能如实看到「这张图当时属于哪一镜」。
+     */
+    attribution?: SlotCascadeTarget;
 };
 
 /**
@@ -229,6 +237,10 @@ export default function ImagePage() {
     // 「归入项目资料包」当前携带的产物（null = 关闭）。产物地址必须是本网关的 /api/artifacts/…，
     // 本地副本地址归档不了，跨进程也取不到。
     const [attachTarget, setAttachTarget] = useState<{ url: string; jobId?: string | null; name?: string } | null>(null);
+    // 生成归因（P2-B4）：本次提交归属哪一集的哪一镜；null = 不归因（自由生成照旧）。
+    // 只在**提交那一刻**被冻结进 task.snapshot，之后改选择器不影响已提交记录。
+    const [attribution, setAttribution] = useState<SlotCascadeTarget | null>(null);
+    const [attributionOpen, setAttributionOpen] = useState(false);
     const [isReferenceDragActive, setIsReferenceDragActive] = useState(false);
     const [autoRunToken, setAutoRunToken] = useState(0);
     // 生图模型的官方规格清单（后端 /api/providers 下发，前端不硬编码）——「选模型 → 再选规格」。
@@ -371,6 +383,7 @@ export default function ImagePage() {
             },
             references: [...references],
             modelLabel: modelOptionLabel(effectiveConfig, model),
+            ...(attribution ? { attribution } : {}),
         };
         const localId = nanoid();
         setTasks((value) => [
@@ -401,6 +414,8 @@ export default function ImagePage() {
                 prompt: text,
                 count: generationCount,
                 size: effectiveConfig.size,
+                // 归因（P2-B4）：任务终态后据此投影为项目槽位候选。不选就不传，绝不影响自由生成。
+                ...attributionFields(attribution),
                 ...(referenceUrls.length ? { references: referenceUrls.map((url) => ({ url })) } : {}),
             });
             const jobIds = result.jobs.map((job) => job.id);
@@ -595,6 +610,8 @@ export default function ImagePage() {
                 prompt: task.prompt,
                 count: 1,
                 size: effectiveConfig.size,
+                // 重试沿用**当初那次**的归因（读快照，不读当前选择器），否则老记录会被改到新镜头上。
+                ...attributionFields(task.snapshot.attribution || null),
                 ...(task.referenceUrls?.length ? { references: task.referenceUrls.map((url) => ({ url })) } : {}),
             });
             const created = result.jobs[0];
@@ -880,6 +897,23 @@ export default function ImagePage() {
                         </div>
 
                         <div className="mt-auto pt-6">
+                            {/* 归因是可选的：默认不显示按钮以外的干扰，只在已归因时给一个可点的标签回显。 */}
+                            <div className="mb-2">
+                                {attribution ? (
+                                    <Tag
+                                        className="m-0 cursor-pointer"
+                                        color="blue"
+                                        onClick={() => setAttributionOpen(true)}
+                                        title={t("attribution.change")}
+                                    >
+                                        {t("attribution.current", { shot: attribution.shotId })}
+                                    </Tag>
+                                ) : (
+                                    <Button size="small" type="text" icon={<ListPlus className="size-4" />} onClick={() => setAttributionOpen(true)}>
+                                        {t("attribution.entry")}
+                                    </Button>
+                                )}
+                            </div>
                             <Button type="primary" size="large" block icon={<Sparkles className="size-4" />} loading={submitting} disabled={!canGenerate || submitting} onClick={() => void generate()}>
                                 {t("workbench.generate")}
                             </Button>
@@ -989,6 +1023,9 @@ export default function ImagePage() {
             <PromptSelectDialog open={promptDialogOpen} onOpenChange={setPromptDialogOpen} onSelect={setPrompt} />
             <SlotCandidateDialog open={candidateJobId !== null} jobId={candidateJobId} onClose={() => setCandidateJobId(null)} />
             <AttachAssetModal open={attachTarget !== null} artifact={attachTarget} onClose={() => setAttachTarget(null)} />
+            <Modal title={t("attribution.title")} open={attributionOpen} onCancel={() => setAttributionOpen(false)} onOk={() => setAttributionOpen(false)} okText={t("common.confirm")} cancelText={t("common.cancel")} destroyOnHidden>
+                <AttributionPicker active={attributionOpen} value={attribution} onChange={setAttribution} />
+            </Modal>
             <AssetPickerModal open={assetPickerOpen} defaultTab="my-assets" onInsert={(payload) => void insertPickedAsset(payload)} onClose={() => setAssetPickerOpen(false)} />
             <Modal title={t("workbench.deleteLogs")} open={deleteConfirmOpen} onCancel={() => setDeleteConfirmOpen(false)} onOk={deleteSelectedLogs} okText={t("common.delete")} okButtonProps={{ danger: true }} cancelText={t("common.cancel")}>
                 {t("workbench.deleteLogsConfirm", { count: selectedLogIds.length })}

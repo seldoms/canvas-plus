@@ -33,7 +33,7 @@ import { forwardToLlm, chat as llmChat, externalProviders } from "./providers/ll
 import { llmCall as promptLlmCall } from "./llm-client.js";
 import { createPromptApi } from "./prompt-api.js";
 import { compileWorkbenchPrompt, createImageEnqueue, filterJobs } from "./workbench-jobs.js";
-import { createGenerationIntent, submitGenerationIntent } from "./generation-intent.js";
+import { createGenerationIntent, contextFromBody, submitGenerationIntent } from "./generation-intent.js";
 import { createContinuation, createComfyPreflight } from "./continuation.js";
 // M2 画布接入事实链：槽位候选业务（追加/采用/终态自动投影）与外部文件导入登记。
 import { createSlotCandidates } from "./slot-candidates.js";
@@ -405,17 +405,10 @@ async function submitGeneration(kind, body) {
             delete params.PROMPT;
         }
         const intent = createGenerationIntent({
-            source: body.source,
+            // meta.source 曾被整体丢弃（下游 meta.source 恒为 "api"），顶层缺省时回落。
+            source: body.source ?? meta.source,
             kind,
-            context: {
-                projectId: body.projectId ?? meta.projectId,
-                episodeId: meta.episodeId,
-                sceneId: meta.sceneId,
-                shotId: meta.shotId,
-                slotId: meta.slotId,
-                runId: meta.runId,
-                stageId: meta.stageId,
-            },
+            context: contextFromBody(body),
             toolId: template,
             template,
             facts,
@@ -1048,12 +1041,15 @@ router.get("/api/pipeline/runs/:id/gates", (req, res, { params }) => {
 /**
  * 分镜定点编辑：按 shotId 局部更新 storyboard 阶段产物里的单个 shot，不必整段 setStageInput 替换 JSON。
  * 承接 PATCH/POST（createRouter 无 put/patch，用 any 承接 PATCH）；其它方法 405。
+ *
+ * P2：changedFields / downstreamStale 必须回传 —— 改了被下游消费的字段后，
+ * 关键帧/配音/合成的既有产物已与新分镜对不上，只回 { run, shot } 等于骗调用方「改完就好了」。
  */
 router.any("/api/pipeline/runs/:id/steps/:stage/shots/:shotId", async (req, res, { params }) => {
     if (req.method !== "PATCH" && req.method !== "POST") return sendError(res, 405, `不支持的方法：${req.method}`);
     try {
-        const { run, shot } = pipeline.patchStageShot(params.id, params.stage, params.shotId, await readJson(req).catch(() => ({})));
-        sendJson(res, 200, { run, shot });
+        const { run, shot, changedFields = [], downstreamStale = [] } = pipeline.patchStageShot(params.id, params.stage, params.shotId, await readJson(req).catch(() => ({})));
+        sendJson(res, 200, { run, shot, changedFields, downstreamStale });
     } catch (error) {
         sendError(res, error.status || 400, error.message);
     }

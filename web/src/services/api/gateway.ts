@@ -501,9 +501,13 @@ export async function regeneratePipelineItem(runId: string, stageId: string, bod
 /**
  * run 内镜头局部编辑（分镜阶段产物的可视化编辑入口）。后端 router.any 接 PATCH/POST，
  * 返回 { run, shot }；可改字段由 pipeline.patchStageShot 决定（景别/动作/对白/时长等）。
+ *
+ * P2：返回值另带 `changedFields` 与 `downstreamStale` —— 改了 prompt/durationSec 之类
+ * 被下游消费的字段后，关键帧/配音/合成的既有产物已经对不上（后端打 stale 标记），
+ * 前端必须把「需要重跑哪些阶段」告诉用户，不能悄悄改完就显示成功。
  */
 export async function patchPipelineStageShot(runId: string, stageId: string, shotId: string, patch: Record<string, unknown>, baseUrl?: string) {
-    const data = await gatewayRequest<{ run: GatewayPipelineRun; shot: unknown }>({ method: "patch", url: `/api/pipeline/runs/${encodeURIComponent(runId)}/steps/${encodeURIComponent(stageId)}/shots/${encodeURIComponent(shotId)}`, data: patch }, baseUrl);
+    const data = await gatewayRequest<{ run: GatewayPipelineRun; shot: unknown; changedFields?: string[]; downstreamStale?: string[] }>({ method: "patch", url: `/api/pipeline/runs/${encodeURIComponent(runId)}/steps/${encodeURIComponent(stageId)}/shots/${encodeURIComponent(shotId)}`, data: patch }, baseUrl);
     return data;
 }
 

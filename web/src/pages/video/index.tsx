@@ -6,6 +6,8 @@ import { useTranslation } from "react-i18next";
 
 import { ArtifactActions, type ArtifactTarget } from "@/components/artifact-actions";
 import { AttachAssetModal } from "@/components/attach-asset-modal";
+import { AttributionPicker, attributionFields } from "@/components/attribution-picker";
+import { type SlotCascadeTarget } from "@/components/project-slot-cascade";
 import { AssetPickerModal, type InsertAssetPayload } from "@/components/canvas/asset-picker-modal";
 import { ModelPicker } from "@/components/model-picker";
 import { PromptSelectDialog } from "@/components/prompts/prompt-select-dialog";
@@ -36,6 +38,8 @@ type VideoSnapshot = {
     references: ReferenceImage[];
     /** 提交时表单里显示的模型名（人读）；config 里存裸模板名。 */
     modelLabel?: string;
+    /** 提交那一刻冻结的归因（P2-B4）。从 job.meta 重建历史记录时据此还原。 */
+    attribution?: SlotCascadeTarget;
 };
 
 /** 视频任务组：一次提交 = 一个服务端 job；状态/进度全部读后端。 */
@@ -129,8 +133,21 @@ function buildVideoParams({ template, prompt, config, comfyRefs }: { template: G
 }
 
 /** 写进 job.meta 的提交事实 —— 服务端持久化的快照，刷新/换设备后据此重建队列与记录。 */
-function buildVideoMeta({ prompt, snapshot, template }: { prompt: string; snapshot: VideoSnapshot; template: string }): Record<string, unknown> {
+function buildVideoMeta({
+    prompt,
+    snapshot,
+    template,
+    attribution,
+}: {
+    prompt: string;
+    snapshot: VideoSnapshot;
+    template: string;
+    /** 提交那一刻冻结的归因（P2-B4）；null = 不归因。 */
+    attribution?: SlotCascadeTarget | null;
+}): Record<string, unknown> {
     return {
+        // source 也提到请求体顶层由服务端读（index.js 的 intent.source）；这里留在 meta 里
+        // 是因为「哪些 job 属于创作台」靠 meta.runId 判（isWorkbenchVideoJob），保持可自证。
         source: "video-workbench",
         prompt,
         model: template,
@@ -142,6 +159,9 @@ function buildVideoMeta({ prompt, snapshot, template }: { prompt: string; snapsh
         generateAudio: snapshot.config.videoGenerateAudio,
         watermark: snapshot.config.videoWatermark,
         references: snapshot.references.map((item) => ({ id: item.id, name: item.name, storageKey: item.storageKey || "" })),
+        // 归因五元组（服务端 /api/generate/* 从 meta 提进 context）。不写 runId/stageId ——
+        // 写了会被服务端跳过画布投影，也会让 isWorkbenchVideoJob 把这条当成流水线产物。
+        ...(attribution ? attributionFields(attribution) : {}),
     };
 }
 
@@ -167,10 +187,27 @@ function snapshotFromJob(job: WorkbenchJob): VideoSnapshot {
         videoMode: meta.mode === "reference" ? "reference" : "frames",
     };
     const rawRefs = Array.isArray(meta.references) ? (meta.references as Array<Record<string, unknown>>) : [];
+    // 归因从 job.meta 还原：刷新/换设备后历史记录仍能显示「这段属于哪一镜」。
+    // slotId 缺失就**留空**，不按规则补 —— 补出来的是一个服务端从未创建过的槽位 id，
+    // 界面上看着「已归因到 clip 槽位」，用户重试时却会拿着假 slotId 去提交，
+    // 服务端 `slotRoleOf` 对不上就是 400，或者更糟：静默落到一个错槽位上。
+    const attrProject = String(meta.projectId ?? "");
+    const attrShot = String(meta.shotId ?? "");
+    const attrSlot = String(meta.slotId ?? "");
+    const attribution: SlotCascadeTarget | undefined = attrProject && attrShot
+        ? {
+              projectId: attrProject,
+              episodeId: String(meta.episodeId ?? ""),
+              sceneId: String(meta.sceneId ?? ""),
+              shotId: attrShot,
+              slotId: attrSlot,
+          }
+        : undefined;
     return {
         config,
         references: rawRefs.map((item) => ({ id: String(item.id ?? item.storageKey ?? ""), name: String(item.name ?? ""), type: "", dataUrl: "", storageKey: String(item.storageKey ?? "") })),
         ...(typeof meta.modelLabel === "string" ? { modelLabel: meta.modelLabel } : {}),
+        ...(attribution ? { attribution } : {}),
     };
 }
 
@@ -240,6 +277,9 @@ export default function VideoPage() {
     const [assetPickerOpen, setAssetPickerOpen] = useState(false);
     /** 「归入项目资料包」弹窗当前携带的产物（null = 关闭）；与「存入我的素材」是**两条独立动线**。 */
     const [attachTarget, setAttachTarget] = useState<{ url: string; jobId?: string; name?: string } | null>(null);
+    // 生成归因（P2-B4）：视频落片段槽位（slotRole=clip，与项目页续接链同一槽位）。
+    const [attribution, setAttribution] = useState<SlotCascadeTarget | null>(null);
+    const [attributionOpen, setAttributionOpen] = useState(false);
     const [nowTick, setNowTick] = useState(0);
     const [selectedId, setSelectedId] = useState<string | null>(null);
     const [isReferenceDragActive, setIsReferenceDragActive] = useState(false);
@@ -378,6 +418,7 @@ export default function VideoPage() {
             config: buildVideoLogConfig(effectiveConfig, templateName),
             references: [...references],
             modelLabel: modelOptionLabel(effectiveConfig, model),
+            ...(attribution ? { attribution } : {}),
         };
         const localId = nanoid();
         // 提交即落记录：当帧就在左栏出现（状态=排队中），不等上传/入队返回。
@@ -402,7 +443,7 @@ export default function VideoPage() {
             const comfyRefs = await resolveReferenceUrls(references);
             const template = findTemplate(videoTemplates, templateName);
             const params = buildVideoParams({ template, prompt: text, config: effectiveConfig, comfyRefs });
-            const job = await enqueueVideoJob({ template: templateName, name: `canvas_video_${Date.now()}`, params, meta: buildVideoMeta({ prompt: text, snapshot, template: templateName }) });
+            const job = await enqueueVideoJob({ template: templateName, name: `canvas_video_${Date.now()}`, params, meta: buildVideoMeta({ prompt: text, snapshot, template: templateName, attribution }) });
             setJobs((value) => ({ ...value, [job.id]: job }));
             // 原地补齐 jobId / 真实模板（记录 id 不变，选中态不跳）。
             setTasks((value) => value.map((item) => (item.id === localId ? { ...item, jobIds: [job.id], pending: false, template: job.template || templateName } : item)));
@@ -512,7 +553,7 @@ export default function VideoPage() {
             const comfyRefs = await resolveReferenceUrls(task.snapshot.references);
             const template = findTemplate(videoTemplates, task.snapshot.config.videoModel || task.template);
             const params = buildVideoParams({ template, prompt: task.prompt, config: { ...effectiveConfig, ...task.snapshot.config }, comfyRefs });
-            const job = await enqueueVideoJob({ template: task.snapshot.config.videoModel || task.template, name: `canvas_video_${Date.now()}`, params, meta: buildVideoMeta({ prompt: task.prompt, snapshot: task.snapshot, template: task.snapshot.config.videoModel || task.template }) });
+            const job = await enqueueVideoJob({ template: task.snapshot.config.videoModel || task.template, name: `canvas_video_${Date.now()}`, params, meta: buildVideoMeta({ prompt: task.prompt, snapshot: task.snapshot, template: task.snapshot.config.videoModel || task.template, attribution: task.snapshot.attribution || null }) });
             finalizedRef.current.delete(task.id);
             setLogs((value) => value.filter((log) => log.id !== task.id));
             setJobs((value) => ({ ...value, [job.id]: job }));
@@ -728,6 +769,18 @@ export default function VideoPage() {
                         </div>
 
                         <div className="mt-auto pt-6">
+                            {/* 归因可选：不选照旧生成；已归因则显示可点的归属标签。 */}
+                            <div className="mb-2">
+                                {attribution ? (
+                                    <Tag className="m-0 cursor-pointer" color="blue" onClick={() => setAttributionOpen(true)} title={t("attribution.change")}>
+                                        {t("attribution.current", { shot: attribution.shotId })}
+                                    </Tag>
+                                ) : (
+                                    <Button size="small" type="text" icon={<ListPlus className="size-4" />} onClick={() => setAttributionOpen(true)}>
+                                        {t("attribution.entry")}
+                                    </Button>
+                                )}
+                            </div>
                             <Button type="primary" size="large" block icon={<Sparkles className="size-4" />} loading={submitting} disabled={!canGenerate || submitting} onClick={() => void generate()}>
                                 {t("workbench.generate")}
                             </Button>
@@ -786,6 +839,10 @@ export default function VideoPage() {
             <PromptSelectDialog open={promptDialogOpen} onOpenChange={setPromptDialogOpen} onSelect={setPrompt} />
             <AssetPickerModal open={assetPickerOpen} defaultTab="my-assets" onInsert={(payload) => void insertPickedAsset(payload)} onClose={() => setAssetPickerOpen(false)} />
             <AttachAssetModal open={attachTarget !== null} artifact={attachTarget} onClose={() => setAttachTarget(null)} />
+            <Modal title={t("attribution.title")} open={attributionOpen} onCancel={() => setAttributionOpen(false)} onOk={() => setAttributionOpen(false)} okText={t("common.confirm")} cancelText={t("common.cancel")} destroyOnHidden>
+                {/* 视频落片段槽位：与服务端 episodes.js 的 clip role、续接链同一个槽位。 */}
+                <AttributionPicker active={attributionOpen} value={attribution} onChange={setAttribution} slotRole="clip" />
+            </Modal>
         </div>
     );
 }

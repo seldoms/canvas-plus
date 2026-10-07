@@ -48,8 +48,8 @@ function lastRequest() {
 }
 
 describe("project_* 工具", () => {
-    it("十九个工具都在 PROJECT_TOOL_NAMES 里且能被识别", () => {
-        assert.equal(PROJECT_TOOL_NAMES.length, 19);
+    it("二十个工具都在 PROJECT_TOOL_NAMES 里且能被识别", () => {
+        assert.equal(PROJECT_TOOL_NAMES.length, 20);
         for (const name of PROJECT_TOOL_NAMES) assert.equal(isProjectTool(name), true);
         assert.equal(isProjectTool("canvas_get_state"), false, "画布工具不该被认成 project 工具");
     });
@@ -358,6 +358,57 @@ describe("project_* 工具", () => {
         assert.equal(req.method, "PATCH");
         assert.equal(req.url, "/api/pipeline/runs/run_1/steps/storyboard/shots/sh_1");
         assert.deepEqual(req.body, { dialogue: "我嫁" });
+    });
+
+    it("project_patch_shot 回传 downstreamStale：改了被下游消费的字段必须报出要重跑哪些阶段", async () => {
+        respond = (_req, res) =>
+            res
+                .writeHead(200, { "Content-Type": "application/json" })
+                .end(JSON.stringify({ shot: { id: "sh_1", prompt: "new" }, changedFields: ["prompt"], downstreamStale: ["keyframe"] }));
+        const result = (await callProjectTool("project_patch_shot", { runId: "run_1", shotId: "sh_1", patch: { prompt: "new" } })) as Record<string, unknown>;
+        assert.deepEqual(result.downstreamStale, ["keyframe"]);
+        assert.deepEqual(result.changedFields, ["prompt"]);
+        assert.match(String(result.hint), /stale/, "必须提示需要重跑，否则 Agent 会误以为改完就好了");
+    });
+
+    it("project_patch_shot 无下游失效时只回空数组，不给假提示", async () => {
+        respond = (_req, res) => res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ shot: { id: "sh_1" }, changedFields: [], downstreamStale: [] }));
+        const result = (await callProjectTool("project_patch_shot", { runId: "run_1", shotId: "sh_1", patch: { dialogue: "x" } })) as Record<string, unknown>;
+        assert.deepEqual(result.downstreamStale, []);
+        assert.equal(result.hint, undefined, "没 stale 就不该报 stale 提示");
+    });
+
+    it("project_shots_to_canvas 取分镜镜头并明说画布要靠前端写入（Agent 不得声称已发到画布）", async () => {
+        respond = (_req, res) =>
+            res
+                .writeHead(200, { "Content-Type": "application/json" })
+                .end(
+                    // 真实响应形状：单个 run 走 GET /runs/:id，包一层 { run: … }（与 index.js 路由一致）。
+                    JSON.stringify({
+                        run: {
+                            stages: {
+                                storyboard: {
+                                    output: {
+                                        shots: [
+                                            { id: "sh_1", index: 1, episodeId: "ep_0001", sceneId: "sc_0001", shotSize: "中景", durationSec: 4, action: "上车", dialogue: "", prompt: "a" },
+                                            { id: "sh_2", index: 2, episodeId: "ep_0001", sceneId: "sc_0001", shotSize: "近景", durationSec: 5, action: "回头", dialogue: "你等谁", prompt: "b" },
+                                        ],
+                                    },
+                                },
+                            },
+                        },
+                    }),
+                );
+        const result = (await callProjectTool("project_shots_to_canvas", { runId: "run_1", projectId: "prj_1", shotIds: ["sh_2"] })) as Record<string, unknown>;
+        assert.equal(lastRequest().url, "/api/pipeline/runs/run_1");
+        assert.equal(result.ready, true);
+        assert.deepEqual((result.shots as Array<{ id: string }>).map((shot) => shot.id), ["sh_2"], "只取点名的镜头");
+        assert.match(String(result.nextStep), /无法直接写/, "必须说明画布要靠网页侧写入");
+    });
+
+    it("project_shots_to_canvas 分镜没产物时据实报错，不返回空成功", async () => {
+        respond = (_req, res) => res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ run: { stages: { storyboard: { output: null } } } }));
+        await assert.rejects(() => callProjectTool("project_shots_to_canvas", { runId: "run_1", projectId: "prj_1", shotIds: ["sh_1"] }), /还没有镜头产物/);
     });
 
     it("project_confirm_casting 必须至少确认 face 或 voice", async () => {
