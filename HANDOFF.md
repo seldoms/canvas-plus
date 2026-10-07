@@ -24,17 +24,19 @@
 
 ## 当前状态
 
-**2026-10-07 晚（先读这段）**
+**2026-10-08 凌晨（先读这段）**
 
-> 基线：`canvas-plus` @ `2362aac`+（工作区干净）。后端 `node --test` **1079/1079**（10-07 上午复核口径）；canvas-agent `tsx --test` **150/150**（10-07 晚实测）；前端 `tsc --noEmit` 通过（10-07 晚实测）。
+> 基线：`canvas-plus` @ `76fe1cf`（工作区干净，已推裸仓库）。后端 `node --test` **1088/1088**（10-08 凌晨实测，本轮 +8）；canvas-agent **155/155**（+5）；前端 `bun test` **22/22**（+8，新增资料包聚合测试）+ `tsc --noEmit` 通过。
 > 服务：canvas-server / canvas-agent / infinite-canvas-web 均 active（canvas-agent 19:25 重启加载新 instructions；web dev 19:30 清 `.vite` 缓存重启）。
 
-**本周已上线（10-06 晚 ~ 10-07）**：
+**本周已上线（10-06 晚 ~ 10-08）**：
 - 流水线页面重做：`/pipeline` 新页（旧版挪 `/pipeline-old`）——项目/集/run 三合一可收起侧栏 + 七面板全量真实产物 + 条目级动作（镜头编辑、定妆确认、单句重录、单项重跑、拼接导出）全真接口。
-- Agent 三层视角：`project_*` 7→17（项目级 list_runs/run_status/run_qc/stage_items；阶段级 retry_failed/update_stage_input/assemble；条目级 regenerate_item/patch_shot/confirm_casting），总工具 51。文档三面同步：agent-instructions.md（Codex 线程注入）、README（51 分组目录）、插件新增 `skills/pipeline`。
+- Agent 四层视角：`project_*` 7→19（项目级 list_runs/run_status/run_qc/stage_items；阶段级 retry_failed/update_stage_input/assemble；条目级 regenerate_item/patch_shot/confirm_casting/adopt_candidate；资料包级 asset_pack/attach_asset），总工具 53。文档三面同步：agent-instructions.md（Codex 线程注入）、README（分组目录）、插件 `skills/pipeline`。
 - 页面标注工具升级为全局悬浮窗（所有页面可用，标注模式下再点一次取消标记）。
-- **产品方向拍板**：以项目为中心但不绑死——目标形态与断点清单见 `docs/content/docs/progress/project-centric-skeleton.md`，执行序列以其 §6 的 P0–P3 为准；**下一步 = P0 串联引导**。
-- **GitHub 发布决策（待用户执行）**：发布后插件分发走 `marketplace add <github 地址>`；届时**必须**改 `agent-connect-view` 引导文案（现指上游官方 npm）并把插件改名 `canvas-plus`。仓库含内网环境信息，公开范围需用户确认。
+- **P0 串联引导**（10-08）：项目页五步主线引导卡 + 列表卡片「下一步」标签（提交 `6374954`）；Agent 安装引导改向自研版、插件注册名改 `canvas-plus`、包名改 `@sobey/canvas-agent@0.7.0`。
+- **P1 资料包一等公民·通道与盘点**（10-08，提交 `76fe1cf`）：后端 `POST /api/projects/:id/asset-refs/attach`（`assets.attach`，**upsert 幂等** —— 同 role+bindingId 只追加候选，不再像旧 `create` 那样每次新增一条同 bindingId 的引用，那正是 reference-lock `findAssetRef` 只取第一条导致「选参考图随机命中」的根源）；生图工作台结果卡新增「归入资料包」入口（与「加入我的资产」分开：后者进本地素材库，前者进项目事实层并成为后续关键帧的参考图）；资产工作区新增 `AssetPackOverview`（`buildAssetPacks` 以**剧本实体**为主轴，缺参考图的角色一眼可见）。Agent +2 工具（`project_asset_pack` / `project_attach_asset`），总工具数 51→**53**。
+- **产品方向拍板**：以项目为中心但不绑死——目标形态与断点清单见 `docs/content/docs/progress/project-centric-skeleton.md`，执行序列以其 §6 的 P0–P3 为准。**进度：P0 ✅ / P1 🟡（通道与盘点已落地，欠定妆显式取料与生视频入口）/ P2 ⬜ / P3 ⬜ —— 下一步 = P1 剩余两项，之后进 P2**。
+- **GitHub 发布决策（待用户执行）**：发布后插件分发走 `marketplace add <github 地址>`。配套①②已执行（引导文案改向自研版、插件改名 `canvas-plus`、包名 `@sobey/canvas-agent`）；发布前用户需确认公开范围（仓库含内网地址/端口/主机别名），并按真实地址把 `CANVAS_PLUS_REPO` 常量改成实值。
 
 **声音质量警告（仍然有效，勿删）**：M6 是功能性成片里程碑，**声音质量验收未通过**（跨镜音色不一致 / 电话场景抢台词 / 音画不同步），按 [`audio-video-quality-audit-2026-10-06.md`](./docs/content/docs/progress/audio-video-quality-audit-2026-10-06.md) 处理。不要依据"七段全 done"宣称音色或嘴型闭环。
 
