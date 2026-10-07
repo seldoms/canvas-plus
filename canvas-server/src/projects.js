@@ -272,6 +272,10 @@ export function createProjects({ dataDir, stages } = {}) {
                 checklistTotal: checklist.length,
                 checklistDone: checklist.filter((item) => item.done).length,
             },
+            // P0 串联引导：列表卡片要显示「下一步该做什么」，但不该为此多打一次详情接口。
+            // 只回计数不回 id 列表 —— 卡片只做提示，真正跳转仍走 /projects/:id 的完整上下文。
+            canvasCount: Array.isArray(project.canvasIds) ? project.canvasIds.length : 0,
+            runCount: Array.isArray(project.runIds) ? project.runIds.length : 0,
         };
     }
 

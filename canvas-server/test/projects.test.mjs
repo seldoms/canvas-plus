@@ -81,9 +81,14 @@ test("list：只回摘要，不吐 project.json 全文", (t) => {
     env.projects.update(project.id, { checklist: [{ id: "c1", done: true }, { id: "c2", done: false }] });
     const rows = env.projects.list();
     assert.equal(rows.length, 1);
-    assert.deepEqual(Object.keys(rows[0]).sort(), ["completion", "createdAt", "id", "title", "updatedAt", "version"]);
+    // 白名单式断言：摘要字段只允许这几项（P0 串联引导新增 canvasCount/runCount 两个计数，
+    // 只回计数不回 id 列表，卡片据此提示下一步；新增字段必须在此显式登记，不能悄悄溜进来）。
+    assert.deepEqual(Object.keys(rows[0]).sort(), ["canvasCount", "completion", "createdAt", "id", "runCount", "title", "updatedAt", "version"]);
     assert.equal(rows[0].id, project.id);
     assert.deepEqual(rows[0].completion, { episodes: 0, episodesDone: 0, checklistTotal: 2, checklistDone: 1 });
+    // 计数初值：新建项目既没绑画布也没关联 run。
+    assert.equal(rows[0].canvasCount, 0);
+    assert.equal(rows[0].runCount, 0);
 
     const serialized = JSON.stringify(rows);
     assert.ok(!serialized.includes("huge"), "摘要不应包含剧本正文");

@@ -1,9 +1,11 @@
 import { Archive, ArrowRight } from "lucide-react";
-import { Button, Progress } from "antd";
+import { Button, Progress, Tag } from "antd";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 
 import type { ProjectSummary } from "@/services/api/projects";
+
+import { journeyHint } from "../project-journey";
 
 /** 项目卡片：标题、完成度、更新时间，以及「打开 / 归档」两个动作。视觉沿用画布项目卡片。 */
 export function ProjectCard({ project, onArchive }: { project: ProjectSummary; onArchive: (project: ProjectSummary) => void }) {
@@ -12,6 +14,8 @@ export function ProjectCard({ project, onArchive }: { project: ProjectSummary; o
     const { episodes, episodesDone, checklistTotal, checklistDone } = project.completion;
     const percent = checklistTotal ? Math.round((checklistDone / checklistTotal) * 100) : 0;
     const open = () => navigate(`/projects/${project.id}`);
+    // P0 串联引导（断点 B1）：卡片上直接写「下一步该做什么」，用户不用先点进去才知道方向。
+    const hint = journeyHint(project);
 
     return (
         <article className="group flex min-h-44 flex-col justify-between rounded-2xl bg-[#f1eee8] p-5 transition hover:bg-[#ebe6dc] dark:bg-white/5 dark:hover:bg-white/10">
@@ -25,6 +29,14 @@ export function ProjectCard({ project, onArchive }: { project: ProjectSummary; o
                     </p>
                 </div>
             </button>
+
+            {hint ? (
+                <button type="button" className="mt-4 cursor-pointer text-left" onClick={open}>
+                    <Tag color="processing" className="!mr-0">
+                        {t("projects.card.nextStep", { step: t(`projects.journey.steps.${hint}.short`) })}
+                    </Tag>
+                </button>
+            ) : null}
 
             <div className="mt-6 flex items-end justify-between gap-3">
                 <p className="text-xs text-stone-500">

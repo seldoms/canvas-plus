@@ -7,6 +7,7 @@ import { usePipelineStore } from "@/stores/use-pipeline-store";
 
 import { WorkspaceEntries } from "./components/workspace-entries";
 import { NextStepPanel } from "./components/next-step-panel";
+import { ProjectJourneyPanel } from "./components/project-journey-panel";
 import { DeliveryExportButton } from "./components/delivery-export-button";
 import { useProjectWorkspace } from "./hooks/use-project-workspace";
 
@@ -21,6 +22,16 @@ export default function ProjectOverviewPage() {
     const openRun = (runId: string) => {
         usePipelineStore.getState().setActiveRun(runId);
         navigate("/pipeline");
+    };
+
+    /** 主线引导的输入只取服务端事实：剧本/集（source）、canvasIds、runIds、阶段状态与门禁。 */
+    const journeyInput = {
+        hasSource: (project?.episodes.length ?? 0) > 0,
+        hasScript: Boolean(project?.script),
+        canvasIds: context?.canvasIds ?? [],
+        runIds: context?.runIds ?? [],
+        stageStatus,
+        gates,
     };
 
     return (
@@ -67,6 +78,10 @@ export default function ProjectOverviewPage() {
                                     {t("projects.refresh")}
                                 </Button>
                             </div>
+
+                            {/* 主线引导（P0）：五步串起「建项目 → 拆解画布 → 流水线 → 成片」，把断点 B1/B2 补上。
+                                旧的 NextStepPanel 只讲「下一个流水线阶段」，口径更细，两者并存不冲突。 */}
+                            {!loading && project ? <ProjectJourneyPanel input={journeyInput} /> : null}
 
                             <NextStepPanel projectId={projectId} gates={gates} gatesLoading={gatesLoading} stageStatus={stageStatus} />
 

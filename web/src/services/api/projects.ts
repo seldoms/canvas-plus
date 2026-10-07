@@ -26,6 +26,10 @@ export type ProjectSummary = {
     updatedAt: string;
     version: number;
     completion: ProjectCompletion;
+    /** 已绑定画布数量；列表卡片据此提示「下一步建拆解画布」，完整 id 仍走 /context。 */
+    canvasCount?: number;
+    /** 已关联 run 数量；同上。 */
+    runCount?: number;
 };
 
 /**
