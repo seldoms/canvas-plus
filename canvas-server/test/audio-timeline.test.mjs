@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -67,12 +67,26 @@ test("真媒体：实测视频长度、配音轮次、字幕与混音清单共�
     t.after(() => rmSync(root, { recursive: true, force: true }));
     const video = join(root, "video.mp4");
     const speech = join(root, "speech.wav");
-    const create = (args) => {
-        const result = spawnSync("ffmpeg", ["-v", "error", "-y", ...args]);
-        assert.equal(result.status, 0, result.stderr.toString());
-    };
-    create(["-f", "lavfi", "-i", "color=c=blue:s=64x64:r=24:d=2.125", "-c:v", "libx264", video]);
-    create(["-f", "lavfi", "-i", "sine=frequency=440:duration=0.6", speech]);
+    // 用**异步** spawn 造媒体，不能用 spawnSync（2026-10-08 修的偶发红根因）：
+    // spawnSync 会**阻塞事件循环**，而 assembleEpisode 内部的 ffmpeg 是异步 spawn。
+    // `node --test` 默认并发跑文件，于是本测试的同步 ffmpeg 与别的文件的异步 ffmpeg 抢 CPU，
+    // 后者超时退出（实测退出码 228，3 次全量里红 1 次、单跑必绿）。
+    // 偶发红的测试比没有测试更糟 —— 它会让人开始不信整条测试链，所以这里改异步让出事件循环。
+    const create = (args) =>
+        new Promise((resolve, reject) => {
+            const child = spawn("ffmpeg", ["-v", "error", "-y", ...args], { stdio: ["ignore", "pipe", "pipe"] });
+            let stderr = "";
+            child.stderr.on("data", (chunk) => {
+                stderr += chunk.toString();
+            });
+            child.on("error", reject);
+            child.on("close", (code) => {
+                if (code === 0) resolve();
+                else reject(new Error(`ffmpeg 退出码 ${code}：${stderr.slice(0, 300)}`));
+            });
+        });
+    await create(["-f", "lavfi", "-i", "color=c=blue:s=64x64:r=24:d=2.125", "-c:v", "libx264", video]);
+    await create(["-f", "lavfi", "-i", "sine=frequency=440:duration=0.6", speech]);
     const clips = ["s1", "s2"].map((shotId) => ({ id: shotId, shotId, artifactUrl: video, durationSec: 2 }));
     const audio = ["s1", "s1", "s2"].map((shotId, index) => ({ ref: speech, cueId: `cue${index}`, shotId, type: "dialogue", startSec: index === 1 ? 1 : 0 }));
     const result = await assembleEpisode({
