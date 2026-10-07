@@ -1,5 +1,4 @@
-import { Button, Tooltip } from "antd";
-import { AlertTriangle, Ban, CircleDashed, Loader2, Lock, Play, RotateCcw, Wrench } from "lucide-react";
+import { AlertTriangle, CircleDashed, Loader2 } from "lucide-react";
 import type { ReactNode } from "react";
 
 import { cn } from "@/lib/utils";
@@ -26,61 +25,12 @@ export function StatusBadge({ status, className }: { status: StageStatus; classN
 }
 
 /**
- * 阶段工作台统一骨架（清单 §2 末行）：
- * 每个阶段就地看到 —— 适用模型、操作入口（运行/续跑/取消/重试失败）、当前成果（children）、失败原因（alerts）。
- * 模型选择按能力域配对，由调用方传入 modelSlot，不再是一个万能下拉。
+ * 阶段工作台容器（瘦身版）：阶段标题/状态/模型/操作已并入顶部步骤条行，
+ * 这里只保留成果内容与就地失败提示，让生产内容吃掉几乎全部版面。
  */
-export function StageShell({
-    index,
-    title,
-    status,
-    modelSlot,
-    alerts,
-    children,
-    dependsLocked,
-}: {
-    index: number;
-    title: string;
-    status: StageStatus;
-    modelSlot?: ReactNode;
-    alerts?: ReactNode;
-    children: ReactNode;
-    dependsLocked?: string;
-}) {
-    const running = status === "running";
+export function StageShell({ alerts, children }: { alerts?: ReactNode; children: ReactNode }) {
     return (
         <section className="rounded-xl border border-stone-200 bg-white dark:border-stone-800 dark:bg-transparent">
-            <header className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-stone-200/80 px-5 py-3.5 dark:border-stone-800/80">
-                <span className="flex items-baseline gap-2">
-                    <span className="text-[11px] tabular-nums text-stone-400 dark:text-stone-500">{String(index + 1).padStart(2, "0")}</span>
-                    <span className="text-sm font-semibold text-stone-950 dark:text-stone-100">{title}</span>
-                </span>
-                <StatusBadge status={status} />
-                {dependsLocked ? (
-                    <Tooltip title={`上游未完成：${dependsLocked}`}>
-                        <span className="inline-flex items-center gap-1 text-xs text-stone-400 dark:text-stone-500">
-                            <Lock className="size-3.5" />
-                            待上游
-                        </span>
-                    </Tooltip>
-                ) : null}
-                <div className="ml-auto flex flex-wrap items-center gap-2">
-                    {modelSlot}
-                    {running ? (
-                        <Button size="small" danger icon={<Ban className="size-3.5" />}>取消</Button>
-                    ) : (
-                        <Button size="small" type="primary" icon={<Play className="size-3.5" />} disabled={Boolean(dependsLocked)}>
-                            {status === "pending" ? "运行本阶段" : "继续生产"}
-                        </Button>
-                    )}
-                    {status === "error" || status === "partial" ? (
-                        <Button size="small" icon={<Wrench className="size-3.5" />}>重试失败项</Button>
-                    ) : null}
-                    {status !== "pending" && !running ? (
-                        <Button size="small" type="text" icon={<RotateCcw className="size-3.5" />}>重跑</Button>
-                    ) : null}
-                </div>
-            </header>
             {alerts ? <div className="space-y-2 px-5 pt-4">{alerts}</div> : null}
             <div className="px-5 py-4">{children}</div>
         </section>

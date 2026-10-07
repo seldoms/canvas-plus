@@ -4,8 +4,7 @@ import { useState } from "react";
 
 import { cn } from "@/lib/utils";
 
-import { DemoModelPicker } from "./demo-model-picker";
-import { CHARACTERS, SHOTS, type MockCharacter, type StageStatus } from "./mock-data";
+import { CHARACTERS, SHOTS, type MockCharacter } from "./mock-data";
 import { InlineError, StageShell } from "./stage-shell";
 
 /** 真实定妆照缩略图（demo 用，真实环境是 artifact 缩略图） */
@@ -82,25 +81,9 @@ function DesignCharacterCard({ character }: { character: MockCharacter }) {
     );
 }
 
-export function DesignPanel({ status }: { status: StageStatus }) {
+export function DesignPanel() {
     return (
-        <StageShell
-            index={2}
-            title="服化道"
-            status={status}
-            modelSlot={
-                <>
-                    <span className="flex items-center gap-1.5">
-                        <span className="text-xs text-stone-400">文字设定</span>
-                        <DemoModelPicker domain="text" />
-                    </span>
-                    <span className="flex items-center gap-1.5">
-                        <span className="text-xs text-stone-400">参考图</span>
-                        <DemoModelPicker domain="image" />
-                    </span>
-                </>
-            }
-        >
+        <StageShell>
             <Tabs
                 size="small"
                 items={[
@@ -196,13 +179,10 @@ function CastingCard({ character }: { character: MockCharacter }) {
     );
 }
 
-export function CastingPanel({ status }: { status: StageStatus }) {
+export function CastingPanel() {
     const unconfirmed = CHARACTERS.filter((c) => !c.faceConfirmed || !c.voiceConfirmed);
     return (
         <StageShell
-            index={3}
-            title="角色定妆"
-            status={status}
             alerts={
                 unconfirmed.length ? (
                     <div className="rounded-lg border border-violet-200 bg-violet-50/70 px-3 py-2 text-xs text-violet-700 dark:border-violet-900/60 dark:bg-violet-950/30 dark:text-violet-300">
@@ -228,14 +208,9 @@ export function CastingPanel({ status }: { status: StageStatus }) {
 
 const SLOT_LABELS = ["起始帧", "关键帧", "尾帧"] as const;
 
-export function KeyframePanel({ status }: { status: StageStatus }) {
+export function KeyframePanel() {
     return (
-        <StageShell
-            index={4}
-            title="关键帧"
-            status={status}
-            modelSlot={<DemoModelPicker domain="image" value="img_qwen21_t2i_1080" />}
-        >
+        <StageShell>
             <div className="space-y-3">
                 {SHOTS.slice(0, 4).map((shot) => (
                     <div key={shot.id} className="grid gap-3 rounded-lg border border-stone-200/70 px-3.5 py-3 lg:grid-cols-[11rem_1fr] dark:border-stone-800">

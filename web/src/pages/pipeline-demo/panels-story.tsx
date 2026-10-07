@@ -1,11 +1,10 @@
 import { Avatar, Button, Drawer, Input, InputNumber, Select, Tabs, Tag, Tooltip } from "antd";
-import { ChevronDown, ChevronUp, Clock, Plus, Users } from "lucide-react";
-import { useMemo, useState } from "react";
+import { ChevronDown, ChevronUp, Clock, Lock, Plus, Users } from "lucide-react";
+import { useState } from "react";
 
 import { cn } from "@/lib/utils";
 
-import { DemoModelPicker } from "./demo-model-picker";
-import { CHARACTERS, EPISODES, SCENES, SHOTS, type MockScene, type MockShot, type StageStatus } from "./mock-data";
+import { CHARACTERS, EPISODES, PROJECT, RUNS, SCENES, SHOTS, type MockEpisode, type MockScene, type MockShot } from "./mock-data";
 import { PanelSection, StageShell } from "./stage-shell";
 import { StoryboardSketch } from "./storyboard-sketch";
 
@@ -21,10 +20,25 @@ const SCRIPT_EP1 = `陈默的婚礼在一家老牌酒店举行。宾客盈门，
 
 仪式开始前，陈默走到林慧身边，压低声音问："外婆的座位怎么在那边？"`;
 
-export function ScriptPanel({ status }: { status: StageStatus }) {
+export function ScriptPanel() {
     const [editing, setEditing] = useState(false);
     return (
-        <StageShell index={0} title="剧本" status={status} modelSlot={<DemoModelPicker domain="text" />}>
+        <StageShell>
+            {/* 制作设定：事实快照在此展示（原上下文条第二行迁入） */}
+            <PanelSection title="制作设定">
+                <div className="rounded-lg bg-stone-50 px-4 py-3 text-xs leading-6 text-stone-600 dark:bg-white/5 dark:text-stone-300">
+                    <div className="flex flex-wrap items-center gap-x-2">
+                        <Lock className="size-3.5 text-stone-400" />
+                        <span>事实快照 <b className="text-stone-800 dark:text-stone-100">v{RUNS[1].snapshotVersion}</b> 已冻结 —— 本 run 读取快照，项目后续改动不影响本次生产</span>
+                    </div>
+                    <div className="mt-1 flex flex-wrap gap-x-3 text-stone-500 dark:text-stone-400">
+                        <span>画幅 {PROJECT.ratio}</span>
+                        <span>单集 {PROJECT.episodeMinutes} 分钟 · 共 {PROJECT.episodeCount} 集</span>
+                        <span>声音路线：{PROJECT.audioMode}</span>
+                        <span className="basis-full">风格锚点：{PROJECT.styleAnchor}</span>
+                    </div>
+                </div>
+            </PanelSection>
             <PanelSection title="主线">
                 <p className="rounded-lg bg-stone-50 px-4 py-3 text-sm leading-6 text-stone-700 dark:bg-white/5 dark:text-stone-300">
                     一场婚礼上，新郎陈默发现外婆被安排在角落。他没有当场争执，而是在喧嚣中做了一个安静的决定。
@@ -70,8 +84,8 @@ export function ScriptPanel({ status }: { status: StageStatus }) {
 }
 
 /* ------------------------------------------------------------------ */
-/* 02 分镜 —— 以画面为主体：每场一组分镜卡（示意稿 + 说明 + 人物 + 对白）， */
-/*    点击卡片进抽屉改文字。镜头按 sceneId 归位到场（清单 §4.4）。         */
+/* 02 分镜 —— 胶片条布局：每场一行，分镜卡横向排列（小图、整页少滚动）；  */
+/*    点击卡片进抽屉改文字。镜头按 sceneId 归位到场（清单 §4.4）。       */
 /* ------------------------------------------------------------------ */
 
 function shotsByScene(sceneId: string): MockShot[] {
@@ -79,13 +93,13 @@ function shotsByScene(sceneId: string): MockShot[] {
     return SHOTS.filter((shot) => shot.sceneId === sceneId).sort((a, b) => a.index - b.index);
 }
 
-function CastAvatars({ names, size = 22 }: { names?: string[]; size?: number }) {
+function CastAvatars({ names, size = 18 }: { names?: string[]; size?: number }) {
     if (!names?.length) return null;
     return (
-        <span className="flex -space-x-1.5">
+        <span className="flex -space-x-1">
             {names.map((name) => (
                 <Tooltip key={name} title={name}>
-                    <Avatar size={size} src={`/demo-assets/cast/${encodeURIComponent(name)}.png`} className="ring-2 ring-white dark:ring-stone-900">
+                    <Avatar size={size} src={`/demo-assets/cast/${encodeURIComponent(name)}.png`} className="ring-1 ring-white/80 dark:ring-stone-900">
                         {name[0]}
                     </Avatar>
                 </Tooltip>
@@ -94,7 +108,7 @@ function CastAvatars({ names, size = 22 }: { names?: string[]; size?: number }) 
     );
 }
 
-/** 分镜卡：竖幅画格为主体，下面是动作说明、出场人物、对白 */
+/** 分镜卡：紧凑竖幅，信息全部叠在画格上（镜号/景别/时长/人物/动作），不另占文字区 */
 function ShotCard({ shot, scene, onOpen }: { shot: MockShot; scene?: MockScene; onOpen: () => void }) {
     const board = shot.storyboard;
     const statusDot = shot.status === "done" ? "bg-emerald-400" : shot.status === "partial" ? "bg-orange-400" : "bg-stone-300 dark:bg-stone-600";
@@ -102,37 +116,34 @@ function ShotCard({ shot, scene, onOpen }: { shot: MockShot; scene?: MockScene; 
         <button
             type="button"
             onClick={onOpen}
-            className="group overflow-hidden rounded-xl border border-stone-200/80 bg-white text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md dark:border-stone-800 dark:bg-stone-900/40"
+            className="group relative w-28 shrink-0 overflow-hidden rounded-lg border border-stone-200/80 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md dark:border-stone-800"
         >
-            <div className="relative">
-                <StoryboardSketch scene={scene} shot={shot} className="block aspect-[9/16] w-full" />
-                <span className="absolute left-2 top-2 flex items-center gap-1 rounded-md bg-black/55 px-1.5 py-0.5 text-[11px] font-medium tabular-nums text-white backdrop-blur-sm">
-                    <span className={cn("size-1.5 rounded-full", statusDot)} />
-                    {String(shot.index).padStart(2, "0")}
+            <StoryboardSketch scene={scene} shot={shot} className="block aspect-[9/16] w-full" />
+            <span className="absolute left-1 top-1 flex items-center gap-1 rounded bg-black/55 px-1 py-0.5 text-[10px] font-medium tabular-nums text-white">
+                <span className={cn("size-1.5 rounded-full", statusDot)} />
+                {String(shot.index).padStart(2, "0")}
+            </span>
+            <span className="absolute right-1 top-1 rounded bg-black/45 px-1 py-0.5 text-[9px] text-white/85">
+                {board.shotSize}·{board.camera || "固定"}
+            </span>
+            <span className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent px-1.5 pb-1 pt-5">
+                <span className="line-clamp-2 text-[10px] leading-3 text-white/95">{board.action || "（动作待补）"}</span>
+                <span className="mt-1 flex items-center justify-between">
+                    <CastAvatars names={board.characters} size={16} />
+                    <span className="flex items-center gap-0.5 text-[9px] tabular-nums text-white/75">
+                        <Clock className="size-2" />
+                        {board.durationSec ?? "?"}s
+                    </span>
                 </span>
-                <span className="absolute right-2 top-2 rounded-md bg-black/45 px-1.5 py-0.5 text-[10px] text-white/85 backdrop-blur-sm">
-                    {board.shotSize} · {board.camera || "固定"}
-                </span>
-                <span className="absolute bottom-2 right-2 flex items-center gap-0.5 rounded-md bg-black/45 px-1.5 py-0.5 text-[10px] tabular-nums text-white/85 backdrop-blur-sm">
-                    <Clock className="size-2.5" />
-                    {board.durationSec ?? "?"}s
-                </span>
-            </div>
-            <div className="space-y-1.5 px-3 py-2.5">
-                <p className="line-clamp-2 min-h-8 text-xs leading-4 text-stone-700 dark:text-stone-300">{board.action || "（动作待补）"}</p>
-                <div className="flex items-center justify-between">
-                    <CastAvatars names={board.characters} />
-                    <span className="text-[10px] text-stone-300 transition group-hover:text-stone-500 dark:text-stone-600 dark:group-hover:text-stone-400">点击编辑</span>
-                </div>
-                {board.dialogue ? (
-                    <p className="line-clamp-2 border-l-2 border-stone-200 pl-2 text-[11px] italic leading-4 text-stone-500 dark:border-stone-700 dark:text-stone-400">{board.dialogue}</p>
-                ) : null}
-            </div>
+            </span>
+            {board.dialogue ? (
+                <span className="absolute bottom-0 left-0 h-0.5 w-full bg-amber-400/80" title={board.dialogue} />
+            ) : null}
         </button>
     );
 }
 
-/** 镜头详情抽屉：大示意稿 + 全部可编辑字段 + 调序 */
+/** 镜头详情抽屉：大示意稿 + 全部可编辑字段 + 调序（对白在此编辑） */
 function ShotDrawer({ shot, scene, first, last, onClose }: { shot: MockShot | null; scene?: MockScene; first: boolean; last: boolean; onClose: () => void }) {
     if (!shot) return null;
     const board = shot.storyboard;
@@ -209,76 +220,48 @@ function ShotDrawer({ shot, scene, first, last, onClose }: { shot: MockShot | nu
     );
 }
 
-export function StoryboardPanel({ status }: { status: StageStatus }) {
-    const [episodeId, setEpisodeId] = useState(EPISODES[0].id);
+export function StoryboardPanel({ episode }: { episode: MockEpisode }) {
     const [openShotId, setOpenShotId] = useState<string | null>(null);
-    const episode = EPISODES.find((ep) => ep.id === episodeId)!;
-    const totalShots = useMemo(() => SCENES.reduce((n, sc) => n + shotsByScene(sc.id).length, 0), []);
+    const totalShots = SCENES.reduce((n, sc) => n + shotsByScene(sc.id).length, 0);
     const openShot = SHOTS.find((shot) => shot.id === openShotId) || null;
     const openScene = openShot ? SCENES.find((sc) => sc.id === openShot.sceneId) : undefined;
     const openSiblings = openShot ? shotsByScene(openShot.sceneId) : [];
     const openIndex = openShot ? openSiblings.findIndex((shot) => shot.id === openShot.id) : -1;
 
     return (
-        <StageShell index={1} title="分镜" status={status} modelSlot={<DemoModelPicker domain="text" />}>
-            <div className="grid gap-4 lg:grid-cols-[180px_1fr]">
-                {/* 左列：集导航（与项目分镜工作区同一语言） */}
-                <aside className="max-h-[68vh] space-y-1 self-start overflow-y-auto lg:sticky lg:top-0 lg:border-r lg:border-stone-200/60 lg:pr-3 dark:lg:border-stone-800/60">
-                    {EPISODES.map((ep) => (
-                        <button
-                            key={ep.id}
-                            type="button"
-                            onClick={() => setEpisodeId(ep.id)}
-                            className={cn(
-                                "w-full rounded-lg px-3 py-2 text-left text-sm transition hover:bg-black/5 dark:hover:bg-white/10",
-                                ep.id === episodeId && "bg-black/5 font-medium dark:bg-white/10",
-                            )}
-                        >
-                            <span className="tabular-nums text-stone-400">第 {ep.index} 集</span>
-                            <span className="ml-1.5 text-stone-800 dark:text-stone-200">{ep.title}</span>
-                        </button>
-                    ))}
-                    <Button size="small" type="dashed" block icon={<Plus className="size-3.5" />} className="mt-2">新建集</Button>
-                </aside>
-
-                {/* 右列：场 sticky 头 + 分镜卡网格 */}
-                <div className="min-w-0">
-                    <div className="mb-3 flex flex-wrap items-baseline gap-x-3 text-sm">
-                        <span className="font-medium text-stone-900 dark:text-stone-100">第 {episode.index} 集 · {episode.title}</span>
-                        <span className="text-xs text-stone-500 dark:text-stone-400">{episode.logline}</span>
-                        <span className="ml-auto text-xs tabular-nums text-stone-400">{SCENES.length} 场 · {totalShots} 镜</span>
-                    </div>
-                    <div className="space-y-5">
-                        {SCENES.map((scene) => {
-                            const shots = shotsByScene(scene.id);
-                            return (
-                                <div key={scene.id}>
-                                    <div className="sticky top-0 z-10 mb-2.5 flex flex-wrap items-center gap-2 rounded-lg border border-stone-200/70 bg-stone-50/95 px-3 py-2 backdrop-blur dark:border-stone-800 dark:bg-stone-900/90">
-                                        <Tag color="default" className="mr-0">场 {scene.index}</Tag>
-                                        <span className="text-xs font-medium text-stone-700 dark:text-stone-300">{scene.locationId} · {scene.time}</span>
-                                        <span className="truncate text-xs text-stone-400">{scene.intent}</span>
-                                        <span className="ml-auto text-xs tabular-nums text-stone-400">{shots.length} 镜</span>
-                                    </div>
-                                    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-4">
-                                        {shots.map((shot) => (
-                                            <ShotCard key={shot.id} shot={shot} scene={scene} onOpen={() => setOpenShotId(shot.id)} />
-                                        ))}
-                                        <button
-                                            type="button"
-                                            className="flex min-h-40 flex-col items-center justify-center gap-1.5 rounded-xl border border-dashed border-stone-300 text-xs text-stone-400 transition hover:border-stone-400 hover:text-stone-500 dark:border-stone-700"
-                                        >
-                                            <Plus className="size-4" />
-                                            新增镜头
-                                        </button>
-                                    </div>
-                                </div>
-                            );
-                        })}
-                    </div>
-                    <div className="mt-4 rounded-lg border border-dashed border-stone-300 px-3 py-2 text-xs leading-5 text-stone-500 dark:border-stone-700 dark:text-stone-400">
-                        画格目前是「分镜示意稿」——由动作/景别/人物文字生成的铅笔构图，帮助在关键帧产出前审读场面调度；进入关键帧阶段后画格替换为真实候选图，此处点击可跳转对应关键帧。
-                    </div>
-                </div>
+        <StageShell>
+            <div className="mb-3 flex flex-wrap items-baseline gap-x-3 text-sm">
+                <span className="text-xs text-stone-500 dark:text-stone-400">{episode.logline}</span>
+                <span className="ml-auto text-xs tabular-nums text-stone-400">{SCENES.length} 场 · {totalShots} 镜</span>
+            </div>
+            <div className="space-y-3">
+                {SCENES.map((scene) => {
+                    const shots = shotsByScene(scene.id);
+                    return (
+                        <div key={scene.id}>
+                            <div className="mb-1.5 flex flex-wrap items-center gap-x-2 text-xs">
+                                <span className="font-medium text-stone-700 dark:text-stone-300">场 {scene.index} · {scene.locationId} · {scene.time}</span>
+                                <span className="truncate text-stone-400">{scene.intent}</span>
+                                <span className="ml-auto tabular-nums text-stone-400">{shots.length} 镜</span>
+                            </div>
+                            <div className="flex gap-2 overflow-x-auto pb-1">
+                                {shots.map((shot) => (
+                                    <ShotCard key={shot.id} shot={shot} scene={scene} onOpen={() => setOpenShotId(shot.id)} />
+                                ))}
+                                <button
+                                    type="button"
+                                    className="flex w-28 shrink-0 flex-col items-center justify-center gap-1 self-stretch rounded-lg border border-dashed border-stone-300 text-[11px] text-stone-400 transition hover:border-stone-400 hover:text-stone-500 dark:border-stone-700"
+                                >
+                                    <Plus className="size-3.5" />
+                                    新增镜头
+                                </button>
+                            </div>
+                        </div>
+                    );
+                })}
+            </div>
+            <div className="mt-3 rounded-lg border border-dashed border-stone-300 px-3 py-2 text-[11px] leading-5 text-stone-500 dark:border-stone-700 dark:text-stone-400">
+                画格目前是「分镜示意稿」——由动作/景别/人物文字生成的铅笔构图；底部黄线标记该镜有对白。进入关键帧阶段后画格替换为真实候选图。
             </div>
             <ShotDrawer
                 shot={openShot}

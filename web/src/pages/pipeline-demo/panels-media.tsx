@@ -3,8 +3,7 @@ import { Download, FileArchive, FileText, Film, Mic, Scissors, Volume2 } from "l
 
 import { cn } from "@/lib/utils";
 
-import { DemoModelPicker } from "./demo-model-picker";
-import { AUDIO_LINES, SHOTS, type MockAudioLine, type StageStatus } from "./mock-data";
+import { AUDIO_LINES, SHOTS, type MockAudioLine } from "./mock-data";
 import { InlineError, RunningDot, StageShell, StatusBadge } from "./stage-shell";
 
 /* ------------------------------------------------------------------ */
@@ -53,16 +52,10 @@ function AudioLineRow({ line }: { line: MockAudioLine }) {
     );
 }
 
-export function AudioPanel({ status }: { status: StageStatus }) {
+export function AudioPanel() {
     const failed = AUDIO_LINES.filter((line) => line.status === "error").length;
     return (
         <StageShell
-            index={5}
-            title="配音"
-            status={status}
-            modelSlot={
-                <span className="text-xs text-stone-500 dark:text-stone-400">音色已在「角色定妆」逐角色配置；此处按句生产</span>
-            }
             alerts={
                 failed ? (
                     <Alert
@@ -89,15 +82,10 @@ export function AudioPanel({ status }: { status: StageStatus }) {
 /*    clips 全 done ≠ 成片完成：assemble 是独立动作（清单 §2 成片行）。   */
 /* ------------------------------------------------------------------ */
 
-export function AssemblyPanel({ status }: { status: StageStatus }) {
+export function AssemblyPanel() {
     const clips = SHOTS.map((shot, i) => ({ shot, sec: shot.storyboard.durationSec || 3, done: i < 4 }));
     return (
-        <StageShell
-            index={6}
-            title="成片交付"
-            status={status}
-            modelSlot={<DemoModelPicker domain="video" value="vid_wan22_i2v" />}
-        >
+        <StageShell>
             <div className="mb-2 flex items-center gap-2 text-xs text-stone-500 dark:text-stone-400">
                 <Film className="size-3.5" />
                 片段时间线（按采用候选拼接，顺序可在分镜调整）
