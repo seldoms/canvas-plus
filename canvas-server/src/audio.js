@@ -170,12 +170,12 @@ function rawDialogueEntries(shot) {
             const performance = String(entry.performance ?? "").trim();
             const speaker = String(entry.speaker ?? entry.speakerId ?? entry.characterId ?? entry.name ?? "").trim();
             if (!text.trim() && !performance) continue;
-            out.push({ speaker, text, performance, voiceover: entry.voiceover === true });
+            out.push({ speaker, text, performance, voiceover: typeof entry.voiceover === "boolean" ? entry.voiceover : null });
         }
         if (out.length) return out;
     }
     const legacy = typeof shot?.dialogue === "string" ? shot.dialogue.trim() : "";
-    return legacy ? [{ speaker: "", text: legacy, performance: "", voiceover: false }] : [];
+    return legacy ? [{ speaker: "", text: legacy, performance: "", voiceover: null }] : [];
 }
 
 /** 台词正文截断（warning 用，避免超长）。 */
@@ -300,7 +300,7 @@ export function resolveDialogueLines(shot, characters = [], cast = null) {
             text: cleaned.text,
             performance,
             onlyAnnotation,
-            voiceover: entry.voiceover === true,
+            voiceover: entry.voiceover,
             warnings: cleaned.warnings,
         });
     }

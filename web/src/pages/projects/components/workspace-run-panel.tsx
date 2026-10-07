@@ -1,5 +1,5 @@
 import { Alert, Button, Card, Space, Typography } from "antd";
-import { Play, XCircle } from "lucide-react";
+import { GitBranch, Play, XCircle } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import type { GatewayStageProgress } from "@/services/api/gateway";
@@ -32,6 +32,7 @@ export function WorkspaceRunPanel({
     notice,
     onRun,
     onCancel,
+    onBranch,
 }: {
     workspace: WorkspaceDef;
     gate: WorkspaceGate;
@@ -43,6 +44,7 @@ export function WorkspaceRunPanel({
     notice: string;
     onRun: () => void;
     onCancel: () => void;
+    onBranch: () => void;
 }) {
     const { t } = useTranslation();
     if (!workspace.stage) return null;
@@ -100,6 +102,11 @@ export function WorkspaceRunPanel({
                                 {hasRun ? t("projects.workspace.run.run", { stage: stageName(workspace.stage) }) : t("projects.workspace.run.startNew")}
                             </Button>
                         )}
+                        {hasRun && !running ? (
+                            <Button icon={<GitBranch className="size-4" />} disabled={!allowed || starting} onClick={onBranch}>
+                                {t("projects.workspace.run.branch", { stage: stageName(workspace.stage) })}
+                            </Button>
+                        ) : null}
                         {hasRun ? null : <Typography.Text type="secondary" className="text-xs">{t("projects.workspace.run.noRun")}</Typography.Text>}
                     </Space>
                 </Space>

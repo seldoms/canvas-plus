@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import i18n from "@/i18n";
-import { attachProjectRun, cancelPipelineStage, createPipelineRun, fetchPipelineProgress, listPipelineGates, resolveProjectSourceText, runPipelineStage, type GatewayStageProgress } from "@/services/api/gateway";
+import { attachProjectRun, cancelPipelineStage, createPipelineRun, fetchPipelineProgress, forkPipelineRun, listPipelineGates, resolveProjectSourceText, runPipelineStage, type GatewayStageProgress } from "@/services/api/gateway";
 import type { ProjectContext } from "@/services/api/projects";
 
 import type { StageStatusMap } from "../workspace-gates";
@@ -22,6 +22,7 @@ export function useProjectRun({
     stage,
     context,
     activeRunId,
+    selectRun,
     stageStatus,
     refresh,
 }: {
@@ -30,6 +31,7 @@ export function useProjectRun({
     context: ProjectContext | null;
     /** 工作区当前选择的 run；运行请求必须与展示的 /gates 使用同一个 run。 */
     activeRunId: string;
+    selectRun: (id: string) => void;
     stageStatus: StageStatusMap;
     refresh: () => void | Promise<void>;
 }) {
@@ -49,15 +51,6 @@ export function useProjectRun({
      */
     const progressInflight = useRef<boolean | null>(null);
 
-    // 刷新恢复：项目里该阶段已在跑时接回进度轮询（stageStatus 由关联 run 合并而来）。
-    // 反向同理：任一来源（run 阶段摘要）落到终态就解除运行态，不再显示「生成中」（#73）。
-    useEffect(() => {
-        if (!stage) return;
-        const status = stageStatus[stage];
-        if (status === "running") setRunning(true);
-        else if (status === "done" || status === "error" || status === "canceled" || status === "blocked") setRunning(false);
-    }, [stage, stageStatus]);
-
     // 切项目 / 切工作区时清掉运行态，避免上一阶段的进度串到本工作区。
     useEffect(() => {
         setCreatedRunId("");
@@ -66,6 +59,15 @@ export function useProjectRun({
         setError("");
         setNotice("");
     }, [projectId, stage, activeRunId]);
+
+    // 刷新恢复：项目里该阶段已在跑时接回进度轮询（stageStatus 由关联 run 合并而来）。
+    // 反向同理：任一来源（run 阶段摘要）落到终态就解除运行态，不再显示「生成中」（#73）。
+    useEffect(() => {
+        if (!stage) return;
+        const status = stageStatus[stage];
+        if (status === "running") setRunning(true);
+        else setRunning(false);
+    }, [stage, stageStatus]);
 
     // 阶段跑完/中止后拉一次完整 run（页面据此刷新上下文与门禁）。
     // 判据与流水线页 use-pipeline-run.ts 的 #71 完全一致：progress.phase 到终态，**或** inflight 由 true 翻成
@@ -103,13 +105,20 @@ export function useProjectRun({
     }, [running, runId, stage, refresh]);
 
     /** 跑本阶段：没有 run 就先建（带 projectId、项目名、项目源文本）并回填 runIds，再触发阶段。 */
-    const start = useCallback(async () => {
+    const start = useCallback(async (branch = false) => {
         if (!stage || starting || running) return;
         setError("");
         setNotice("");
         setStarting(true);
         try {
             let id = runId;
+            if (branch && id) {
+                const forked = await forkPipelineRun(id, { fromStage: stage });
+                id = forked.id;
+                setCreatedRunId(id);
+                selectRun(id);
+                await refresh();
+            }
             if (!id) {
                 const project = context?.project;
                 if (!project) {
@@ -146,7 +155,7 @@ export function useProjectRun({
         } finally {
             setStarting(false);
         }
-    }, [stage, starting, running, runId, context, activeRunId, projectId, refresh]);
+    }, [stage, starting, running, runId, context, projectId, refresh, selectRun]);
 
     /** 取消正在跑的阶段；终态由进度轮询接回。 */
     const cancel = useCallback(async () => {

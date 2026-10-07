@@ -77,7 +77,7 @@ export function WorkspaceLayout({
     const navigate = useNavigate();
     const project = context?.project;
     const gate = resolveWorkspaceGate(workspace, stageStatus, hasRunInfo, blockingNotes.length, gates, gatesAvailable);
-    const run = useProjectRun({ projectId, stage: workspace.stage, context, activeRunId, stageStatus, refresh });
+    const run = useProjectRun({ projectId, stage: workspace.stage, context, activeRunId, selectRun, stageStatus, refresh });
 
     return (
         <div className="flex h-full flex-col overflow-hidden bg-background text-stone-900 dark:text-stone-100">
@@ -181,6 +181,7 @@ export function WorkspaceLayout({
                                 notice={run.notice}
                                 onRun={() => void run.start()}
                                 onCancel={() => void run.cancel()}
+                                onBranch={() => void run.start(true)}
                             />
                             {workspace.stage === "assembly" ? (
                                 <AssemblyExportPanel projectId={projectId} runId={activeRunId} gate={gate} stageStatus={stageStatus} refresh={refresh} />

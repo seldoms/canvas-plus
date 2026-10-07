@@ -139,8 +139,8 @@ function fakeJobQueue() {
     };
 }
 
-function fakeProject() {
-    const project = { id: "prj_pc_wiring", styleAnchor: "写实电影感，暖色路灯与冷调夜色的对比，浅景深", plan: {}, assetRefs: [] };
+function fakeProject(audioMode = "embedded") {
+    const project = { id: "prj_pc_wiring", styleAnchor: "写实电影感，暖色路灯与冷调夜色的对比，浅景深", plan: audioMode ? { audioMode } : {}, assetRefs: [] };
     const register = (projectId, input) => {
         const ref = { id: `as_${project.assetRefs.length + 1}`, projectId, role: input.role, bindingId: input.bindingId, artifactIds: input.artifactIds ?? [], selectedArtifactId: input.selectedArtifactId ?? null, metadata: input.metadata ?? {} };
         project.assetRefs = [...project.assetRefs, ref];
@@ -155,11 +155,11 @@ function fakeProject() {
     return { project, register, update };
 }
 
-async function runToAssembly(t) {
+async function runToAssembly(t, audioMode = "embedded") {
     const root = mkdtempSync(join(tmpdir(), "canvas-pc-wiring-"));
     t.after(() => rmSync(root, { recursive: true, force: true }));
     const env = makeEnv(root);
-    const project = fakeProject();
+    const project = fakeProject(audioMode);
     const jobs = fakeJobQueue();
     const llm = {
         calls: [],
@@ -251,4 +251,13 @@ test("接线：参数档按规则表回填（含采样 token 的模板才回填�
     // 而 LENGTH 按帧网格推导（既有行为不变）。
     assert.equal(typeof job.params.LENGTH, "number");
     assert.equal(job.params.INPUT_IMAGE, "/api/artifacts/start.png", "i2v 走 INPUT_IMAGE 底图");
+});
+
+
+test("接线：项目未指定音频路线时按默认独立配音编译，不注入原生台词", async (t) => {
+    const { run, pipeline, jobs } = await runToAssembly(t, null);
+    const clip = pipeline.get(run.id).stages.assembly.output.clips[0];
+    const prompt = jobs.get(clip.jobId).params.PROMPT;
+    assert.ok(!prompt.includes("<d>"), prompt);
+    assert.match(prompt, /no dialogue, speech or singing/);
 });

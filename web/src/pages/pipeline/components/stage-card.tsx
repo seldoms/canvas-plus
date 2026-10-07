@@ -1,6 +1,5 @@
 import { Button, Select } from "antd";
-import { ChevronDown, ChevronUp, FolderOpen, Pencil, Play, RefreshCw, RotateCcw, XCircle } from "lucide-react";
-import { useState } from "react";
+import { FolderOpen, Play, RefreshCw, RotateCcw, XCircle } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { cn } from "@/lib/utils";
@@ -23,6 +22,10 @@ const STATUS_CLASS: Record<GatewayStageStatus, string> = {
     blocked: "text-violet-600 dark:text-violet-400",
     canceled: "text-stone-500 dark:text-stone-400",
 };
+
+function hasModelOption(options: SelectModelItem[], value: string) {
+    return options.some((option) => "value" in option ? option.value === value : option.options.some((child) => child.value === value));
+}
 
 function formatDuration(ms: number) {
     const total = Math.max(0, Math.round(ms / 1000));
@@ -59,10 +62,8 @@ function StageProgress({ progress }: { progress: GatewayStageProgress }) {
     );
 }
 
-export function StageCard({ index, view, busy, progress, resumeChunks, disabledReason, modelOptions, model, templates, regeneratingItem, onModelChange, onRun, onRerun, onCancel, onEdit, onRegenerate, onRefresh, onOpenProjects }: { index: number; view: PipelineStageView; busy: boolean; progress: GatewayStageProgress | null; resumeChunks: number; disabledReason: string; modelOptions: SelectModelItem[]; model: string; templates: GatewayTemplateInfo[]; regeneratingItem: string; onModelChange: (model: string) => void; onRun: () => void; onRerun: () => void; onCancel: () => void; onEdit: () => void; onRegenerate: (stageId: string, itemId: string, template: string) => Promise<string>; onRefresh: () => void; onOpenProjects: () => void }) {
+export function StageCard({ index, view, busy, progress, resumeChunks, disabledReason, modelOptions, model, templates, regeneratingItem, onModelChange, onRun, onRerun, onCancel, onRegenerate, onRefresh, onOpenProjects }: { index: number; view: PipelineStageView; busy: boolean; progress: GatewayStageProgress | null; resumeChunks: number; disabledReason: string; modelOptions: SelectModelItem[]; model: string; templates: GatewayTemplateInfo[]; regeneratingItem: string; onModelChange: (model: string) => void; onRun: () => void; onRerun: () => void; onCancel: () => void; onRegenerate: (stageId: string, itemId: string, template: string) => Promise<string>; onRefresh: () => void; onOpenProjects: () => void }) {
     const { t } = useTranslation();
-    const [expanded, setExpanded] = useState(false);
-    const output = view.stage?.output;
     const running = view.status === "running";
     // 进度只在属于本阶段时显示：progress.json 是 run 级单文件，别的阶段跑时不该串到这张卡上
     const ownProgress = progress && progress.stage === view.id ? progress : null;
@@ -76,7 +77,7 @@ export function StageCard({ index, view, busy, progress, resumeChunks, disabledR
     const itemKind = stageMediaKind(view.id);
     const stageTemplates = generative ? templatesForStage(templates, view.id) : [];
     const itemsWithCandidates = items.filter((item) => (item.candidates || []).length);
-    const looseArtifacts = orphanArtifacts(view.artifacts, items);
+    const looseArtifacts = orphanArtifacts(view.artifacts, items).filter((artifact) => !/\.json$/i.test(artifact.filename || ""));
     /** blocked 阶段：前端必须显示服务端给的原因并解锁操作，不能显示成「运行中/生成中」（#70）。 */
     const blocked = view.status === "blocked";
     // 逐镜缺哪些参考素材（角色/场景/道具）——去重后列表，复用项目关键帧工作区同一套文案，不另造一套。
@@ -106,16 +107,16 @@ export function StageCard({ index, view, busy, progress, resumeChunks, disabledR
                 </span>
                 {view.generating ? <span className="text-xs text-stone-500 dark:text-stone-400">{t("pipeline.generating")}</span> : null}
                 <div className="ml-auto flex items-center gap-1">
-                    <Select
+                    {modelOptions.length ? <Select
                         size="small"
-                        value={model}
+                        value={hasModelOption(modelOptions, model) ? model : undefined}
                         onChange={onModelChange}
-                        style={{ minWidth: 200 }}
-                        placeholder={t("pipeline.modelLoadFailed")}
+                        style={{ minWidth: 220 }}
+                        placeholder={t("pipeline.stageModelDefault")}
                         options={modelOptions}
                         optionLabelProp="title"
                         disabled={running}
-                    />
+                    /> : null}
                     {running ? (
                         <Button type="text" size="small" danger icon={<XCircle className="size-3.5" />} onClick={onCancel}>
                             {t("pipeline.cancel")}
@@ -127,12 +128,6 @@ export function StageCard({ index, view, busy, progress, resumeChunks, disabledR
                     )}
                     <Button type="text" size="small" icon={<RotateCcw className="size-3.5" />} disabled={running || Boolean(disabledReason) || view.status === "pending"} onClick={onRerun}>
                         {resumeChunks > 0 ? t("pipeline.resume", { count: resumeChunks }) : t("pipeline.rerun")}
-                    </Button>
-                    <Button type="text" size="small" icon={<Pencil className="size-3.5" />} disabled={running || !view.stage || output === undefined} onClick={onEdit}>
-                        {t("pipeline.editOutput")}
-                    </Button>
-                    <Button type="text" size="small" icon={expanded ? <ChevronUp className="size-3.5" /> : <ChevronDown className="size-3.5" />} onClick={() => setExpanded((current) => !current)}>
-                        {t(expanded ? "pipeline.hideJson" : "pipeline.viewJson")}
                     </Button>
                 </div>
             </div>
@@ -179,7 +174,8 @@ export function StageCard({ index, view, busy, progress, resumeChunks, disabledR
             ) : null}
             {/* 非 blocked 阶段：服务端 error 直接展示；blocked 的原因已在上面面板里，避免重复。 */}
             {view.stage?.error && !blocked ? <div className="mt-1 text-xs text-red-600 dark:text-red-400">{view.stage.error}</div> : null}
-            {expanded ? <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-words text-xs leading-relaxed text-stone-600 dark:text-stone-300">{output === undefined ? t("pipeline.noOutput") : JSON.stringify(output, null, 2)}</pre> : null}
+            {view.stage?.output ? <StageOutputSummary stageId={view.id} output={view.stage.output} /> : null}
+            {view.id === "casting" && view.stage?.output ? <CastingCards output={view.stage.output} /> : null}
             {itemsWithCandidates.length ? (
                 <MediaPreviewGroup>
                     <div className="mt-2 space-y-1">
@@ -217,6 +213,7 @@ function StageArtifact({ artifact }: { artifact: GatewayArtifact }) {
     const thumbSrc = artifactThumbSrc(src);
     // 视频自带控件即可播放；图片本身没有可点暗示 → 走共享可预览组件，站内弹窗看大图。
     if (isVideoArtifact(artifact)) return <video src={src} poster={thumbSrc} controls preload="none" className="h-28 max-w-52 rounded-md" />;
+    if (artifact.type === "audio") return <audio src={src} controls preload="none" className="h-9 max-w-72" />;
     if (artifact.type === "image") {
         return (
             <PreviewableMedia id={`artifact:${artifact.url}`} kind="image" src={src} thumbSrc={thumbSrc} title={artifact.filename} className="h-28 max-w-52 cursor-zoom-in overflow-hidden rounded-md">
@@ -228,5 +225,70 @@ function StageArtifact({ artifact }: { artifact: GatewayArtifact }) {
         <a href={src} target="_blank" rel="noreferrer" className="self-center text-xs text-stone-500 underline dark:text-stone-400">
             {artifact.filename}
         </a>
+    );
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+    return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+}
+
+function asArray(value: unknown): Record<string, unknown>[] {
+    return Array.isArray(value) ? value.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object")) : [];
+}
+
+/** 产物只展示用户要做决定的事实；原始 JSON 留在调试接口，不占据生产页面。 */
+function StageOutputSummary({ stageId, output }: { stageId: string; output: unknown }) {
+    const { t } = useTranslation();
+    const data = asRecord(output);
+    const values: string[] = [];
+    if (stageId === "script") {
+        if (asArray(data.characters).length) values.push(`${asArray(data.characters).length} 个角色`);
+        if (asArray(data.scenes).length) values.push(`${asArray(data.scenes).length} 个场景`);
+        if (asArray(data.episodes).length) values.push(`${asArray(data.episodes).length} 集`);
+    } else if (stageId === "storyboard") {
+        const shots = asArray(data.shots);
+        if (shots.length) values.push(`${shots.length} 个镜头`);
+        const dialogues = shots.reduce((count, shot) => count + (asArray(shot.dialogueLines).length || (String(shot.dialogue || "").trim() ? 1 : 0)), 0);
+        if (dialogues) values.push(`${dialogues} 条台词`);
+    } else if (stageId === "design" || stageId === "casting") {
+        const characters = asArray(data.characters);
+        const locations = asArray(data.locations);
+        if (characters.length) values.push(`${characters.length} 个角色设定`);
+        if (locations.length) values.push(`${locations.length} 个场景设定`);
+    } else if (stageId === "audio") {
+        const audio = asArray(data.audio);
+        if (audio.length) values.push(`${audio.length} 条声音`);
+    } else if (stageId === "assembly") {
+        const clips = asArray(data.clips);
+        if (clips.length) values.push(`${clips.length} 个片段`);
+        const film = asRecord(data.assembly);
+        if (String(film.status || "") === "done") values.push("成片已完成");
+    }
+    if (!values.length) return null;
+    return <div className="mt-3 flex flex-wrap gap-2 text-xs text-stone-600 dark:text-stone-300">{values.map((value) => <span key={value} className="rounded-full bg-stone-100 px-2.5 py-1 dark:bg-white/10">{value}</span>)}{stageId === "assembly" ? <span className="text-stone-400">{t("pipeline.outputPreviewHint")}</span> : null}</div>;
+}
+
+function CastingCards({ output }: { output: unknown }) {
+    const cards = asArray(asRecord(output).characters);
+    if (!cards.length) return null;
+    return (
+        <div className="mt-3 grid gap-2 sm:grid-cols-2">
+            {cards.map((card, index) => {
+                const face = asRecord(card.face);
+                const voice = asRecord(card.voice);
+                const url = String(face.closeupArtifactId || "").trim();
+                const src = url && /^(https?:|\/api\/)/i.test(url) ? resolveGatewayUrl(url) : "";
+                return (
+                    <div key={String(card.characterId || index)} className="flex items-center gap-3 rounded-lg border border-stone-200/80 px-3 py-2 dark:border-stone-800">
+                        {src ? <img src={artifactThumbSrc(src)} alt={String(card.name || "角色")} className="size-12 rounded-md object-cover" /> : <div className="flex size-12 items-center justify-center rounded-md bg-stone-100 text-xs text-stone-400 dark:bg-white/10">脸</div>}
+                        <div className="min-w-0">
+                            <div className="truncate text-sm font-medium text-stone-800 dark:text-stone-100">{String(card.name || card.characterId || "未命名角色")}</div>
+                            <div className="mt-0.5 truncate text-xs text-stone-500 dark:text-stone-400">{String(voice.speaker || "声音待确认")} · {String(voice.language || "语言待确认")}</div>
+                            <div className="mt-1 text-[11px] text-stone-400 dark:text-stone-500">{card.confirmed === true ? "已确认" : "待确认"}</div>
+                        </div>
+                    </div>
+                );
+            })}
+        </div>
     );
 }

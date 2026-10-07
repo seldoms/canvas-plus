@@ -1,12 +1,13 @@
 import { useState } from "react";
 import { Alert, Button, Card, Space, Spin, Typography } from "antd";
 import { saveAs } from "file-saver";
-import { Clapperboard, Download, Play } from "lucide-react";
+import { Clapperboard, Download, Play, RefreshCw } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { downloadArtifactBlob } from "@/services/api/delivery";
 
 import { useAssemblyExport } from "../hooks/use-assembly-export";
+import { usePipelineQualityCheck } from "../hooks/use-pipeline-quality-check";
 import type { StageStatusMap, WorkspaceGate } from "../workspace-gates";
 import { DeliveryExportButton } from "./delivery-export-button";
 import { FilmPreviewModal } from "./film-preview-modal";
@@ -39,12 +40,14 @@ export function AssemblyExportPanel({
     const [downloading, setDownloading] = useState(false);
     const [downloadError, setDownloadError] = useState("");
     const [previewOpen, setPreviewOpen] = useState(false);
+    const { report: qualityReport, checking: checkingQuality, error: qualityError, check: checkQuality } = usePipelineQualityCheck(runId, assembly?.status === "done" ? assembly.url : undefined);
 
     // 前置：门禁（服务端 /gates）就绪 + 片段阶段已完成（服务端 run 阶段状态）。
     const stageDone = stageStatus["assembly"] === "done";
     const done = assembly?.status === "done" && Boolean(assembly.url);
     const canAssemble = Boolean(runId) && gate.state === "ready" && stageDone && !assembling;
     const durationSec = Math.round(Number(assembly?.info?.durationSec) || 0);
+
 
     /** 不可点原因：优先服务端门禁原因，其次「片段未全部完成」。 */
     const blockedReason = () => {
@@ -75,6 +78,7 @@ export function AssemblyExportPanel({
         }
     };
 
+
     return (
         <section>
             <Typography.Title level={5} className="!mb-2">
@@ -93,12 +97,39 @@ export function AssemblyExportPanel({
 
                     {done ? (
                         <Alert
-                            type="success"
+                            type={assembly?.quality?.status === "blocked" ? "warning" : "info"}
                             showIcon
                             message={t("projects.assembly.done")}
                             description={durationSec > 0 ? t("projects.assembly.duration", { seconds: durationSec }) : undefined}
                         />
                     ) : null}
+
+                    {done || assembly?.quality ? (
+                        <Alert
+                            type={assembly?.quality?.status === "blocked" ? "error" : "warning"}
+                            showIcon
+                            message={t(assembly?.quality?.status === "blocked" ? "projects.assembly.qualityBlocked" : "projects.assembly.qualityPending")}
+                            description={
+                                <Space direction="vertical" size={4}>
+                                    <span>{t("projects.assembly.qualityReview")}</span>
+                                    {assembly?.audioMode ? <span>{t(assembly.audioMode === "embedded" ? "projects.assembly.nativeAudio" : "projects.assembly.separateAudio")}</span> : null}
+                                    {assembly?.audioMode === "separate_dialogue_track" && assembly.lipSync ? <span>{t("projects.assembly.lipSyncCoverage", assembly.lipSync)}</span> : null}
+                                    {assembly?.quality?.dialogueTiming?.map((cue) => <span key={cue.cueId}>{t("projects.assembly.cueTiming", { shot: cue.shotId, start: cue.startSec.toFixed(2), duration: cue.durationSec.toFixed(2) })}</span>)}
+                                    {assembly?.quality?.issues.map((issue, index) => <span key={`${issue.code}-${issue.cueId || issue.shotId || index}`}>{issue.message}</span>)}
+                                </Space>
+                            }
+                        />
+                    ) : null}
+
+                    {qualityReport ? (
+                        <Alert
+                            type={qualityReport.stale ? "warning" : qualityReport.status === "blocked" ? "error" : qualityReport.status === "needs_review" ? "warning" : "success"}
+                            showIcon
+                            message={qualityReport.stale ? t("projects.assembly.qcStale") : t("projects.assembly.qcResult", { count: qualityReport.summary.total })}
+                            description={qualityReport.issues.length ? qualityReport.issues.map((issue, index) => <div key={`${issue.code}-${index}`}>{issue.message}</div>) : t("projects.assembly.qcPassed")}
+                        />
+                    ) : null}
+                    {qualityError ? <Alert type="error" showIcon message={t("projects.assembly.qcFailed")} description={qualityError} /> : null}
 
                     {error ? <Alert type="error" showIcon message={t("projects.assembly.failed")} description={error} /> : null}
                     {downloadError ? <Alert type="error" showIcon message={t("projects.assembly.downloadFailedTitle")} description={downloadError} /> : null}
@@ -132,6 +163,12 @@ export function AssemblyExportPanel({
                         ) : null}
 
                         {done ? <DeliveryExportButton projectId={projectId} /> : null}
+
+                        {done ? (
+                            <Button icon={<RefreshCw className="size-4" />} loading={checkingQuality} onClick={() => void checkQuality()}>
+                                {t("projects.assembly.runQc")}
+                            </Button>
+                        ) : null}
 
                         {error && !assembling ? <Button onClick={() => void assemble()}>{t("projects.retry")}</Button> : null}
                     </Space>

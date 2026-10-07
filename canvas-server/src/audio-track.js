@@ -89,7 +89,7 @@ const normalizeVersion = (value) => {
  * @param {Array}   [args.characters]  显式角色数组（优先于 project.script.characters）。
  * @returns {{profiles:Array, warnings:Array}} profiles 为 VoiceProfile 超集；warnings 逐条可解释。
  */
-export function projectVoiceProfiles({ project, design, characters } = {}) {
+export function projectVoiceProfiles({ project, design, characters, casting } = {}) {
     const warnings = [];
     const source = Array.isArray(characters)
         ? characters
@@ -109,6 +109,7 @@ export function projectVoiceProfiles({ project, design, characters } = {}) {
     }
 
     const planLanguage = firstNonEmpty(project?.plan?.language, project?.plan?.locale);
+    const lockedVoices = new Map((casting?.characters || []).filter((card) => card.voice?.confirmed === true).map((card) => [String(card.characterId), card]));
     const profiles = [];
     const seenIds = new Set();
 
@@ -168,6 +169,7 @@ export function projectVoiceProfiles({ project, design, characters } = {}) {
             warnings.push({ code: "missing_reference", characterId, profileId: id, message: `VoiceProfile「${id}」缺 referenceArtifactId，口型对齐参考待补` });
         }
 
+        const locked = lockedVoices.get(characterId);
         profiles.push({
             id,
             characterId,
@@ -181,6 +183,15 @@ export function projectVoiceProfiles({ project, design, characters } = {}) {
             design: designText,
             referenceArtifactId,
             version: normalizeVersion(character.voiceProfileVersion ?? voiceObj.version ?? designChar.version),
+            ...(locked ? {
+                id: locked.voice.voiceProfileId || id,
+                speaker: locked.voice.speaker,
+                language: locked.voice.language,
+                design: locked.voice.design,
+                timbre: locked.voice.design,
+                speed: locked.voice.speed,
+                version: normalizeVersion(locked.version),
+            } : {}),
         });
     });
 

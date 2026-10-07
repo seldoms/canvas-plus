@@ -88,6 +88,13 @@ export type GatewayAssembly = {
     bytes?: number;
     /** 成片信息；`durationSec` 是成片总时长。 */
     info?: { durationSec?: number } | null;
+    audioMode?: "separate_dialogue_track" | "embedded";
+    lipSync?: { used: number; total: number };
+    quality?: {
+        status: "blocked" | "needs_review";
+        issues: { code: string; message: string; shotId?: string; cueId?: string }[];
+        dialogueTiming?: { cueId: string; shotId: string; startSec: number; durationSec: number; delayMs: number }[];
+    };
     /**
      * 独立字幕产物（SRT，与成片同交付目录、可下载导入剪映）。
      * 成片 mp4 **默认不含字幕**（`burned:false`）；`url` 供预览自动挂载，无台词时为 null。

@@ -3,8 +3,8 @@ import type { GatewayArtifact, GatewayPipelineRun, GatewayRunStage, GatewayStage
 // 复用流水线页既有的产物归类，不另写一套。
 import { isGenerativeStage, isVideoArtifact, stageMediaKind, uniqueArtifacts } from "@/pages/pipeline/pipeline-utils";
 
-/** 阶段线性顺序：剧本 → 分镜 → 资产(服化道) → 关键帧 → 片段合成；与 workspaces.ts 的 stage 顺序一致。 */
-export const STAGE_ORDER = ["script", "storyboard", "design", "keyframe", "assembly"];
+/** 正式七段：定妆与配音同样展示服务端的状态和产物。 */
+export const STAGE_ORDER = ["script", "storyboard", "design", "casting", "keyframe", "audio", "assembly"];
 
 /** pipeline 落盘的产物只有 {jobId,url}，成片条目另有 role/kind；这里补上角色字段供时间线分类。 */
 export type TimelineArtifact = GatewayArtifact & { role?: string; kind?: string };
@@ -23,6 +23,7 @@ export type TimelineStage = {
  * 成片的 manifest/log 是清单与日志文件、cover 是封面图，单独归类；其余按阶段的媒体族（stageMediaKind）归类。
  */
 export function artifactKind(artifact: TimelineArtifact, stageId: string): "image" | "video" | "file" {
+    if (stageId === "audio") return "file";
     if (artifact.role === "manifest" || artifact.role === "log") return "file";
     if (artifact.role === "cover") return "image";
     const normalized: GatewayArtifact = { ...artifact, filename: artifact.filename || artifact.url };

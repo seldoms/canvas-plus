@@ -598,7 +598,7 @@ ReviewNote { id, scope: project|episode|scene|shot, targetId?, stage,
 图例：✅ 验收达成 ｜ 🟡 主体可用但有明确缺口 ｜ ⬜ 未开始
 
 > ⚠️ **口径校正（2026-10-03）**：本节 P1-c 里提到的「**D1 时长档位**」「**D3 关键帧 ≥4 张**」**不是** §7 决策登记里的 D1/D3（那是「D1 命名：Project=剧」「D3 生产事实：服务端权威」）。它们出自 `pilot-issues.md` 的「**产品负责人拍板（2026-10-03）**」章节，是产品负责人当面的四条硬约束，**条号与 §7 撞号**。引用时请写明来源，避免歧义：
-> - **时长档位（pilot-issues D1）**：档位**跟着模型走**（模型能力元数据），`24×秒+3`、H3 仅 5/10/15s；**先算时长再填内容**，Σ段时长必须等于骨架。
+> - **时长档位（pilot-issues D1）**：档位**跟着模型走**（模型能力元数据），`24×秒+3` 后按模型网格吸附；H3 推荐 5/10/15s，实际训练区间与合法长度读取模型元数据（不是仅允许三个秒数）；**先算时长再填内容**，Σ段时长必须等于骨架。
 > - **关键帧 ≥4 张（pilot-issues D3）**：单镜一次生成 ≥4 个候选，**不达标自动重新生成**，不停下等人挑。
 
 > **本表于 2026-10-03 傍晚二次复核**（今日下午交付 batch 后）。复核口径：每条都取**运行时一手**（打接口 / 跑测试 / 全仓 grep）；**否定断言一律双范围复核**。本轮实测基线：后端 `node --test` **667/667 pass**、`tsc --noEmit` 0 错、`npm run build` 通过。以下状态列**只代表当前**，与上一版的差异均已在「一手证据」列尾部以 `⟶ 复核` 标出。
@@ -606,25 +606,25 @@ ReviewNote { id, scope: project|episode|scene|shot, targetId?, stage,
 | 工作包 | 实际状态 | 一手证据 / 缺口 |
 | --- | --- | --- |
 | **P0-0** 冻结领域契约 | ✅ | `contracts.js`(6.5KB)、`web/src/types/domain.ts`、`domain-contract.md`；阶段 ID `plan/script/storyboard/design/keyframe/assembly/post` 冻结；D1–D12 登记。⟶ 复核：今日新增 `blocked` 阶段状态与 `Shot.episodeId`，均已同步进契约 |
-| **P0-a** Project 内核 | 🟡 | `projects.js`(23.0KB) 原子写 + 乐观版本；`/api/projects` 列表/创建/详情/上下文/归档；6 个工作区页 + 门禁。缺口：`runIds[]` 仅覆盖「项目内建 run」路径（前端 `use-project-run.ts:106` PATCH 回填），**从流水线页建的 run 不回填**；服务端「建 run 时按 `options.projectId` 幂等追加」仍未实现 |
+| **P0-a** Project 内核 | 🟡 | `projects.js` 原子写 + 乐观版本；`/api/projects` 列表/创建/详情/上下文/归档；工作区页 + 门禁。建项目绑定 run 时按 `options.projectId` 幂等追加 `runIds[]`。流水线新增项目/集选择尚未通过用户验收：历史 run 未驱动选择器、集级生成范围未接通、制作事实未完整快照、镜头读取形状有误；具体缺口见 `pipeline-feature-api-inventory.md`。多 run 展示与旧页面收敛亦未完成 |
 | **P0-b** Job→Artifact→Slot 回写断链 | ✅ | 终态重放 + `registerArtifacts` 幂等回写；阶段状态以任务终态为准。**活证据**：本项目 keyframe `artifacts=17`、assembly 2 条 clip done。⟶ 复核：今日补上 **keyframe→`episodes[].shots[].generationSlots`** 投影（此前缺失导致 `assembly` 门禁被永挡，见 #48）；幂等守卫「已存在≠已完成」缺陷亦修（#41） |
-| **P0-c** run 可恢复 | 🟡 | 异步 run（202）+ `progress.json` + `GET /runs/:id/progress` + 取消贯通 + 断点续跑 + `run.estimate` + 启动 `reconcileRunning()`。缺口：① 只覆盖项目内建 run（同上）；② 多 run 时前端只取 `runIds[0]`（`workspace-gate-panel.tsx:40`、`use-project-timeline.ts:20`），第二个及以后不可见 |
+| **P0-c** run 可恢复 | 🟡 | 异步 run（202）+ `progress.json` + `GET /runs/:id/progress` + 取消贯通 + 断点续跑 + `run.estimate` + 启动 `reconcileRunning()`。项目绑定 run 已回填，前端已有 run 选择器；新增阶段分支入口后，旧 run 与新 run 可分别选择恢复。仍待服务重启和真实分支链的页面验收 |
 | **P0 prompt strategy** 模型提示词编译与门禁同源 | ✅ | 模型规则表、编译器、外部 LLM 改写客户端与入队接线已在工作区；阶段运行面板点击前重新读取当前 run 的服务端 `/gates`，服务不可达保持 unknown 不放行。后端 667/667 通过，前端 `tsc` 与 build 通过；DeepSeek `deepseek-flash` 真调用返回 `finishReason=stop/chars=3045`，Qwen 改写器返回 `untranslated=false`；生产重载后 CDP 真实点击关键帧使 job **177→282**，并核对新 `img_qwen21_edit` job 的完整英文 PROMPT。同步降级去重/去旧尾巴、编译快照落盘、重跑强制新编译、撤销候选回退、历史进度旧字数清洗均已验证。仍缺 H3 真实 UI 全文与 #56 返回入口专项交互。 |
 | **P0-d** 资源调度与注册表 | 🟡 | `registry.js`(12.4KB) 四类注册表 + 能力路由。缺口：各类 Job 未统一进调度链；音频/TTS 未纳入同一生产契约；设备并行与取消释放无端到端验证 |
-| **P0-e** 可逆生产链与影响分析 | 🟡 | ⟶ **复核上调（⬜→🟡）**：`impact.js`(**32.8KB**，57 处 fingerprint/revision/stale 相关) 已落地并**接了 HTTP** —— 实打 `POST /api/projects/:id/impact` 返回 `{changed, stale:[], keep:[sh_…×17], summary}`、`GET …/impact/options` 返回带 `revision` 的 assetRefs（老周 revision=79）。缺口：**「分支重跑 / 回马枪」施工未接**（分析能算，不能按集/场/镜发起分支 run）；旧产物只读保留与回退播放未做 |
-| **P0-f** 制作圣经与确认锁 | 🟡 | ⟶ **复核上调（⬜→🟡）**：`bible.js`(**25.9KB**) 已实现五类实体（ProjectBrief / Series / Character / World / Audio Bible）规范化 + `draft→review→approved→locked` 状态机（含 revision 语义：改已锁对象必须产生新 revision）+ 34 例单测。**缺口关键**：全仓 grep 显示该模块**只有 1 处自引用、未被任何模块消费** —— 尚未接进门禁与下游阶段，「下游只消费已批准版本」这条验收**未达成** |
-| **P0-g** 内容与工艺质量门禁 | 🟡 | ⟶ **复核上调（⬜→🟡）**：**结构校验 + 引用完整性**已落地 —— 新增纯函数 `stage-artifact-check.js`，在产物落盘前校验七类产物（引用断裂 / id 重复 / 帧角色非法 / 配音时间倒挂判 error 并拦住阶段，可选字段缺失只放过或提示），编排器（`pipeline.js` 的 `executeStage`）、人工修订（`setStageInput`）与成片合成（`executeAssemble`，只告警不作废）三处接线，带 36 例单元 + 4 例集成回归。**仍未做**：连续性、声画同步、音频响度、黑帧/静帧、字幕安全区、交付规格这些**跨镜/跨阶段的工艺检查**，以及把检查统一成可重放的 QC Job、人工豁免留痕（`ReviewNote` 通道已有，尚未由 QC 自动生成） |
+| **P0-e** 可逆生产链与影响分析 | 🟡 | `impact.js` 已接 HTTP，可返回 changed/stale/keep 与 revision；新增 `POST /api/pipeline/runs/:id/fork`，按指定阶段保留上游、隔离下游并回填项目 runIds，旧 run 不会被覆盖。工作区已可按当前阶段新建分支并运行；剩余缺口是从影响清单直接定位分支起点，以及旧产物并排比较/回退播放 |
+| **P0-f** 制作圣经与确认锁 | 🟡 | `bible.js` 已实现五类实体与 `draft→review→approved→locked` revision 状态机；`gates.js` 已消费未批准圣经并阻断下游。剩余缺口是各类圣经的项目页编辑/审批入口与确认记录展示，不能只依赖接口调用 |
+| **P0-g** 内容与工艺质量门禁 | 🟡 | `stage-artifact-check.js` 负责七类阶段结构/引用校验；新增 `quality-check.js`、`GET/POST /api/pipeline/runs/:id/qc`，把阶段问题与实际音频时长、对白重叠/超时汇总为可重放报告，前端视频·后期可手动重跑并展示结果。仍待补齐连续性、响度、黑帧/静帧、字幕安全区、交付规格及人工豁免记录 |
 | **P1-a** 项目产物图谱 | 🟡 | ⟶ 复核：缺口①②**已修** —— 资产工作区改为**以服务端 AssetRef 为唯一数据源**（不再读前端本地 store）、补上缩略图与站内弹窗预览、采用状态与切换候选入口（`180b173`）。残留缺口③：角色三视图/场景母版**已进入 AssetRef**（本机 keyframe 参考图 6 条已绑定），但**音色基准尚未进入图谱** |
 | **P1-b** 活扣与批量执行 | ✅ | `GenerationSlot.candidates[]` + 逐条 `regenerate` + 模型别名 + 横向候选交互 + 逐镜重试（默认 2）。缺口（未变）：分组（整集）运行与画布批量操作 |
-| **P1-c** 七阶段方法论 + 阶段 0 规划 | 🟡 | 阶段 0 预置 + `planSuggestion` 回填；01 `analyze→outline→script`；七阶段技能接方法论库；`normalizeEpisodes` 强制集数对齐。⟶ 复核：`textOverlays` 契约已落 02（#44 修正），台词注解「不参与生产参数」已写进 02（#50）。**缺口未变**：**D1 时长档位跟模型（`24×秒+3`，仅 5/10/15s）未落**（grep 0 处）；**D3 关键帧单镜 ≥4 张未落**（`config.pipeline.maxKeyframesPerShot` 仍 = 2，自动重生成未接） |
-| **P0-h** Shot/Take/Approval 与 H3 continuation | ⬜ | 蓝图已冻结关系和字段；待 M3.5 完成本机能力探测、Provider 对比、续接链回溯、分叉恢复和接缝 QC。未完成前不宣称“无限续接”，也不把 custom node 写死进主流程 |
-| **P1-d** Delivery Executor | 🟡 | `delivery.js`(15.2KB)：ffmpeg concat/xfade + `amix` + 字幕 + 封面 + 清单 + 日志；测试 delivery(19)+wiring(8)。⟶ 复核：**已有真实片段产物证据** —— 本项目 `sh1`/`sh5` 两段 768×1376 / 24fps mp4 落盘且**自带 aac 音轨**（H3 是音画联合模型）。**缺口**：仍无**完整成片**（17 镜只出 2 段，其余 15 段为控算力主动取消）；`plan.audio` 仍靠外部手工传入，TTS 未接生产阶段 |
-| **P1-e** 完整声音后期 | 🟡 | ⟶ **复核上调（⬜→🟡）**：`audio.js`(29.4KB) + `audio-track.js`(18.9KB) 已实现 VoiceProfile / AudioCue / 声画对齐检查 / 幂等投影（grep 85 处）；台词清洗与显式语速解析已落（#50）；**TTS 工作流 `audio_qwen3_tts` 已建并产出两条真实音色对白**（老周 F0 143.7Hz / 女孩 254.0Hz，客观可区分）。缺口：**未接进 pipeline 阶段**（当前靠手工/一次性调用产出，无音频 Job、无 AudioCue 落库、无响度/M&E/多语言音轨）；环境声/BGM Cue 未做 |
-| **P1-f** 编辑与视觉完成 | ⬜ | 有 assembly 清单与 ffmpeg 执行器，无版本化 Timeline / 代理媒体 / 粗剪精剪 / 锁画工作区（grep 0 处） |
+| **P1-c** 七阶段方法论 + 阶段 0 规划 | 🟡 | 阶段 0 预置 + `planSuggestion` 回填；01 `analyze→outline→script`；七阶段技能接方法论库；`normalizeEpisodes` 强制集数对齐；D1 时长元数据与 D3 多候选入队已进入配置/编排。候选不足自动重生成已实现并通过回归；剩余是模型实际时长和候选质量的 GPU 端到端证据 |
+| **P0-h** Shot/Take/Approval 与 H3 continuation | 🟡 | `continuation.js` 与视频工作区面板已实现开链、resume、分叉、接缝 QC、人工复核和 take 采用；T2VA→I2VA 尾帧续接已有 4 段 POC 和接口测试。仍待更多 provider 对比、跨段对白/口型和 >4 段漂移验收，不宣称“无限续接” |
+| **P1-d** Delivery Executor | 🟡 | `delivery.js` 已实现 ffmpeg concat/xfade、外部音轨、字幕、封面、清单与日志；新增实际音频时长时间轴、对白重叠/超时报告和独立声轨状态。仍需 GPU 真机确认跨镜音色、H3 Talk/独立 TTS A/B 与嘴型同步 |
+| **P1-e** 完整声音后期 | 🟡 | `audio.js` + `audio-track.js` + `audio_qwen3_tts` 已接入 `audio` 阶段，VoiceProfile / AudioCue / TTS Job / 响度归一均已有实现；首轮已补 H3/独立 TTS 声音事实源分流、实际音频时长时间轴、对白重叠/超时 QC、字幕与 manifest 同源回写及前端质量状态。**仍待 GPU 人工验收**：H3 Talk 与独立 TTS + lipsync 的 A/B、跨镜声纹听感和嘴型同步；口型同步仍是默认关闭的实验阶段。整改记录见 [`audio-video-quality-audit-2026-10-06.md`](./audio-video-quality-audit-2026-10-06.md)。 |
+| **P1-f** 编辑与视觉完成 | 🟡 | 已有 assembly 清单、FCPXML/EDL 与交付包导出，可把结果交给剪映/达芬奇继续编辑；仍无站内版本化 Timeline、代理媒体、粗剪精剪与锁画工作区 |
 | **P1-g** 本地化、发布与归档 | ⬜ | 无字幕翻译校对、多语言配音、平台规格包、授权来源清单、可离线恢复包 |
 | **P2** 项目复用与清理 | ⬜ | 跨集资产版本、引用计数/清理、离线导出、移除旧兼容层均未开始 |
 
-**一句话（2026-10-03 傍晚复核）**：Project 内核、任务回写、投影、候选活扣、**角色一致性锁**、**画上文字**、**片段出片**、**音色合成**都已有真实产物与一手证据；剩余**未做**集中在四块 —— ① **P0-g 统一 QC 门禁**（结构校验 + 引用完整性已落地，连续性/声画/技术规格/可重放 QC Job 未做）；② **P0-e 的分支重跑/回马枪施工**（影响分析已能算）；③ **P0-f 的确认锁接门禁**（实体与状态机已备，未消费）；④ **P1-f / P1-g / P2**（时间线精剪、本地化发布、复用清理）。另有两个**产品已拍板但未实现**的约束：**D1 时长档位跟模型**、**D3 关键帧 ≥4 张 + 自动重生成**。
+**当前复核结论**：Project 内核、任务回写、投影、候选活扣、**角色一致性锁**、**片段出片**、**音色合成**、分支 run 与可重放 QC 报告均已有代码和测试；剩余工作集中在 GPU 真机声音/口型验收、影响分析到分支的页面闭环、圣经编辑审批 UI、QC 的技术指标扩展，以及 P0-h continuation、P1-g 本地化发布和 P2 复用清理。D1 模型时长元数据、D3 多候选与不足自动重生成均已实现并通过测试，GPU 端到端证据仍待补齐。
 
 
 ### 11.2 遇到哪些问题（按严重度分级，仅列**当前仍未解决**的）
@@ -1260,3 +1260,26 @@ const provenance = {
 | P9 ✅ | **画布是否接入服务端事实链**（C7/C10） | **已拍板 D14：接**。深度分 A/B/C 三档（`platform-positioning.md` §5.5），工程侧倾向 **B**，产品负责人要求**先交外部评审**；拍板前不要在画布侧写资料包入口 |
 
 **拍板前不要做的事**：不要在"画布能不能出包"这个问题上继续写代码——P9 没定之前，画布侧的任何资料包入口都建不起来（C7 挡着）。
+
+## 11.11 M6 后声音与声画质量整改（2026-10-06）
+
+M6 已证明七段任务、TTS Job、片段产物和 ffmpeg 成片可以跑通，但用户对最终片段的真实反馈表明质量验收尚未通过：角色音色跨镜不稳定、电话场景出现抢台词、独立语音与嘴型不同步。问题的优先级高于继续增加模板，按 [`audio-video-quality-audit-2026-10-06.md`](./audio-video-quality-audit-2026-10-06.md) 收口。
+
+### 当前判断
+
+- 默认 `separate_dialogue_track` 已在同步、英文改写和 Ref2VA 提示词路径关闭 H3 `<d>` 台词，交付层也拒绝把缺失的独立 TTS 静默当成成功；仍需真实 GPU 任务确认所有模板都遵守这条路由。
+- Cue 现在在 TTS 完成后读取实际媒体时长并按镜头顺序串行排布，QC 会报告对白重叠、超时和未知时长；真实媒体的异常样本仍需补充。
+- 独立 TTS 不会改变已生成视频的嘴型；`07-lipsync` 当前是实验性、默认关闭，故默认链路没有音画同步承诺。
+- 前端 `视频·后期` 已展示声音路线、成片质量状态，并提供跨阶段 QC 重跑入口；已补对白实测起点/时长与口型处理覆盖数量；逐镜 VoiceProfile 展示和感知验收仍待补齐。
+
+### 整改顺序
+
+1. **P0 声音事实源**：编译器接收 `audioMode`；独立对白模式不把 `<d>` 台词交给 H3，原声模式才允许 H3 承载对白；TTS 缺失不得静默改用 H3 人声。
+2. **P0 时间轴**：TTS 完成后探测实际时长，生成不重叠的对白时间轴，并把实际时长同步到 AudioCue、字幕、混音清单和 QC；电话场景默认一镜一位主动说话人，要求交叉剪辑表达轮次。
+3. **P1 口型路径（参数已补齐）**：`video_h3_talk` 按角色 VoiceProfile 填写 TTS 文本、音色、语言，拒绝多主动说话人、画外音和独立配音模式；和独立 TTS + `video_lipsync` 做同素材 A/B；口型失败可以回落，但必须可见地标记“未处理”。
+4. **P2 前端质检**：视频·后期工作区同时读取 `audio` 与 `assembly` 的服务端状态，展示声音路线、角色音色、实际时长、重叠/超时/缺产物/口型回落；合成按钮读取 QC 门禁。
+5. **真机验收**：用两镜电话场景跑 H3 Talk 与独立 TTS 两条路线，保存原始片段、TTS、SRT、manifest 和 QC 报告后再决定默认路线；在此之前不更换 H3 或 TTS 模型。
+
+### 质量门定义
+
+没有通过“无意重叠、音色稳定、时间轴一致、口型状态可解释、刷新/重启后事实不变”五项验收，不得把 M6 描述为“声音质量闭环完成”；M6 只保留为功能性成片里程碑。

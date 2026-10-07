@@ -200,7 +200,8 @@ test("H3：台词正文里残留的括号注解也被剥出 <d>（逐字是正�
 
 test("h3DialogueSentence：旧字符串单角色仍可用（向后兼容），(S1) + <d> 形状不变", () => {
     const out = h3DialogueSentence({ dialogue: "姑娘，这么晚，去哪儿？（低声、音量低、语速慢、略带关心）" }, [CAST[0]]);
-    assert.equal(out, "阿海 (S1) says: <d>[English] 姑娘，这么晚，去哪儿？</d>");
+    assert.ok(out.includes("阿海 (S1) says: <d>[English] 姑娘，这么晚，去哪儿？</d>"));
+    assert.match(out, /mouth movements synchronized/);
 });
 
 /* ————————————————————— 4. 配音：逐条说话人 + 跨镜音色一致（D） ————————————————————— */

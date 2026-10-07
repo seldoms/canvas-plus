@@ -5,6 +5,18 @@ description: Planned follow-up work
 
 # TODO
 
+- **影视流水线重构纠偏**：按 [`pipeline-feature-api-inventory.md`](./pipeline-feature-api-inventory.md) 核对项目/集/run 一致性、集级生成作用域、制作事实快照、镜头结构读取、可视化编辑、注册表模型分类与模板选择生效；补齐单句配音重跑、真实语速/音量控制、编辑与候选采用同步。上一轮 UI 改动尚未验收通过。
+
+## 2026-10-06 成片声音质量整改（最高优先级）
+
+用户已反馈最终片段存在跨镜音色不一致、电话场景抢台词和音画不同步。M6 的七段任务闭环与成片产出已完成，但声音质量验收未通过；完整审计与实施顺序见 [`audio-video-quality-audit-2026-10-06.md`](./audio-video-quality-audit-2026-10-06.md)。
+
+- **P0 声音事实源分流（首轮已实现，待 GPU 复现）**：独立对白模式下，H3 视频提示词不得继续生成 `<d>` 台词；TTS 是唯一对白事实源，TTS 缺失不得静默回落 H3 人声。原声模式与 `video_h3_talk` 单独走 embedded 路线。
+- **P0 对白时间轴（首轮已实现，待 GPU 复现）**：TTS 完成后探测实际音频时长，重新生成不重叠的 `AudioCue` 时间窗，并同步字幕、混音清单和 QC；电话场景默认一镜一位主动说话人。
+- **P1 口型同步 A/B**：`video_h3_talk` 的 TTS 参数已补齐并有契约回归；下一步与独立 TTS + `video_lipsync` 用同一电话场景做真机对比；失败回落必须可见标记。
+- **P2 后期工作区质检（首轮已实现，待真实成片）**：前端同时展示 audio/assembly 的声音路线、质量状态、问题列表和时间轴摘要；合成按钮读取服务端 QC 门禁。对白实测时间和口型处理覆盖数量已展示；逐 Cue VoiceProfile 与逐镜复核仍待补齐。
+- **P3 最小 GPU 验收**：保存两条路线的片段、TTS、SRT、assembly manifest 和 QC 报告；通过“无意重叠、音色稳定、时间轴一致、口型状态可解释、重启后事实不变”后，才把声音闭环从待整改移入待测试。
+
 - Replace the Claude Code CLI adapter with a Claude Agent SDK adapter and improve the tool queue, following the [Local Agent Integration Plan](/docs/progress/local-agent-integration-plan).
 - Add Skill installation from web search, Skill resource-file management, and controlled local-memory persistence.
 - Add Project-scoped Agent tools (`project_get_context`, stage/Job status, stage run/cancel, candidate adoption, and delivery-package export); keep Canvas tools local and route formal production through the canonical Project/pipeline APIs with confirmation, optimistic versioning, idempotency, and audit records.
@@ -30,10 +42,10 @@ The Chinese version of this page carries the full detail. The authoritative orde
 - **P1-a Connect the project artifact graph**: let Artifact/AssetRef, storyboard, character, location, and keyframe workspaces link to one another; treat old plugins only as one-time import sources.
 - **P1-b Add swappable generation slots and batch execution**: **landed** (candidate slots `candidates[]`; a per-item `regenerate` endpoint that only appends candidates; the horizontal "spread the candidates out / re-roll with another model" interaction; per-shot retry defaulting to 2; and model aliases); **still missing**: grouped (whole-episode) runs and in-canvas batch operations.
 - **P1-c Absorb the six-stage methodology**: **stage-skill wiring done** (five stage skills adopt the two methodology libraries, and the long-novel chunk path injects the content red lines); **stage 0 planning landed** (genre/tone/animation/pixel-art/puppet presets, `planSuggestion` auto-backfill, stage 01 rewritten as `analyze→outline→script`, and episode count/duration now actually reach the prompts). **Not landed**: running by Project/Workflow version. ~~The two product-frozen constraints~~ → **both landed (verified 2026-10-05)**: D1 = `src/durations.js` + `GET /api/durations` (`index.js:494`) + `capability-limits.js:25,89,266` snapping to the model's `17k+5` grid with pre-submit validation; D3 = `config.js:83 maxKeyframesPerShot: 4` plus per-shot auto-retry in `pipeline.js:2578`.
-- **P1-d Add clip assembly and delivery**: **film executor done** (`delivery.js`: concat/xfade, an external audio track mixed via `amix`, **subtitle burn-in**, **cover extraction**, a reproducible assembly manifest, the ffmpeg log, plus the standalone assemble endpoint — 19+8 tests); **still missing**: **producing the audio itself** (`plan.audio` is passed in by hand today and no pipeline stage generates audio), TTS/voice, episode/full-drama packages, and the post-production workspace UI. The approved default is independent Qwen3-TTS dialogue + CPU/ffmpeg mix; H3 native audio and lip-sync remain optional per-shot enhancements.
+- **P1-d Add clip assembly and delivery**: **执行体与 `audio` 阶段已落地**（`delivery.js`、`audio_qwen3_tts`、AudioCue 投影、响度归一、独立字幕和交付包均有代码与测试）；M6 已有真实两镜成片。声音事实源分流、实际时长时间轴、对白重叠/超时 QC 和前端重跑入口已完成首轮实现；仍待 GPU A/B、逐 Cue VoiceProfile/口型状态和人工验收。见 `audio-video-quality-audit-2026-10-06.md`。
 - **Character appearance — DONE (2026-10-03)**: moved to `pending-test.mdx` (character reference lock wired: design emits and binds close-up/character-sheet/scene-master references, keyframe injects `REF_IMAGE_1..N` + stable seed and switches to `img_qwen21_edit`; a template without reference support marks the shot `blocked` instead of faking a lock). See `pilot-issues.md` #17/#41/#43/#45.
-- **Character voice / dubbing — FIRST HALF DONE (2026-10-03)**: a Qwen3-TTS workflow (`audio_qwen3_tts`) now exists and has produced two real per-character lines with objectively distinct timbres (median F0 143.7 Hz / 254.0 Hz), and spoken speed is no longer driven by LLM-written performance notes (they are stripped into a `performance` field; speed defaults to normal — `pilot-issues.md` #50). **Still missing**: wiring TTS into a pipeline stage, an audio Job type, AudioCue persistence, loudness/M&E checks and multi-language tracks. See `pilot-issues.md` #23/#49.
-- **Score and voice-over are inconsistent** (film-level incident): root cause not yet located; same origin as the previous item (the audio track is not produced by the pipeline and there is no alignment check). See `pilot-issues.md` #24.
+- **Character voice / dubbing**: VoiceProfile、TTS Job 和音频阶段已接线，且已验证角色音色可区分；这不等于跨镜音色和对白轮次已验收。下一步是完成声音事实源分流、实际时长对齐和电话场景真机验收。
+- **成片声音与口型**：当前标记为“首轮整改完成、GPU 质量验收未通过”；剩余是 H3 Talk/独立 TTS + lipsync A/B、逐 Cue 口型状态与真实电话场景复核，见 `audio-video-quality-audit-2026-10-06.md`。
 - **P2 Project reuse and cleanup**: cross-episode asset versions, reference counting/cleanup, performance and offline export are **not started**; retiring the old pages and compatibility adapters also sits here.
 - Old canvas data: the user has confirmed the **old canvas data is not wanted** (it was his test data), so there is **no migration and no compatibility layer** (registered as §7 D12 in `development-plan.md`; P0-a options R1/R11 are therefore withdrawn).
 - Speed up video: measure the upstream `video_h3_i2v_sla` / `video_h3_i2v_blockcache` acceleration templates; rendering drafts at lower resolution and only the final pass at full size needs no new model and no new template.
@@ -42,5 +54,5 @@ The Chinese version of this page carries the full detail. The authoritative orde
 - Verify RunningHub against the real service: the adapter is complete but the old API key is dead, so submit / query / upload still need a valid key; the frontend also has no backend-switching entry point yet.
 - Snap `img_` template sizes to multiples of 32: Qwen-Image 2.1 officially recommends multiples of 32, but the gateway's snapping currently only applies to the `video_` prefix (`generate.js`).
 - Dead fields in the frozen contract: `comfy.maxQueue` (default 16, never read anywhere in `src/`) and the job's `progress` (only ever 0/0, no ComfyUI WebSocket). Either implement them or drop them from the contract — do not keep promising fields that do nothing.
-- **D1 duration tiers follow the model** / **D3 keyframe candidates ≥4 with auto-regeneration**: the two product-frozen constraints described above under P1-c; currently unimplemented and parked behind the 2026-10-03 code freeze.
+- **D1 duration tiers follow the model** / **D3 keyframe candidates ≥4 with auto-regeneration**: model duration metadata, `17k+5` alignment and four-candidate enqueue are implemented; automatic regeneration after a candidate shortfall is implemented and regression-tested; GPU evidence remains pending.
 - Converge duplicated implementations: text-file import is duplicated verbatim twice, `type="file"` appears in 11 places, the model dropdown has 3 implementations, "provider::model" has 2 encodings, sizes use 3 vocabularies, and "save to asset library" is written 7 separate times. Low-cost but high-frequency friction — fold it into the P0/P1 work rather than spending a round on it.

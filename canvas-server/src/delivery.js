@@ -3,7 +3,11 @@ import { statSync, writeFileSync } from "node:fs";
 import { basename, extname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { probeMedia } from "./media-probe.js";
+export { probeMedia } from "./media-probe.js";
+
 import { splitDialogue } from "./audio.js";
+import { buildAudioTimeline } from "./audio-timeline.js";
 import { artifactUrl, ensureDir, safeJoin, sanitizeName } from "./files.js";
 
 /**
@@ -173,6 +177,8 @@ function normalizeAudioItems(audio, offsetByShot) {
             shotId: source.shotId ?? null,
             type: source.type ?? null,
             startSec: withinSec,
+            durationSec: num(source.durationSec),
+            endSec: num(source.endSec),
             gainDb: num(source.gainDb),
             delayMs,
         });
@@ -508,7 +514,7 @@ export function buildConcatArgs(plan, { inputPaths, audioPaths = [], outputPath,
         // 混音/补静音之后再做响度归一：顺序很关键——先归一再amix 会被amix 的
         // 求和重新拉偏，先补静音再归一才不会把尾部静音算进测量。
         const loudnorm = buildLoudnormChain(plan);
-        parts.push(loudnorm.length ? `[apadded]${loudnorm.join(",")}[aout]` : "[apadded][aout]");
+        parts.push(loudnorm.length ? `[apadded]${loudnorm.join(",")}[aout]` : "[apadded]anull[aout]");
         maps.push("-map", "[aout]", "-shortest");
     }
 
@@ -546,33 +552,6 @@ export function shouldIncludeClipAudio({ explicit, audioCount = 0, probes = [] }
     return probes.length > 0 && probes.every((media) => media?.hasAudio === true);
 }
 
-/** 读媒体流的客观信息（分辨率/时长/是否有音轨），用来判定「成片」真的能被解析。任意 ffprobe 失败都返回 null 由调用方决定。 */
-export async function probeMedia(filePath, ffprobePath = "ffprobe") {
-    let output;
-    try {
-        ({ output } = await run(ffprobePath, ["-v", "error", "-print_format", "json", "-show_streams", "-show_format", filePath]));
-    } catch {
-        return null;
-    }
-    let data;
-    try {
-        data = JSON.parse(output);
-    } catch {
-        return null;
-    }
-    const streams = data.streams || [];
-    const video = streams.find((stream) => stream.codec_type === "video");
-    const audio = streams.find((stream) => stream.codec_type === "audio");
-    return {
-        durationSec: Number(data.format?.duration) || Number(video?.duration) || null,
-        width: video ? Number(video.width) : null,
-        height: video ? Number(video.height) : null,
-        hasVideo: Boolean(video),
-        hasAudio: Boolean(audio),
-        sampleRate: audio ? Number(audio.sample_rate) || null : null,
-        channels: audio ? Number(audio.channels) || null : null,
-    };
-}
 
 const fileBytes = (filePath) => {
     try {
@@ -607,6 +586,7 @@ export async function assembleEpisode({
         transition,
         transitionDurationSec: options.transitionDurationSec,
         loudnorm: options.loudnorm,
+        seamFadeMs: options.seamFadeMs,
         width: options.width ?? config.pipeline?.videoWidth,
         height: options.height ?? config.pipeline?.videoHeight,
         fps: options.fps ?? config.pipeline?.videoFps,
@@ -626,6 +606,38 @@ export async function assembleEpisode({
     const filename = sanitizeName(options.filename || `${episodeId || "episode"}-final.mp4`, "final.mp4");
     const outputPath = resolve(dir, filename);
 
+    const inputPaths = plan.clips.map((clip) => resolveMediaPath(config, clip.ref));
+    const audioPaths = plan.audio.map((item) => resolveMediaPath(config, item.ref));
+    const [probes, audioProbes] = await Promise.all([
+        Promise.all(inputPaths.map((file) => probeMedia(file, ffprobePath))),
+        Promise.all(audioPaths.map((file) => probeMedia(file, ffprobePath))),
+    ]);
+    plan.clips.forEach((clip, index) => {
+        if (probes[index]?.durationSec > 0) clip.durationSec = probes[index].durationSec;
+    });
+    const timeline = buildAudioTimeline({
+        clips: plan.clips,
+        audio: plan.audio,
+        durations: audioProbes.map((media) => media?.durationSec),
+        sequential: options.scheduleDialogue === true,
+        transitionDurationSec: plan.transitionDurationSec,
+    });
+    const offsets = clipStartOffsets(plan);
+    plan.audio = normalizeAudioItems(timeline.audio, new Map(plan.clips.map((clip, index) => [String(clip.shotId), offsets[index]])));
+    plan.includeClipAudio = shouldIncludeClipAudio({ explicit: options.includeClipAudio, audioCount: audioPaths.length, probes });
+    const qualityIssues = [...(options.qualityIssues || []), ...timeline.issues];
+    const quality = {
+        status: qualityIssues.length ? "blocked" : "needs_review",
+        issues: qualityIssues,
+        dialogueTiming: plan.audio.filter((item) => item.type === "dialogue" || item.type === "narration"),
+        clips: plan.clips.map(({ id, shotId, durationSec }) => ({ id, shotId, durationSec })),
+        transitionDurationSec: plan.transitionDurationSec,
+    };
+    if (timeline.issues.length) {
+        writeFileSync(manifestPath, JSON.stringify({ plan, quality, status: "failed" }, null, 2), "utf8");
+        throw Object.assign(new Error(timeline.issues.map((issue) => issue.message).join("；")), { quality });
+    }
+
     // ── 字幕（独立交付）───────────────────────────────────────────────────────────────────
     // 产品定性：成片是**粗剪装配**，精剪交剪映 —— 成片 mp4 必须**干净无字幕**（烧死的像素在剪映里没法改），
     // 字幕以**独立 .srt 文件**存在项目里（可下载、可导入剪映）。因此：
@@ -635,7 +647,14 @@ export async function assembleEpisode({
     //   ③ 老用法：显式给 `options.subtitles`（字幕文件路径）照旧烧入，向后兼容；
     //   ④ 无文本 → 不产字幕、不烧、不失败。
     let subtitlesPath = null;
-    const subtitlesText = typeof options.subtitlesText === "string" && options.subtitlesText.trim() ? options.subtitlesText : null;
+    const timingByCue = new Map(timeline.audio.map((item) => [item.cueId, item]));
+    const subtitleCues = Array.isArray(options.subtitleCues) ? options.subtitleCues.map((cue) => {
+        const timing = timingByCue.get(cue.id);
+        return timing?.durationSec > 0 ? { ...cue, startSec: timing.startSec, durationSec: timing.durationSec } : cue;
+    }) : null;
+    const subtitlesText = typeof options.subtitlesText === "string" && options.subtitlesText.trim()
+        ? options.subtitlesText
+        : subtitleCues ? buildCueSrt({ clips: plan.clips, transition: plan.transition, transitionDurationSec: plan.transitionDurationSec, cues: subtitleCues }) : null;
     if (subtitlesText) {
         const srtName = sanitizeName(options.subtitlesFilename || `${episodeId || "episode"}.srt`, "subtitles.srt");
         subtitlesPath = resolve(dir, srtName);
@@ -644,40 +663,12 @@ export async function assembleEpisode({
     }
     const subtitlesBurned = Boolean(plan.subtitles);
 
-    const inputPaths = plan.clips.map((clip) => resolveMediaPath(config, clip.ref));
-    const audioPaths = plan.audio.map((item) => resolveMediaPath(config, typeof item === "string" ? item : item.ref));
-
-    // ── 片段原声：不显式指定时**自动判定**（规则见 shouldIncludeClipAudio）──────────────────
-    // H3 是**音画联合**模型 —— 台词/音效/配乐随片段**一次出**（每段自带 aac）。成片拼接若不带上
-    // 这些音轨，产物就是**哑的**（实测事故：片段 `0,h264 + 1,aac`，成片只剩 `0,h264`）。
-    {
-        const probes = typeof options.includeClipAudio === "boolean" || audioPaths.length || !inputPaths.length
-            ? []
-            : await Promise.all(inputPaths.map((file) => probeMedia(file, ffprobePath).catch(() => null)));
-        // probes 为空时 shouldIncludeClipAudio 会退回调用方的显式值，不会误开
-        plan.includeClipAudio = shouldIncludeClipAudio({
-            explicit: options.includeClipAudio,
-            audioCount: audioPaths.length,
-            probes,
-        });
-        // cut 档 plan.clips[].durationSec 允许为 null（只有转场档强制要求），
-        // 但接缝淡出需要它才能算出 `afade` 的 st。探测到的真实时长回填进去，
-        // 让淡出在真实成片里真正生效，而不是只靠调用方碰巧传了时长。
-        if (probes.length) {
-            plan.clips.forEach((clip, index) => {
-                if (clip.durationSec === null || clip.durationSec === undefined) {
-                    const probed = Number(probes[index]?.durationSec);
-                    if (Number.isFinite(probed) && probed > 0) clip.durationSec = probed;
-                }
-            });
-        }
-    }
-
     const args = buildConcatArgs(plan, { inputPaths, audioPaths, outputPath });
 
     const [ffmpegVersion] = await run(ffmpegPath, ["-version"]).then(({ output }) => output.split("\n"));
     const manifest = {
         plan,
+        quality,
         inputs: inputPaths,
         audioInputs: audioPaths,
         commands: [`${ffmpegPath} ${args.join(" ")}`],
@@ -729,6 +720,7 @@ export async function assembleEpisode({
         url: manifest.output.url,
         bytes: manifest.output.bytes,
         info,
+        quality,
         coverUrl,
         manifestPath,
         manifestUrl: artifactUrl(config, id, basename(manifestPath)),

@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
 
 import { artifactUrl, ensureDir, safeJoin, sanitizeName, saveBuffer } from "./files.js";
+import { probeMedia } from "./media-probe.js";
 import { MEDIA_TYPES, collectOutputs, disableEmptyImageRefs, disableEmptyLoras, extractTokens, renderTemplate } from "./providers/comfy.js";
 
 /** 这些 token 的值是素材（本机路径 / 远端 URL / 网关产物地址），提交前要先上传到 ComfyUI。 */
@@ -190,6 +191,11 @@ export function createLocalRunner({ config, comfy, jobs }) {
             }
         }
         if (!outputs.length) throw new Error("ComfyUI 未返回任何产物，请检查模板的输出节点");
+        await Promise.all(outputs.filter((output) => output.type === "audio" || output.type === "video").map(async (output) => {
+            const file = safeJoin(config.dataDir, "artifacts", job.id, output.filename);
+            const media = file ? await probeMedia(file, config.pipeline?.ffprobePath) : null;
+            if (media) output.media = media;
+        }));
         ctx.progress(outputs.length, outputs.length, "已完成");
         return { outputs };
     }

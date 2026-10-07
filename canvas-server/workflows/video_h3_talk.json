@@ -224,7 +224,7 @@
       ],
       "text": "{{TTS_TEXT}}",
       "speaker": "{{TTS_SPEAKER}}",
-      "language": "Chinese",
+      "language": "{{TTS_LANGUAGE}}",
       "instruct": "{{TTS_VOICE_DESIGN}}"
     }
   },

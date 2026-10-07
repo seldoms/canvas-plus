@@ -5,6 +5,8 @@ description: 当前项目后续值得处理的事项
 
 # TODO
 
+- **影视流水线重构纠偏**：按 [`pipeline-feature-api-inventory.md`](./pipeline-feature-api-inventory.md) 核对项目/集/run 一致性、集级生成作用域、制作事实快照、镜头结构读取、可视化编辑、注册表模型分类与模板选择生效；补齐单句配音重跑、真实语速/音量控制、编辑与候选采用同步。上一轮 UI 改动尚未验收通过。
+
 本文档用来记录当前项目后续比较值得处理的事项。
 
 - 本地 Agent 接入后续：按[本地 Agent 接入规划](/zh-CN/docs/progress/local-agent-integration-plan)把 Claude Code CLI Adapter 升级为 Claude Agent SDK Adapter，并完善工具队列体验。
@@ -32,7 +34,7 @@ description: 当前项目后续值得处理的事项
 - **P1-a 打通项目产物图谱**：Artifact/AssetRef、分镜、角色、场景和关键帧在新工作区互相跳转；旧插件只作为一次性导入源。
 - **P1-b 生图/生视频活扣与批量执行**：**已落地**（候选活扣 `candidates[]` + 逐条 `regenerate` 端点换模型只追加候选 + 横向铺开候选「换个模型再出一张」+ 逐镜重试默认 2 次 + 模型别名）；**仍缺**：分组运行（整集批量）与 Canvas 内的批量操作。
 - **P1-c 六阶段方法论吸收**：**阶段技能接线已完成**（五个阶段技能接管两个方法论库、长篇分块路径注入内容创作红线）；**阶段 0 规划已落地**（题材/基调/动画片/像素风/布偶戏等预置选项 + `planSuggestion` 自动回填 + 01 改三段式 `analyze→outline→script`，集数/时长真进提示词）；**仍未落**：按 Project/Workflow 版本运行。~~产品拍板的两条硬约束 D1/D3~~ → **均已落地（2026-10-05 复核）**：D1 = `src/durations.js` + `GET /api/durations`（`index.js:494`）+ `capability-limits.js:25,89,266` 按模型吸附 `17k+5` 并在提交前校验；D3 = `config.js:83 maxKeyframesPerShot: 4` + `pipeline.js:2578` 单镜不达标自动重试。
-- **P1-d 片段合成和交付**：**成片执行体已完成**（`delivery.js`：concat/xfade 拼接 + 外部音轨 `amix` 混音 + **字幕烧入** + **抽封面** + 可复现拼接清单 + ffmpeg 日志 + 独立合成接口 `POST /runs/:id/steps/assembly/assemble`，19+8 例测试）；**仍缺**：**音源自己产生**（当前 `plan.audio` 靠外部手工传入，流水线无任何环节生产音频）、分集/全剧交付包与后期工作区界面。⟶ **更正（2026-10-03 傍晚）**：TTS 与音色**已有真实产出** —— `audio_qwen3_tts` 工作流已建并合成了两名角色的对白（中位基频 143.7Hz / 254.0Hz，客观可区分）；语速不再被 LLM 的表演注解驱动（`pilot-issues.md` #50）。**仍缺的是接线**：未接进流水线阶段、无音频 Job、AudioCue 未落库、无响度/M&E/多语言音轨。默认架构已确定为独立 Qwen3-TTS 对白轨 + CPU/ffmpeg 混音；H3 原生音频和口型同步仅按镜头可选。见 `pilot-issues.md` #23/#49。
+- **P1-d 片段合成和交付**：**成片执行体与 `audio` 阶段已完成首轮接线**（`delivery.js`、`audio_qwen3_tts`、AudioCue 投影、响度归一、独立字幕、交付包）；新增声音事实源分流、实际时长时间轴、对白重叠/超时 QC 和前端质检入口。仍待 GPU 上 H3 Talk/独立 TTS + lipsync A/B、逐 Cue 口型状态与人工验收。
 - **P2 项目复用与收尾**：跨集资产版本、引用计数/清理、性能与离线导出**尚未开工**；旧页面与兼容适配层的移除也归这一档。
 - 旧画布数据：用户已确认**不要旧画布数据**（那是他的测试数据），**不做迁移、不写兼容层**（登记为 `development-plan.md` §7 D12，P0-a 方案 R1/R11 随之撤销）。
 - 视频提速：实测上游 `video_h3_i2v_sla` / `video_h3_i2v_blockcache` 加速模板；先降分辨率出草稿、定稿再出高清是零新增模型零新增模板的方案。

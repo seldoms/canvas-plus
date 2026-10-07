@@ -1937,3 +1937,49 @@ test("回归锁定：裸相对路径形态的参考图（jobId/文件名）能�
     );
 });
 
+test("fork 从指定阶段创建隔离分支并保留上游产物", (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    const { pipeline } = build(env);
+    const parent = pipeline.create({ novel: "短篇", title: "原始 run" });
+    pipeline.setStageInput(parent.id, "script", { output: { logline: "一句话", synopsis: "梗概", characters: [], scenes: [{ id: "sc1", beats: ["出场"] }] } });
+    pipeline.setStageInput(parent.id, "storyboard", { output: { shots: [{ id: "sh1", sceneId: "sc1", durationSec: 4 }] } });
+
+    const branch = pipeline.fork(parent.id, { fromStage: "keyframe", title: "关键帧重做" });
+    assert.notEqual(branch.id, parent.id);
+    assert.equal(branch.branchOf, parent.id);
+    assert.equal(branch.branchFrom, "keyframe");
+    assert.equal(branch.stages.script.status, "done");
+    assert.equal(branch.stages.storyboard.status, "done");
+    assert.equal(branch.stages.keyframe.status, "pending");
+    assert.equal(branch.stages.assembly.status, "pending");
+    assert.equal(pipeline.get(parent.id).stages.storyboard.status, "done");
+});
+
+test("换模型为 H3 Talk 时按真实模板准备 TTS 参数，独立配音路线拒绝替换", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    env.config.workflowsDir = workflowsDir;
+    env.config.pipeline.videoTemplate = "video_h3_i2v";
+    const character = { id: "c1", name: "林舟", voice: { speaker: "Ryan", design: "calm", language: "en-US" } };
+    const project = { id: "prj_talk", script: { characters: [character] }, plan: { audioMode: "embedded" }, assetRefs: [] };
+    const { pipeline, jobs } = build(env, { getProject: () => project, runJob: async () => ({ outputs: [] }) });
+    const run = pipeline.create({ novel: "电话", options: { projectId: project.id } });
+    pipeline.setStageInput(run.id, "script", { output: { ...SCRIPT, characters: [character] } });
+    pipeline.setStageInput(run.id, "storyboard", { output: { shots: [{ ...SHOTS.shots[0], dialogueLines: [{ speaker: "林舟", text: "Listen." }] }] } });
+    pipeline.setStageInput(run.id, "keyframe", { output: { frames: [{ id: "sh1-start", shotId: "sh1", role: "start", prompt: "phone", status: "done", artifactUrl: "/first.png" }] } });
+    pipeline.setStageInput(run.id, "assembly", { output: { clips: [{ id: "sh1-clip", shotId: "sh1", keyframeId: "sh1-start", durationSec: 5, status: "done", artifactUrl: "/clip.mp4" }] } });
+    project.plan.audioMode = "separate_dialogue_track";
+    assert.throws(() => pipeline.beginRegenerate(run.id, "assembly", { itemId: "sh1-clip", template: "video_h3_talk" }), /配音方式设为原声/);
+    assert.equal(jobs.enqueued.length, 0);
+    project.plan.audioMode = "embedded";
+    const begun = pipeline.beginRegenerate(run.id, "assembly", { itemId: "sh1-clip", template: "video_h3_talk" });
+    await pipeline.executeRegenerate(begun);
+    const params = jobs.enqueued.at(-1).params;
+    assert.equal(params.TTS_TEXT, "Listen.");
+    assert.equal(params.TTS_SPEAKER, "Ryan");
+    assert.equal(params.TTS_LANGUAGE, "English");
+    const graph = renderTemplate(join(workflowsDir, "video_h3_talk.json"), { ...params, SEED: 7, OUTPUT_PREFIX: "test" });
+    assert.equal(graph["18"].inputs.text, "Listen.");
+    assert.equal(graph["18"].inputs.language, "English");
+});

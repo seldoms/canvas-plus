@@ -167,7 +167,7 @@ function fakeJobQueue() {
 }
 
 function fakeProject() {
-    const project = { id: "prj_dialogue", styleAnchor: "写实电影感", plan: {}, assetRefs: [] };
+    const project = { id: "prj_dialogue", styleAnchor: "写实电影感", plan: { audioMode: "embedded" }, assetRefs: [] };
     const register = (projectId, input) => {
         const ref = { id: `as_${project.assetRefs.length + 1}`, projectId, role: input.role, bindingId: input.bindingId, artifactIds: input.artifactIds ?? [], selectedArtifactId: input.selectedArtifactId ?? null, metadata: input.metadata ?? {} };
         project.assetRefs = [...project.assetRefs, ref];

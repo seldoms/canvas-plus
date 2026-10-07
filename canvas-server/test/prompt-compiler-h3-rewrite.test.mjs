@@ -229,3 +229,20 @@ test("⑤ async：未注入 llmCall → 同步稿 + 标记（绝不假装已英�
     assert.match(out, /\[untranslated/);
     assert.equal(out, compilePromptForTemplate(INPUT));
 });
+
+
+test("独立配音路线：同步/改写及 Ref2VA 都不得重新注入视频原生台词", async () => {
+    const cleanRewrite = validRewrite().replace(`ANCHOR: ${DIALOGUE}`, "");
+    for (const slots of [INPUT.slots, { images: [{ url: "/a/ref.png", kind: "character", name: "林晚" }] }]) {
+        const input = { ...INPUT, slots, audioMode: "separate_dialogue_track" };
+        for (const rewrite of [undefined, cleanRewrite]) {
+            const out = compileH3VideoPrompt({ ...input, rewrite });
+            assert.ok(!out.includes("<d>"), out);
+            assert.match(out, /no dialogue, speech or singing/);
+        }
+        const warnings = [];
+        const out = await compilePromptForTemplateAsync({ ...input, llmCall: async () => validRewrite(), onWarning: (error) => warnings.push(error.message) });
+        assert.ok(!out.includes("<d>"), out);
+        assert.ok(warnings.some((warning) => warning.includes("不得引入视频原生对白")));
+    }
+});

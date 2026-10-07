@@ -38,6 +38,8 @@
 
 ## Internal Research (not in site navigation)
 
+- `docs/content/docs/progress/pipeline-feature-api-inventory.md` — 影视流水线功能、真实后端接口与前端接线缺口清单；区分接口存在、前端可用和媒体质量验收。
+
 Plain `.md` files under `docs/content/docs/progress/`, deliberately absent from `meta.json`
 so they do not render in the docs site. Read them directly from the repository.
 
@@ -73,6 +75,8 @@ so they do not render in the docs site. Read them directly from the repository.
 - `docs/content/docs/progress/local-asset-inventory.md` — inward-facing asset inventory of the
   local-first capabilities: structural moats, extractable engineering assets, design disciplines
   worth propagating, and the honest debt list, each item verified against code or a real run.
+- `docs/content/docs/progress/audio-video-quality-audit-2026-10-06.md` — audit of the H3/TTS
+  sound source, dialogue timing, lip-sync route, and the current acceptance gates.
 - `docs/content/docs/progress/h3-i2v-ui-evidence.md` — first-hand capture of a real UI-enqueued
   H3 i2v job's full `params.PROMPT` (job id, template, sizes, frame count, side-by-side with the
   old compiler's output), closing pilot-issue #66's evidence gap.

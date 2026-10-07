@@ -657,12 +657,15 @@ export function h3DialogueSentence(shot, characters, { voiceover = false, cast =
         if (line.onlyAnnotation || !hasText(line.text)) continue; // 整条只有注解 → 不输出 <d> 块
         const name = line.speaker.name || "The speaker";
         const id = speakerId(line.speaker.index);
-        const isVoiceover = voiceover || line.voiceover === true || shot?.voiceover === true || /画外音|旁白|off-?screen/.test(`${shot?.audio ?? ""} ${shot?.action ?? ""}`);
+        // 电话声属于这一句的说话人；不能把同镜其他可见角色一起判成画外音。
+        const phoneVoice = /电话里|电话中|on the phone/i.test(line.performance)
+            && !String(shot?.action ?? "").includes(name);
+        const isVoiceover = voiceover || (line.voiceover ?? (shot?.voiceover === true || phoneVoice || /画外音|旁白|off-?screen/i.test(line.performance)));
         const verb = isVoiceover ? "says in an off-screen voiceover" : "says";
         const block = `${name} (${id}) ${verb}: <${tag}>[${lang}] ${line.text}</${tag}>`;
-        blocks.push(isVoiceover ? `${block}, while the lips remain completely closed.` : block);
+        blocks.push(isVoiceover ? `${block}, while the visible listeners' lips remain completely closed.` : `${block}, with ${name}'s mouth movements synchronized to this line; the other characters listen without speaking.`);
     }
-    return blocks.join(" ");
+    return blocks.length > 1 ? `${blocks.join(" ")} The speakers take turns in the written order, each finishing before the next begins; no overlapping dialogue.` : blocks.join(" ");
 }
 
 /* ------------------------------------------------------------------ *
@@ -689,7 +692,7 @@ function h3Music(shot) {
  * H3 integrated_multimodal_description 正文（英文结构 + 内容层事实原语言）。
  * 单镜写 [Shot 1]；多镜按 shot.cuts（[{ atSec, text }]）在文件内写清切镜点（两位小数时间码）。
  */
-function h3Description(shot, { scene, characters, cast, template, style, mode, durationSec, overlays, textInImage }) {
+function h3Description(shot, { scene, characters, cast, template, style, mode, durationSec, overlays, textInImage, audioMode }) {
     const parts = [];
     const { anchor: styleAnchor } = readStyleFields(style);
     // [Shot 1] 头部：风格 + 初始构图。
@@ -720,7 +723,7 @@ function h3Description(shot, { scene, characters, cast, template, style, mode, d
     // 段末可见状态。
     if (hasText(endState)) parts.push(`By the end of the shot, ${stripTail(endState)}.`);
     // 台词（逐条带说话人；正文逐字不翻译；括号表演注解已被剥出）。
-    const dialogue = h3DialogueSentence(shot, characters, { cast, template });
+    const dialogue = audioMode === "separate_dialogue_track" ? "" : h3DialogueSentence(shot, characters, { cast, template });
     if (dialogue) {
         parts.push(dialogue);
         // 表演注解 → 描述层作表演提示（绝不塞回 <d>）。仅在有台词正文时输出：
@@ -750,11 +753,11 @@ function stringNegativeList(shot) {
  * 否则同步中文稿；模型要求英文（translate_to==="en"）而本次没有可用 rewrite 时追加 `[untranslated]` 标记。
  * @returns {string}
  */
-export function compileH3VideoPrompt({ template, shot, scene, characters, cast = null, style, slots, overlays, durationSec, rewrite } = {}) {
+export function compileH3VideoPrompt({ template, shot, scene, characters, cast = null, style, slots, overlays, durationSec, rewrite, audioMode } = {}) {
     const seconds = Number(durationSec) > 0 ? Number(durationSec) : Number(shot?.durationSec) > 0 ? Number(shot.durationSec) : 5;
     const images = slotImages(slots);
     const mode = h3Mode(template, images);
-    const input = { template, shot, scene, characters, cast, style, overlays, textInImage: h3TextInImage(template) };
+    const input = { template, shot, scene, characters, cast, style, overlays, audioMode, textInImage: h3TextInImage(template) };
     const parsed = hasText(rewrite) ? h3ParseRewrite(rewrite, input) : null;
     const marker = rewriteTargetLang(template) === "en" ? ` ${H3_UNTRANSLATED_MARKER}` : "";
 
@@ -779,7 +782,7 @@ export function compileH3VideoPrompt({ template, shot, scene, characters, cast =
         : h3Description(shot, { ...input, mode, durationSec: seconds });
     const fieldValue = {
         integrated_multimodal_description: description,
-        overall_soundscape: parsed ? h3RewrittenAudio(parsed.soundscape, h3Soundscape(shot)) : h3Soundscape(shot),
+        overall_soundscape: h3RouteSoundscape(parsed ? h3RewrittenAudio(parsed.soundscape, h3Soundscape(shot)) : h3Soundscape(shot), audioMode),
         non_diegetic_music: parsed ? h3RewrittenAudio(parsed.music, h3Music(shot)) : h3Music(shot),
     };
     blocks.push(fieldOrder.map((name) => `${name}: ${fieldValue[name] ?? ""}`).join("\n\n"));
@@ -787,7 +790,7 @@ export function compileH3VideoPrompt({ template, shot, scene, characters, cast =
 }
 
 /** H3 Ref2VA：subject_definitions → summary → retention_analysis → detailed_description → soundscape → music。 */
-function compileH3Ref2VA({ shot, scene, characters, cast, template, style, slots, overlays, seconds, images, textInImage, parsed }) {
+function compileH3Ref2VA({ shot, scene, characters, cast, template, style, slots, overlays, seconds, images, textInImage, parsed, audioMode }) {
     const lines = [];
     const refs = images.map((image, index) => {
         const tag = `<Picture ${index + 1}>`;
@@ -807,12 +810,12 @@ function compileH3Ref2VA({ shot, scene, characters, cast, template, style, slots
     if (parsed) {
         // 改写稿只供正文；参考素材引用句仍由编译器直拼（<Picture N> 是结构，不许 LLM 重写）。
         const refsClause = refs.length ? `The subjects are defined by ${refs.join(", ")}.` : "";
-        detailed = [refsClause, h3RewriteDescription(parsed.visual, { shot, characters, cast, template, overlays, textInImage })].filter(Boolean).join(" ");
+        detailed = [refsClause, h3RewriteDescription(parsed.visual, { shot, characters, cast, template, overlays, textInImage, audioMode })].filter(Boolean).join(" ");
     } else {
         const place = hasText(scene?.name) ? String(scene.name).trim() : "";
         const { anchor: styleAnchor } = readStyleFields(style);
         // 台词：逐条带说话人、正文逐字不翻译、括号表演注解剥出；有正文才带描述层的表演提示（绝不塞回 <d>）。
-        const dialogueLine = h3DialogueSentence(shot, characters, { cast, template });
+        const dialogueLine = audioMode === "separate_dialogue_track" ? "" : h3DialogueSentence(shot, characters, { cast, template });
         const detailParts = [
             styleAnchor ? `${stripTail(styleAnchor)}.` : "Live-action, cinematic.",
             place ? `The scene is set in ${place}.` : "",
@@ -827,7 +830,7 @@ function compileH3Ref2VA({ shot, scene, characters, cast, template, style, slots
     }
     lines.push(`detailed_description: ${detailed}`);
     // soundscape + music（Ref2VA 六段固定顺序的最后两段）
-    lines.push(`overall_soundscape: ${parsed ? h3RewrittenAudio(parsed.soundscape, h3Soundscape(shot)) : h3Soundscape(shot)}`);
+    lines.push(`overall_soundscape: ${h3RouteSoundscape(parsed ? h3RewrittenAudio(parsed.soundscape, h3Soundscape(shot)) : h3Soundscape(shot), audioMode)}`);
     lines.push(`non_diegetic_music: ${parsed ? h3RewrittenAudio(parsed.music, h3Music(shot)) : h3Music(shot)}`);
     return lines.join("\n\n");
 }
@@ -905,7 +908,7 @@ function h3TextInImage(template) {
 function h3RewriteAnchors(input) {
     const { shot, characters, cast = null, template, overlays, textInImage } = input;
     return {
-        dialogue: h3DialogueSentence(shot, characters, { cast, template }),
+        dialogue: input.audioMode === "separate_dialogue_track" ? "" : h3DialogueSentence(shot, characters, { cast, template }),
         overlay: overlayClauseH3(overlays, textInImage),
     };
 }
@@ -916,7 +919,7 @@ function h3VerbatimLock(input) {
     const meta = template ? dialogueMetaForTemplate(template) : null;
     const tag = meta?.utteranceTag || "d";
     const { lines } = resolveDialogueLines(shot, characters, cast);
-    const dialogue = lines.filter((line) => !line.onlyAnnotation && hasText(line.text)).map((line) => String(line.text).trim());
+    const dialogue = input.audioMode === "separate_dialogue_track" ? [] : lines.filter((line) => !line.onlyAnnotation && hasText(line.text)).map((line) => String(line.text).trim());
     const overlay = effectiveOverlays(overlays).map((item) => item.text);
     return { tag, dialogue, overlay };
 }
@@ -932,6 +935,7 @@ function escapeRegExp(text) {
  */
 function verifyH3Rewrite(raw, input) {
     const text = String(raw ?? "");
+    if (input.audioMode === "separate_dialogue_track" && /<d>|\(S\d+\)\s+says/i.test(text)) return { ok: false, reason: "独立配音路线的改写稿不得引入视频原生对白" };
     if (!text.includes(H3_REWRITE_LABELS.visual)) return { ok: false, reason: `改写稿缺少「${H3_REWRITE_LABELS.visual}」标签，无法按字段回填` };
     const { tag, dialogue, overlay } = h3VerbatimLock(input);
     for (const line of dialogue) {
@@ -1019,16 +1023,20 @@ function h3RewrittenAudio(section, syncValue) {
     return text;
 }
 
+function h3RouteSoundscape(soundscape, audioMode) {
+    return audioMode === "separate_dialogue_track" ? `${soundscape === "N/A" ? "" : `${soundscape} `}Environmental and action sounds only; no dialogue, speech or singing.` : soundscape;
+}
+
 /** 改写稿正文（描述层）：LLM 正文 + 编译器自拼的运镜 / 模式引用 / 台词 / 画面文字 / 负向句。 */
 function h3RewriteDescription(visual, input, { mode = null } = {}) {
-    const { shot, characters, cast = null, template, overlays, textInImage } = input;
+    const { shot, characters, cast = null, template, overlays, textInImage, audioMode } = input;
     const parts = [sentenceTail(visual)];
     const camera = cameraSentence(shot);
     if (camera) parts.push(camera);
     if (mode === "I2VA") parts.push("The frame begins from <Picture 1>, preserving its composition, subjects, colours, and lighting.");
     if (mode === "FL2VA") parts.push("The motion runs continuously from Picture 1 to Picture 2 with no cut in between.");
     if (mode === "L2VA") parts.push("The described action gradually converges to <Picture 1> at the end of the video.");
-    const dialogue = h3DialogueSentence(shot, characters, { cast, template });
+    const dialogue = audioMode === "separate_dialogue_track" ? "" : h3DialogueSentence(shot, characters, { cast, template });
     if (dialogue) {
         parts.push(dialogue);
         const performance = h3PerformanceHint(shot, characters, cast);

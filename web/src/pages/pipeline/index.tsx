@@ -1,12 +1,14 @@
 import { Alert, Button, Input, Modal, Select } from "antd";
 import { FileText, History, Pencil, RefreshCw, Sparkles } from "lucide-react";
-import { useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
 
 import { StageCard } from "./components/stage-card";
 import { PipelineHistory } from "./components/pipeline-history";
+import { PipelineContext, type PipelineContextValue } from "./components/pipeline-context";
 import { CONFIRM_CHUNKS, usePipelineRun, type PipelineStageView } from "./use-pipeline-run";
+import { resolveProjectSourceText } from "@/services/api/gateway";
 
 const TEXT_FILE_RE = /\.(txt|md|markdown|srt|ass|csv|json|text)$/i;
 
@@ -20,14 +22,35 @@ async function readNovelFiles(files: File[]) {
 export default function PipelinePage() {
     const { t } = useTranslation();
     const navigate = useNavigate();
-    const { novel, setNovel, run, views, starting, busyStage, runningStage, progress, error, createRunOnly, runStage, cancelStage, saveStageOutput, refresh, openRun, resetRun, loadHistory, historyLoading, renameRun, modelOptions, stageModels, setStageModel, templates, regeneratingItem, regenerateItem } = usePipelineRun();
-    const [editing, setEditing] = useState<{ id: string; title: string; text: string; error: string } | null>(null);
+    const { novel, setNovel, run, views, starting, busyStage, runningStage, progress, error, createRunOnly, runStage, cancelStage, refresh, openRun, resetRun, loadHistory, historyLoading, renameRun, modelOptions, stageModelOptions, stageModels, setStageModel, templates, regeneratingItem, regenerateItem } = usePipelineRun();
+    const [pipelineContext, setPipelineContext] = useState<PipelineContextValue>({ projectId: "", episodeId: "", title: "", context: null, episode: null });
+    const [activeStageId, setActiveStageId] = useState("");
     const [imported, setImported] = useState<{ names: string[]; rejected: number } | null>(null);
     const [showHistory, setShowHistory] = useState(false);
     const [renaming, setRenaming] = useState<{ id: string; title: string } | null>(null);
     const fileInputRef = useRef<HTMLInputElement | null>(null);
+    const sourceRequestRef = useRef(0);
     const statusById = useMemo(() => new Map(views.map((view) => [view.id, view.status])), [views]);
     const titleById = useMemo(() => new Map(views.map((view) => [view.id, view.title])), [views]);
+
+    useEffect(() => {
+        if (!views.length) return;
+        setActiveStageId((current) => current && views.some((view) => view.id === current) ? current : views.find((view) => view.status !== "done")?.id || views[0].id);
+    }, [views]);
+
+    const handlePipelineContext = useCallback(async (value: PipelineContextValue) => {
+        setPipelineContext(value);
+        if (!value.projectId) return;
+        const requestId = ++sourceRequestRef.current;
+        const revisionId = (value.context?.project as { sourceRevisionId?: string | null } | undefined)?.sourceRevisionId;
+        try {
+            const source = await resolveProjectSourceText(value.projectId, revisionId);
+            if (requestId !== sourceRequestRef.current) return;
+            setNovel(source?.text || value.sourceText || "");
+        } catch {
+            if (requestId === sourceRequestRef.current) setNovel(value.sourceText || "");
+        }
+    }, [setNovel]);
 
     const importFiles = async (files: File[]) => {
         if (!files.length) return;
@@ -45,7 +68,11 @@ export default function PipelinePage() {
      * 222 万字的书会切成 163 块、按实测约 31 秒/块要跑 83 分钟 —— 这种量级不该在用户毫不知情时直接开跑。
      */
     const startWithEstimate = async () => {
-        const created = await createRunOnly();
+        const created = await createRunOnly({
+            novel,
+            title: pipelineContext.title || undefined,
+            options: pipelineContext.projectId ? { projectId: pipelineContext.projectId, episodeId: pipelineContext.episodeId } : undefined,
+        });
         if (!created) return;
         const estimate = created.estimate;
         if (estimate?.chunked && estimate.chunks > CONFIRM_CHUNKS) {
@@ -81,20 +108,6 @@ export default function PipelinePage() {
     const resumableChunks = (view: PipelineStageView) =>
         progress && progress.stage === view.id && progress.phase === "failed" ? Number(progress.done) || 0 : 0;
 
-    const openEditor = (view: PipelineStageView) => setEditing({ id: view.id, title: view.title, text: JSON.stringify(view.stage?.output ?? null, null, 2), error: "" });
-
-    const saveEditing = async () => {
-        if (!editing) return;
-        let output: unknown;
-        try {
-            output = JSON.parse(editing.text);
-        } catch {
-            setEditing({ ...editing, error: t("pipeline.invalidJson") });
-            return;
-        }
-        if (await saveStageOutput(editing.id, output)) setEditing(null);
-    };
-
     const toggleHistory = () => {
         if (!showHistory) void loadHistory();
         setShowHistory(!showHistory);
@@ -125,24 +138,25 @@ export default function PipelinePage() {
             <main className="min-h-0 flex-1 overflow-y-auto px-4 py-6 sm:px-6">
                 <div className="mx-auto max-w-5xl">
                     <h1 className="text-xl font-semibold text-stone-950 dark:text-stone-100">{t("pipeline.title")}</h1>
-                    <p className="mt-1 text-sm text-stone-500 dark:text-stone-400">{t("pipeline.description")}</p>
-
-                    {/* 独立入口建的是不绑项目的 run，走到关键帧必然因缺参考图被阻断；这里给出明确引导与跳转，不擅自改 run 语义。 */}
-                    <Alert
-                        className="mt-4"
-                        type="info"
-                        showIcon
-                        message={t("pipeline.guide.title")}
-                        description={t("pipeline.guide.body")}
-                        action={
-                            <Button size="small" onClick={() => navigate("/projects")}>
-                                {t("pipeline.guide.open")}
-                            </Button>
-                        }
-                    />
+                    {/* 独立入口建的是不绑项目的 run，走到关键帧必然因缺参考图被阻断；项目流水线不显示这条误导性提示。 */}
+                    {!run?.options?.projectId && !pipelineContext.projectId ? (
+                        <Alert
+                            className="mt-4"
+                            type="info"
+                            showIcon
+                            message={t("pipeline.guide.title")}
+                            description={t("pipeline.guide.body")}
+                            action={
+                                <Button size="small" onClick={() => navigate("/projects")}>
+                                    {t("pipeline.guide.open")}
+                                </Button>
+                            }
+                        />
+                    ) : null}
 
                     <div className="mt-5">
-                        <div
+                        <PipelineContext onChange={handlePipelineContext} locked={Boolean(run)} />
+                        {!pipelineContext.projectId ? <div
                             onDragOver={(event) => event.preventDefault()}
                             onDrop={(event) => {
                                 event.preventDefault();
@@ -150,7 +164,7 @@ export default function PipelinePage() {
                             }}
                         >
                             <Input.TextArea rows={5} value={novel} disabled={Boolean(run)} placeholder={t("pipeline.novelPlaceholder")} onChange={(event) => setNovel(event.target.value)} />
-                        </div>
+                        </div> : null}
                         <input
                             ref={fileInputRef}
                             type="file"
@@ -166,7 +180,7 @@ export default function PipelinePage() {
                             <Button type="primary" icon={<Sparkles className="size-4" />} loading={starting} disabled={!novel.trim() || Boolean(run)} onClick={() => void startWithEstimate()}>
                                 {t("pipeline.start")}
                             </Button>
-                            {!run ? (
+                            {!run && !pipelineContext.projectId ? (
                                 <Select
                                     size="middle"
                                     value={stageModels.script || ""}
@@ -177,9 +191,9 @@ export default function PipelinePage() {
                                     optionLabelProp="title"
                                 />
                             ) : null}
-                            <Button icon={<FileText className="size-4" />} disabled={Boolean(run)} onClick={() => fileInputRef.current?.click()}>
+                            {!pipelineContext.projectId ? <Button icon={<FileText className="size-4" />} disabled={Boolean(run)} onClick={() => fileInputRef.current?.click()}>
                                 {t("pipeline.importFiles")}
-                            </Button>
+                            </Button> : null}
                             {run ? (
                                 <Button type="text" icon={<RefreshCw className="size-4" />} onClick={() => void refresh()}>
                                     {t("pipeline.refresh")}
@@ -203,17 +217,22 @@ export default function PipelinePage() {
                     {showHistory ? (
                         <PipelineHistory loading={historyLoading} onOpen={openHistoryRun} onRename={(id, title) => setRenaming({ id, title })} onCreate={createNewRun} onRefresh={() => void loadHistory()} />
                     ) : (
-                        <div className="mt-6 divide-y divide-stone-200/70 dark:divide-stone-800/70">
-                            {views.map((view, index) => (
+                        <div className="mt-6">
+                            <div className="overflow-x-auto border-b border-stone-200/80 pb-3 dark:border-stone-800/80">
+                                <div className="flex min-w-max items-center gap-2">
+                                    {views.map((view, index) => <button key={view.id} type="button" onClick={() => setActiveStageId(view.id)} className={`flex items-center gap-2 rounded-full px-3 py-2 text-sm transition ${activeStageId === view.id ? "bg-[#171714] text-white shadow-lg dark:bg-white dark:text-stone-900" : "text-stone-500 hover:bg-stone-100 dark:text-stone-400 dark:hover:bg-white/10"}`}><span className="text-[11px] opacity-55">{String(index + 1).padStart(2, "0")}</span><span>{view.title}</span><span className={`size-1.5 rounded-full ${view.status === "done" ? "bg-emerald-400" : view.status === "running" ? "animate-pulse bg-amber-400" : view.status === "error" || view.status === "blocked" ? "bg-red-400" : "bg-stone-300 dark:bg-stone-600"}`} /></button>)}
+                                </div>
+                            </div>
+                            {views.filter((view) => view.id === activeStageId).map((view) => (
                                 <StageCard
                                     key={view.id}
-                                    index={index}
+                                    index={views.findIndex((item) => item.id === view.id)}
                                     view={view}
                                     busy={busyStage === view.id}
                                     progress={progress}
                                     resumeChunks={resumableChunks(view)}
                                     disabledReason={disabledReason(view)}
-                                    modelOptions={modelOptions}
+                                    modelOptions={stageModelOptions[view.id] || modelOptions}
                                     model={stageModels[view.id] || ""}
                                     templates={templates}
                                     regeneratingItem={regeneratingItem}
@@ -221,7 +240,6 @@ export default function PipelinePage() {
                                     onRun={() => void runStage(view.id)}
                                     onRerun={() => void runStage(view.id, { resume: resumableChunks(view) > 0 })}
                                     onCancel={() => void cancelStage(view.id)}
-                                    onEdit={() => openEditor(view)}
                                     onRegenerate={regenerateItem}
                                     onRefresh={() => void refresh()}
                                     onOpenProjects={() => navigate("/projects")}
@@ -231,20 +249,6 @@ export default function PipelinePage() {
                     )}
                 </div>
             </main>
-
-            <Modal
-                open={Boolean(editing)}
-                title={editing ? t("pipeline.editTitle", { stage: editing.title }) : ""}
-                width={760}
-                okText={t("common.save")}
-                cancelText={t("common.cancel")}
-                confirmLoading={busyStage === editing?.id}
-                onOk={() => void saveEditing()}
-                onCancel={() => setEditing(null)}
-            >
-                <Input.TextArea rows={18} value={editing?.text || ""} className="font-mono text-xs" onChange={(event) => editing && setEditing({ ...editing, text: event.target.value, error: "" })} />
-                {editing?.error ? <div className="mt-2 text-xs text-red-600 dark:text-red-400">{editing.error}</div> : null}
-            </Modal>
 
             <Modal
                 open={Boolean(renaming)}

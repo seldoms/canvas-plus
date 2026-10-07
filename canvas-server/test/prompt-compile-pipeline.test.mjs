@@ -141,7 +141,7 @@ function fakeJobQueue() {
 }
 
 function fakeProject(ratio = "") {
-    const project = { id: "prj_pc_wiring", styleAnchor: "写实电影感，暖色路灯与冷调夜色的对比，浅景深", plan: ratio ? { ratio } : {}, assetRefs: [] };
+    const project = { id: "prj_pc_wiring", styleAnchor: "写实电影感，暖色路灯与冷调夜色的对比，浅景深", plan: { audioMode: "embedded", ...(ratio ? { ratio } : {}) }, assetRefs: [] };
     const register = (projectId, input) => {
         const ref = { id: `as_${project.assetRefs.length + 1}`, projectId, role: input.role, bindingId: input.bindingId, artifactIds: input.artifactIds ?? [], selectedArtifactId: input.selectedArtifactId ?? null, metadata: input.metadata ?? {} };
         project.assetRefs = [...project.assetRefs, ref];

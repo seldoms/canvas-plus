@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- [调整] 重构影视流水线前端：先选项目与集数并展开场景、镜头、台词上下文，阶段改为横向单阶段工作轨道，模型按能力分类，产物改为可读摘要与图片、音频、视频预览。
+
+- [修复] 独立配音在 H3 英文改写与 Ref2VA 路径仍会重新注入原生台词的问题，补齐 H3 Talk 角色音色/语言参数，并展示实测对白时间和口型处理情况。
+
+
++ [新增] **分支重跑与跨阶段质检入口**：新增流水线 run 分支 API、QC 报告落盘与查询接口；项目视频·后期页面可手动重跑 assembly 质检并展示阻断/警告结果，分支保留上游产物并隔离下游候选。
+
++ [修复] 项目绑定的流水线页面不再显示“独立入口无法完整生产”的误导提示；独立工作台 run 仍保留引导。
+
++ [调整] M6 声音质量验收重新打开：记录跨镜音色、电话对白重叠与口型错位问题，制定声音事实源、实际时间轴、H3 Talk/口型对比和前端质检整改计划。
+
 + [里程碑] **M6「60–90 秒真实闭环」达成 —— 整片成片产出（2026-10-06 15:50）**：《喜宴之外》主 run `run-muw3op80-j5uhl`（项目 `prj_01M45S6PMAPT56CABAKZAZJC3T`）**七段全done**（script → storyboard → design → casting → keyframe → audio → assembly），本轮为**两镜收敛验证**（`sh1` / `sh2`）——里程碑验证要的是能力验证而非产出物规模。片段：`sh1-clip_00009-audio.mp4`（1.8MB / 650s）、`sh2-clip_00005-audio.mp4`（4.8MB / 641s），均768×1344 / 24fps / 10.125s / **自带 aac音轨**（H3 音画联合原生生成，对白与环境音同出，非后期配音）。成片 `data/artifacts/assembly-run-muw3op80-j5uhl/run-muw3op80-j5uhl-final.mp4`：**20.25s / 768×1344 竖屏 24fps**，**实测 `I = -16.2 LUFS`**（目标 -16）、真峰值 -1.3 dBFS、LRA 5.4 LU —— M4 的逐段 + 整片两档响度归一首次在真实成片上复核达标。同批产物：独立 SRT（5 条cue，**未烧入**，供剪映精修）+ 封面 + `assembly-manifest.json` + `ffmpeg.log`。**质量实测**：三人同框面容跨镜一致（服化道正脸/三视图 + 关键帧 `REF_IMAGE_1..N` + `stableSeed` 锁脸链路生效）、茶几手机显示「姐夫」**非伪字**（`textOverlays` 逐字指定生效）、夜间暖光 + 胶片颗粒符合风格锚点；可改进项为封面帧构图偏暗偏小。**产能实测**：带台词的 H3 I2VA **~650s/10s 片段**（音频 VAE 联合生成使耗时约为无台词段2~3 倍），单卡串行 → 一集 8 镜 ≈ 1 小时以上。另**取消两个多余排队任务**（`candidates: 2` 且已有 done 产物时的空转重跑，省约 20 分钟 GPU）；过程中观察到**候选派生别名 `jobId` 在「最新候选非终态」时会短暂错指**（`sh2-clip.status` 一度显示 `canceled`、`assembly` 掉成 `partial`），但主任务完成后回写自动恢复正常 —— **属中间态而非缺陷，遇到应先等任务跑完再判定**。至此 M0–M4 已部署、M6 已闭环，**M5 是唯一剩余缺口**（`canvas-agent/src/canvas/project-tools.ts` 七个 `project_*` 工具代码与测试已齐，真机端到端验收未做）。
 
 + [新增] **成片音频后处理：响度归一（逐段 + 整片两档）+ cut 档接缝淡化（M4）**：H3 每段独立生成，段间响度会漂——2026-10-06 真机实测两段差**6.8dB**（RMS -44.6 vs -51.4），而 cut 档（默认）音轨走 concat **硬接**（`acrossfade` 只在转场档走），观众会听到音量跳变；接缝 QC 量到 `rmsStepDb=5.9`，因低于 12dB 门槛故 `needsReview=false` **不告警**，属静默问题。修法分两层：**逐段归一**（`scope="clip"`，在 concat/xfade **之前**做）+ **整片归一**（`scope="master"`，末端一次）；另加**极短接缝淡化**（默认 30ms，首段只淡出/末段只淡入/中间段两者都有，单段不淡化）软化段内突变——实测接缝处 50ms 窗口落差 7.3dB（前段结尾有对白、后段开头是环境音），听感是「咔」一声。**关键实测结论：只在末端做一次 loudnorm 解决不了段间差**（它把整片拉到目标值但段间相对差原样保留，实测归一后仍差 5.8dB）；真机 ffmpeg 实跑对比：修复前 6.8dB → 只做整片归一 5.8dB → 逐段+整片 **0.1dB**，整体 `I = -16.0 LUFS`。接口：`buildAssemblyPlan({ loudnorm, seamFadeMs })`、`buildConcatArgs(plan, { normalizeClips })`、`assembleEpisode({ loudnorm, normalizeClips })`，默认全开，`loudnorm:false` / `seamFadeMs:0` 关闭；逐段档默认跟随整片档（`clipI ?? i`）。新测试 `test/delivery-loudnorm.test.mjs`（16 例）。**坑**：`afade` 的 `st+d` 超过片段时长会让 ffmpeg **退出码 234**、整个拼接失败，而 cut 档 `plan.clips[].durationSec` 允许为 null，故 `assembleEpisode` 现在用 `probeMedia` 探测结果回填时长，仍不可用时只保留淡入（「少一次淡出」远好过「整段拼接失败」）。

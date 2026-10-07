@@ -195,6 +195,8 @@ export type GatewayPipelineRun = {
     createdAt: string;
     updatedAt: string;
     estimate?: GatewayRunEstimate;
+    /** 项目流水线绑定；独立工作台 run 没有该字段。 */
+    options?: { projectId?: string; stageModels?: Record<string, string>; [key: string]: unknown };
     stages: Record<string, GatewayRunStage>;
 };
 
@@ -337,6 +339,45 @@ export async function createPipelineRun(input: { novel: string; title?: string; 
 export async function getPipelineRun(id: string, baseUrl?: string) {
     const data = await gatewayRequest<{ run: GatewayPipelineRun }>({ method: "get", url: `/api/pipeline/runs/${encodeURIComponent(id)}` }, baseUrl);
     return data.run;
+}
+
+export type GatewayQualityIssue = { code: string; severity: "block" | "error" | "warn" | string; stage?: string; message: string; path?: string | null; shotId?: string; cueId?: string };
+export type GatewayQualityReport = {
+    id: string;
+    runId: string | null;
+    stage: string | null;
+    createdAt: string;
+    status: "blocked" | "needs_review" | "pass" | string;
+    inputHash?: string;
+    stale?: boolean;
+    issues: GatewayQualityIssue[];
+    summary: { total: number; blocking: number; warnings: number };
+};
+
+/** 创建一个新 run，从指定阶段开始重跑；服务端保留上游产物并清空下游。 */
+export async function forkPipelineRun(
+    runId: string,
+    input: { fromStage?: string; title?: string; options?: Record<string, unknown> } = {},
+    baseUrl?: string,
+) {
+    const data = await gatewayRequest<{ run: GatewayPipelineRun }>({ method: "post", url: `/api/pipeline/runs/${encodeURIComponent(runId)}/fork`, data: input }, baseUrl);
+    return data.run;
+}
+
+/** 读取最近一次跨阶段质量检查报告；没有报告时返回 null。 */
+export async function fetchPipelineQualityCheck(runId: string, baseUrl?: string) {
+    const data = await gatewayRequest<{ report: GatewayQualityReport | null }>({ method: "get", url: `/api/pipeline/runs/${encodeURIComponent(runId)}/qc` }, baseUrl);
+    return data.report;
+}
+
+/** 按当前 run 产物执行一次跨阶段质量检查。 */
+export async function runPipelineQualityCheck(runId: string, stage?: string, baseUrl?: string) {
+    const data = await gatewayRequest<{ report: GatewayQualityReport }>({
+        method: "post",
+        url: `/api/pipeline/runs/${encodeURIComponent(runId)}/qc`,
+        data: stage ? { stage } : {},
+    }, baseUrl);
+    return data.report;
 }
 
 /** 以当前 run 的真实产物推导阶段门禁；工作区运行按钮必须与此接口同源。 */

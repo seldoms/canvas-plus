@@ -944,6 +944,21 @@ router.post("/api/pipeline/runs", async (req, res) => {
     }
 });
 
+/**
+ * 创建可逆分支：从父流水线指定阶段开始重跑，父 run 与其产物保持只读。
+ * body `{ fromStage, title?, options? }`；上游阶段直接复用，分支阶段及下游清空。
+ */
+router.post("/api/pipeline/runs/:id/fork", async (req, res, { params }) => {
+    try {
+        if (!pipeline.get(params.id)) return sendError(res, 404, "流水线不存在");
+        const body = await readJson(req);
+        if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("分支请求必须是 JSON 对象");
+        sendJson(res, 201, { run: pipeline.fork(params.id, body || {}) });
+    } catch (error) {
+        sendError(res, error.status || 400, error.message);
+    }
+});
+
 // 正在执行的阶段：`${runId}:${stageId}` → { controller, startedAt }。既用于取消，也用于防重复触发。
 const inflightStages = new Map();
 const inflightKey = (runId, stageId) => `${runId}:${stageId}`;
@@ -971,6 +986,27 @@ router.get("/api/pipeline/runs/:id/progress", (req, res, { params }) => {
  */
 router.get("/api/pipeline/runs/:id/log", (req, res, { params, url }) => {
     sendJson(res, 200, { log: pipeline.runLog(params.id, url.searchParams.get("limit")) });
+});
+
+/** 可重放跨阶段 QC：报告落 runs/<id>/qc/，不修改正文或候选。POST 可带 `{ stage?: "assembly" }`。 */
+router.get("/api/pipeline/runs/:id/qc", (req, res, { params }) => {
+    try {
+        const report = pipeline.latestQualityCheck(params.id);
+        sendJson(res, 200, { report });
+    } catch (error) {
+        sendError(res, error.status || 404, error.message);
+    }
+});
+
+router.post("/api/pipeline/runs/:id/qc", async (req, res, { params }) => {
+    try {
+        if (!pipeline.get(params.id)) return sendError(res, 404, "流水线不存在");
+        const body = await readJson(req);
+        if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("质检请求必须是 JSON 对象");
+        sendJson(res, 201, { report: pipeline.qualityCheck(params.id, { stage: body?.stage || null }) });
+    } catch (error) {
+        sendError(res, error.status || 400, error.message);
+    }
 });
 
 /**
@@ -1546,9 +1582,9 @@ router.get("/api/projects/:id/gates", routeHandler((req, res, { params }) => {
     sendJson(res, 200, { gates });
 }));
 
-// ——— P0-e 回马枪·影响分析查询（只算不跑）———
+// ——— P0-e 回马枪·影响分析查询（影响分析只算不跑；分支 run 走 pipeline.fork）———
 // 把已交付的 impact.js 纯逻辑接到 HTTP：POST 只返回「改这个会连累哪些东西」的分析结果，
-// 不建分支 run、不入队 job、不改 pipeline.js（真跑留给下一批）；GET .../options 供前端下拉选变更对象。
+// 影响分析接口本身不建分支、不入队、不改项目；需要执行时由调用方把起始阶段交给 pipeline.fork；GET .../options 供前端下拉选变更对象。
 const IMPACT_CHANGE_TYPES = new Set(["assetRef", "shot", "scene", "script"]);
 /** 用户可读 type → impact.plan 内部 type：shot/scene 复用 plan 的 shotCamera/storyboard 级联分支。 */
 const IMPACT_PLAN_TYPE = Object.freeze({ assetRef: "assetRef", script: "script", shot: "shotCamera", scene: "storyboard" });

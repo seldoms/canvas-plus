@@ -139,6 +139,36 @@ export function usePipelineRun() {
         return toSelectModelOptions(groupModelsByBase(entries));
     }, [llmModels, channels]);
 
+    /** 阶段模型只显示该阶段真正消费的能力：文本阶段用 LLM，设计/关键帧用图像模板，片段合成用视频模板。 */
+    const stageModelOptions = useMemo<Record<string, SelectModelItem[]>>(() => {
+        const grouped = (family: string, label: string) => {
+            const entries: GroupableModel[] = templates
+                .filter((template) => template.family === family || (family === "audio" && (template.name.startsWith("audio_") || template.tokens.includes("TTS_TEXT"))) || (family === "image" && ["edit", "upscale"].includes(template.family)))
+                .map((template) => ({
+                    value: template.name,
+                    base: label,
+                    task: template.title || template.name,
+                    label: template.title || template.name,
+                    fullLabel: template.name,
+                    cloud: false,
+                }));
+            return toSelectModelOptions(groupModelsByBase(entries));
+        };
+        const image = grouped("image", "图像生成");
+        const video = grouped("video", "视频生成");
+        const audio = grouped("audio", "声音生成");
+        return {
+            plan: modelOptions,
+            script: modelOptions,
+            storyboard: modelOptions,
+            design: image,
+            casting: [],
+            keyframe: image,
+            audio,
+            assembly: video,
+        };
+    }, [modelOptions, templates]);
+
     // 先探测可达网关地址（已配置 → 按主机推导 → 本机回环），再拉阶段与模型清单；
     // 探测到与配置不同的可用地址时回写配置，产物 URL 等其它消费方也一并修正。
     useEffect(() => {
@@ -176,7 +206,8 @@ export function usePipelineRun() {
                         const preferred = models.find((name) => /qwen3\.8/i.test(name)) || models.find((name) => /qwen/i.test(name)) || models[0];
                         if (!preferred) return;
                         setStageModels((current) => {
-                            const missing = stageIds.filter((id) => !current[id]);
+                            const textStages = new Set(["plan", "script", "storyboard"]);
+                            const missing = stageIds.filter((id) => textStages.has(id) && !current[id]);
                             if (!missing.length) return current;
                             const next = { ...current };
                             for (const id of missing) next[id] = preferred;
@@ -386,13 +417,13 @@ export function usePipelineRun() {
      * 只创建 run、不触发执行，好让页面先拿到 estimate 再决定要不要弹确认。
      * 222 万字的书会切成 163 块、按实测约 31 秒/块要跑 83 分钟，这种量级必须让用户在点「开始」之前看到。
      */
-    const createRunOnly = useCallback(async (): Promise<GatewayPipelineRun | null> => {
-        const text = novel.trim();
+    const createRunOnly = useCallback(async (input?: { novel?: string; title?: string; options?: Record<string, unknown> }): Promise<GatewayPipelineRun | null> => {
+        const text = String(input?.novel ?? novel).trim();
         if (!text || starting || run) return null;
         setStarting(true);
         setError("");
         try {
-            const created = await createPipelineRun({ novel: text, title: deriveTitle(text) || undefined }, gwBase || undefined);
+            const created = await createPipelineRun({ novel: text, title: input?.title || deriveTitle(text) || undefined, options: input?.options }, gwBase || undefined);
             // 立刻同步 ref：startWithEstimate 会在本函数返回后、下一次重渲染之前就调 runStage("script")。
             runIdRef.current = created.id;
             usePipelineStore.getState().setActiveRun(created.id);
@@ -503,6 +534,7 @@ export function usePipelineRun() {
         historyLoading,
         renameRun,
         modelOptions,
+        stageModelOptions,
         stageModels,
         setStageModel,
         templates,

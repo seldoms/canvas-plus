@@ -243,7 +243,7 @@ function build(env, project) {
     const record = [];
     const assemble = async (args) => {
         record.push(args);
-        const hasText = Boolean(args.options?.subtitlesText);
+        const hasText = Boolean(args.options?.subtitlesText || args.options?.subtitleCues?.length);
         const burn = args.options?.burnSubtitles === true;
         return {
             id: "delivery-x",
@@ -304,10 +304,9 @@ test("audioMode=separate_dialogue_track（默认）：入队 TTS，成片用独�
     // 字幕仍按台词时间轴逐句生成（作为独立产物交付），但**默认不烧**进画面。
     assert.equal(opts.burnSubtitles, false, "成片默认不烧字幕（要过剪映精剪）");
     assert.equal(opts.subtitleStyle, null, "不烧 → 不传烧录样式");
-    assert.ok(opts.subtitlesText && opts.subtitlesText.includes("你好。"), "应生成含纯台词的 SRT");
-    assert.ok(opts.subtitlesText.includes("走吧。"));
-    assert.doesNotMatch(opts.subtitlesText, /[（）()【】]/, "字幕不带表演注解");
-    assert.match(opts.subtitlesText, /00:00:00,000 --> 00:00:02,000\n你好。/);
+    assert.deepEqual(opts.subtitleCues.map((cue) => cue.text), ["你好。", "走吧。"]);
+    assert.ok(opts.subtitleCues.every((cue) => !/[（）()【】]/.test(cue.text)), "字幕不带表演注解");
+    assert.equal(opts.scheduleDialogue, true, "派生对白在交付执行器里按实际音频时长安排");
 
     const run = pipeline.get(runId);
     const subtitles = run.stages.assembly.output.assembly.subtitles;
@@ -332,7 +331,7 @@ test("audioMode=embedded（原声）：不入队 TTS、不产独立配音；成�
     assert.deepEqual(opts.audio, [], "原声：不混独立音轨");
     assert.equal(opts.includeClipAudio, true, "原声：保留片段内嵌音频");
     assert.equal(opts.burnSubtitles, false, "原声模式：同样默认不烧"); 
-    assert.ok(opts.subtitlesText && opts.subtitlesText.includes("你好。"), "字幕与 TTS 解耦，原声模式照常生成独立 SRT");
+    assert.ok(opts.subtitleCues.some((cue) => cue.text.includes("你好。")), "字幕 Cue 交付执行器按实际片段时长生成 SRT");
 });
 
 test("audioMode 缺省即默认独立配音（未绑项目也回落默认）", async (t) => {
@@ -420,4 +419,32 @@ test("真机：显式 burnSubtitles:true 时才烧字幕（烧录能力保留）
     const manifest = JSON.parse(readFileSync(result.manifestPath, "utf8"));
     assert.ok(manifest.commands[0].includes("subtitles=filename="), "ffmpeg 命令应含字幕烧入");
     assert.equal(result.info.hasVideo, true);
+});
+
+
+test("TTS 实测时长回写角色 Cue；同镜对白串排且任务重放幂等", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    const { pipeline, jobs, runId } = await prepare(env, makeProject());
+    const audioJobs = [...jobs.store.values()].filter((job) => job.kind === "audio");
+    for (const [index, job] of audioJobs.entries()) {
+        jobs.finish(job.id, "done", { outputs: [{ url: writeArtifact(env.config, job.id, "a.flac"), type: "audio", bytes: 100, media: { durationSec: [1.25, 2.5][index], hasAudio: true } }] });
+    }
+    const audio = pipeline.get(runId).stages.audio.output.audio;
+    assert.deepEqual(audio.map((cue) => [cue.startSec, cue.endSec, cue.durationSec, cue.actualDurationSec]), [[0, 1.25, 1.25, 1.25], [1.25, 3.75, 2.5, 2.5]]);
+    pipeline.projectJob(jobs.get(audioJobs[0].id));
+    assert.deepEqual(pipeline.get(runId).stages.audio.output.audio, audio);
+});
+
+
+test("同项目分支重跑保持角色 TTS seed，不随 run 改变音色锚点", async (t) => {
+    const env = makeEnv();
+    t.after(() => rmSync(env.root, { recursive: true, force: true }));
+    const { pipeline, jobs, runId } = await prepare(env, makeProject());
+    const original = jobs.list().filter((job) => job.meta?.stageId === "audio");
+    const fork = pipeline.fork(runId, { fromStage: "audio" });
+    await pipeline.runStage(fork.id, "audio");
+    const branched = jobs.list().filter((job) => job.meta?.runId === fork.id);
+    assert.deepEqual(branched.map((job) => job.params.SEED), original.map((job) => job.params.SEED));
+    assert.deepEqual(branched.map((job) => job.params.SPEAKER), original.map((job) => job.params.SPEAKER));
 });

@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 
 import { splitNovelIntoChunks } from "./chunk-novel.js";
 import { buildMixInput, resolveDialogueLines } from "./audio.js";
+import { buildAudioTimeline } from "./audio-timeline.js";
 import { projectAudioCues, projectVoiceProfiles } from "./audio-track.js";
 import { ASSET_ROLE, AUDIO_MODE } from "./contracts.js";
 import { assembleEpisode, buildCueSrt, DEFAULT_SUBTITLE_STYLE, probeMedia } from "./delivery.js";
@@ -16,6 +17,8 @@ import { buildShotBinding, missingRefsReport, resolveSelectedArtifacts, stableSe
 import { appendRunLog, readRunLog } from "./run-log.js";
 // 阶段产物契约校验（P0-g）：结构 + 引用完整性，纯函数。
 import { checkStageArtifact, formatArtifactErrors } from "./stage-artifact-check.js";
+import { buildQualityReport } from "./quality-check.js";
+import { buildH3TalkParams } from "./h3-talk.js";
 // 分辨率/画幅：片段 / 关键帧 / 成片尺寸一律经 sizeForRatio 从「模型官方规格登记表」取（不再实时按比例推导）。
 import { sizeForRatio } from "./sizes.js";
 // 平台音色库（唯一事实源）：命名音色 + 语种枚举 + 音色适配（原 pipeline 内的 qwen3Language/qwen3Speaker 已搬到这里）。
@@ -351,6 +354,7 @@ export function createPipeline({ config, skillsDir, jobs, comfy, llm, llmCall, r
     const progressFile = (runId) => safeJoin(runsDir, String(runId), "progress.json");
     const chunksDir = (runId) => safeJoin(runsDir, String(runId), "chunks");
     const chunkFile = (runId, index) => safeJoin(chunksDir(runId), `${Number(index)}.json`);
+    const qcFile = (runId, reportId) => safeJoin(runsDir, String(runId), "qc", `${String(reportId)}.json`);
 
     function readJsonFile(file) {
         if (!file || !existsSync(file)) return null;
@@ -398,6 +402,28 @@ export function createPipeline({ config, skillsDir, jobs, comfy, llm, llmCall, r
     }
 
     const readProgress = (runId) => readJsonFile(progressFile(runId));
+
+    function saveQcReport(runId, report) {
+        const file = qcFile(runId, report.id);
+        ensureDir(dirname(file));
+        writeJsonAtomic(file, report);
+        writeJsonAtomic(safeJoin(runsDir, String(runId), "qc", "latest.json"), report);
+        return report;
+    }
+
+    function qualityCheck(runId, { stage = null } = {}) {
+        const run = requireRun(runId);
+        if (stage && !stageDefs.has(String(stage))) throw gateError(`未知质检阶段：${stage}`);
+        const report = buildQualityReport({ run, stageUpstream: () => stageUpstreamOf(run), stage });
+        report.inputHash = outputHash(run.stages);
+        return saveQcReport(runId, report);
+    }
+
+    function latestQualityCheck(runId) {
+        const run = requireRun(runId);
+        const report = readJsonFile(safeJoin(runsDir, String(runId), "qc", "latest.json"));
+        return report ? { ...report, stale: report.inputHash !== outputHash(run.stages) } : null;
+    }
 
     function clearProgress(runId) {
         try {
@@ -620,6 +646,53 @@ export function createPipeline({ config, skillsDir, jobs, comfy, llm, llmCall, r
         return saved;
     }
 
+    /**
+     * 从已有流水线创建可逆分支。分支共享上游只读产物引用，从指定阶段开始清空状态，
+     * 后续重跑只会产生新的 Job/Artifact，不会覆盖父 run 的任何候选。
+     */
+    function fork(runId, { fromStage = "script", title, options, actor } = {}) {
+        const parent = requireRun(runId);
+        const start = stageDefs.get(String(fromStage));
+        if (!start) throw gateError(`未知分支起始阶段：${fromStage}`);
+        const startIndex = registry.stages.findIndex((stage) => stage.id === start.id);
+        if (registry.stages.slice(0, startIndex).some((def) => parent.stages[def.id]?.status === "running")) {
+            throw gateError("上游阶段正在运行，请等待完成后再创建分支", 409);
+        }
+        const now = nowIso();
+        const id = `run-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+        const inherited = JSON.parse(JSON.stringify(parent));
+        const opts = options && typeof options === "object" ? options : {};
+        const run = {
+            ...inherited,
+            id,
+            title: String(title ?? "").trim() || `${parent.title} · 分支 ${start.title}`,
+            createdAt: now,
+            updatedAt: now,
+            options: { ...(parent.options || {}), ...opts, branchOf: parent.id, branchFrom: start.id },
+            branchOf: parent.id,
+            branchFrom: start.id,
+        };
+        for (let index = startIndex; index < registry.stages.length; index += 1) {
+            const def = registry.stages[index];
+            run.stages[def.id] = { id: def.id, title: def.title, status: "pending", inputs: {}, output: null, artifacts: [] };
+        }
+        run.estimate = estimateFor(run);
+        const saved = saveRun(run);
+        for (const def of registry.stages.slice(0, startIndex)) {
+            if (run.stages[def.id]?.output) saveOutput(saved.id, def.id, run.stages[def.id].output);
+        }
+        const projectId = String(run.options?.projectId ?? "").trim();
+        if (projectId) attachRunToProject(projectId, saved.id);
+        appendRunLog(runsDir, saved.id, {
+            op: "run.fork",
+            actor: actorOf({ actor }),
+            message: `从 ${parent.id} 的 ${start.title} 创建分支`,
+            parentRunId: parent.id,
+            fromStage: start.id,
+        });
+        return saved;
+    }
+
     /** 人工修订产物：body `{ output: <该阶段产物 JSON> }` 时置为 done 并落盘，下游立即可用；其余键合并进 inputs。 */
     function setStageInput(runId, stageId, patch = {}) {
         const run = requireRun(runId);
@@ -694,7 +767,23 @@ export function createPipeline({ config, skillsDir, jobs, comfy, llm, llmCall, r
 
     function resolveModel(run, stageId) {
         // 按阶段绑定的模型优先，其次整条流水线的 llmModel，最后网关默认
-        return run.options?.stageModels?.[stageId] || run.options?.llmModel || pipelineConfig.llmModel || "";
+        const selected = String(run.options?.stageModels?.[stageId] ?? "").trim();
+        // 设计/关键帧/配音/合成阶段的选择值可能是 Comfy 模板；它们不能被误传给 LLM 的 chat。
+        const textModel = selected && !templateCatalog[selected] ? selected : "";
+        return textModel || run.options?.llmModel || pipelineConfig.llmModel || "";
+    }
+
+    function configuredTemplateForStage(run, stageId, family) {
+        const selected = String(run?.options?.stageModels?.[stageId] ?? "").trim();
+        const info = templateCatalog[selected];
+        if (!info) {
+            const fallback = family === "video" ? pipelineConfig.videoTemplate : family === "audio" ? pipelineConfig.audioTemplate : pipelineConfig.imageTemplate;
+            return String(fallback ?? "").trim();
+        }
+        if (family === "image" && ["image", "edit", "upscale"].includes(info.family)) return selected;
+        if (info.family === family || (family === "audio" && (selected.startsWith("audio_") || info.tokens?.includes("TTS_TEXT")))) return selected;
+        const fallback = family === "video" ? pipelineConfig.videoTemplate : family === "audio" ? pipelineConfig.audioTemplate : pipelineConfig.imageTemplate;
+        return String(fallback ?? "").trim();
     }
 
     async function chat(messages, run, temperature, stageId, provider, signal) {
@@ -1214,6 +1303,8 @@ ${JSON.stringify(partials, null, 2)}
         // 产物取「当前候选，其次最近一次成功」，重跑进行中也不会丢掉上一次的结果。
         const lastUrl = [...candidates].reverse().find((candidate) => candidate.artifactUrl)?.artifactUrl;
         item.artifactUrl = selected.artifactUrl || lastUrl || null;
+        item.media = selected.artifactUrl ? selected.media || null : [...candidates].reverse().find((candidate) => candidate.artifactUrl)?.media || null;
+        item.actualDurationSec = item.media?.durationSec || null;
     }
 
     /** 幂等 upsert 一个候选：同一个 jobId 只更新状态与产物，不重复追加。 */
@@ -1222,15 +1313,17 @@ ${JSON.stringify(partials, null, 2)}
         // 回写即断言：只落「磁盘上真的存在」的产物 URL（#40：索引指向不存在文件 → 按 URL 取图 404）。
         // 选择范围限定在本 job 自己的 outputs 内，绝不「扫描目录取最新」。
         const artifactUrl = job.status === "done" ? resolvingOutputUrl(config, job) : null;
+        const media = (job.outputs || []).find((output) => output.url === artifactUrl)?.media || null;
         const qc = candidateQcFor(job);
         const existing = item.candidates.find((candidate) => candidate.jobId === job.id);
         if (existing) {
             existing.status = job.status;
             existing.artifactUrl = artifactUrl;
             existing.qc = qc;
+            existing.media = media;
             return;
         }
-        item.candidates.push({ template: job.template, jobId: job.id, artifactUrl, status: job.status, params: job.params, qc, createdAt: job.createdAt || nowIso() });
+        item.candidates.push({ template: job.template, jobId: job.id, artifactUrl, status: job.status, params: job.params, qc, media, createdAt: job.createdAt || nowIso() });
     }
 
     /**
@@ -1854,20 +1947,22 @@ ${JSON.stringify(partials, null, 2)}
      * 批量生产（70 镜 × N 候选）用草稿档，存储与上传成本降一个量级，画质换来的收益却接近 0。
      * 交付成片时用 `imageDraft: false`（默认）走官方档。
      */
-    function imageDimsFor(style, extra = {}) {
+    function imageDimsFor(style, extra = {}, templateOverride = null) {
+        const template = String(templateOverride || pipelineConfig.imageTemplate || "").trim();
         const baseW = Number(pipelineConfig.imageWidth) || 768;
         const baseH = Number(pipelineConfig.imageHeight) || 1344;
         if (pipelineConfig.imageDraft === true) {
-            return { width: baseW, height: baseH, size: baseW + "x" + baseH, ratio: style.ratio, source: "draft", matched: true, template: pipelineConfig.imageTemplate, model: null, warning: null, ...extra };
+            return { width: baseW, height: baseH, size: baseW + "x" + baseH, ratio: style.ratio, source: "draft", matched: true, template, model: null, warning: null, ...extra };
         }
-        return sizeForRatio(pipelineConfig.imageTemplate, style.ratio, { base: Math.min(baseW, baseH), ...extra });
+        return sizeForRatio(template, style.ratio, { base: Math.min(baseW, baseH), ...extra });
     }
 
     /** 单条参考图条目的生图计划（纯文生图；参考图本身不需要参考图输入）。 */
     function designReferencePlan(run, item) {
         const style = productionDefaults(run);
+        const template = configuredTemplateForStage(run, "design", "image");
         // 尺寸从「该生图模板的官方规格登记表」取（画幅匹配优先，否则回落默认 + warning），不再实时按比例推导。
-        const imageDims = imageDimsFor(style);
+        const imageDims = imageDimsFor(style, {}, template);
         const projectId = run?.options?.projectId;
         const params = {
             WIDTH: imageDims.width ?? (Number(pipelineConfig.imageWidth) || 768),
@@ -1880,7 +1975,7 @@ ${JSON.stringify(partials, null, 2)}
             params.SEED = stableSeed(projectId, item.id, 0);
             params.OUTPUT_PREFIX = outputPrefixFor(run.id, item.id);
         }
-        return { kind: STAGE_KIND.design, template: pipelineConfig.imageTemplate, ready: true, params };
+        return { kind: STAGE_KIND.design, template, ready: true, params };
     }
 
     /**
@@ -2112,7 +2207,10 @@ ${JSON.stringify(partials, null, 2)}
         return {
             ratio: String(plan?.ratio ?? "").trim(),
             episodeDurationSec: Number(plan?.episodeDurationSec) > 0 ? Number(plan.episodeDurationSec) : null,
-            audioMode: String(plan?.audioMode ?? "").trim() === AUDIO_MODE.EMBEDDED ? AUDIO_MODE.EMBEDDED : AUDIO_MODE.SEPARATE_DIALOGUE_TRACK,
+            // 项目已明确选择时才启用独立对白；未绑定项目/旧 run 没有制作计划时沿用片段原声。
+            audioMode: plan && String(plan.audioMode ?? "").trim() !== ""
+                ? (String(plan.audioMode).trim() === AUDIO_MODE.EMBEDDED ? AUDIO_MODE.EMBEDDED : AUDIO_MODE.SEPARATE_DIALOGUE_TRACK)
+                : AUDIO_MODE.SEPARATE_DIALOGUE_TRACK,
             anchor,
             context: [anchor, flavor].filter(Boolean).join("。"),
             filmLayer: anchor && FILM_ANCHOR_PATTERN.test(anchor) ? LUSTER_FILM_LAYER : "",
@@ -2343,8 +2441,8 @@ ${JSON.stringify(partials, null, 2)}
      * - 否则改用参考图模板（同为 Qwen-Image 2.1 血统、带 REF_IMAGE 槽的 img_qwen21_edit 一类）。
      * - 没有任何能吃参考图的模板 / 参考图数超上限 → ok:false，附可解释原因（调用方据此标 blocked，绝不假装已锁角色）。
      */
-    function decideKeyframeTemplate(needCount, refCount) {
-        const imageTemplate = String(pipelineConfig.imageTemplate ?? "").trim();
+    function decideKeyframeTemplate(needCount, refCount, preferredTemplate = "") {
+        const imageTemplate = String(preferredTemplate || (pipelineConfig.imageTemplate ?? "")).trim();
         if (needCount <= 0) return { ok: true, template: imageTemplate, reason: "" };
         const need = Math.max(1, refCount);
         const primary = templateCatalog[imageTemplate];
@@ -2512,7 +2610,7 @@ ${JSON.stringify(partials, null, 2)}
     }
 
     /** 单个条目的生成参数与就绪判定：模板要求的 token 必须全给，尺寸取 config.pipeline 默认值。 */
-    function generativePlan(run, def, item, frames, shots) {
+    function generativePlan(run, def, item, frames, shots, chosenTemplate = null) {
         const extraParams = (def.id === "keyframe" ? run.options?.image : run.options?.video) || {};
         const style = productionDefaults(run);
         const start = frames.find((frame) => frame.shotId === item.shotId && frame.role === "start");
@@ -2524,7 +2622,10 @@ ${JSON.stringify(partials, null, 2)}
             const promptBody = [String(item.prompt ?? "").trim(), overlayClause].filter(Boolean).join("。");
             // ② 按 ShotBinding 注入参考图 + 稳定 seed（§11.5.4）：先解析本镜该锁哪些角色/场景，再判模板能力。
             const refContext = shotReferenceContext(run, item, shots);
-            const decision = refContext.needCount > 0 ? decideKeyframeTemplate(refContext.needCount, refContext.urls.length) : { ok: true, template: pipelineConfig.imageTemplate, reason: "" };
+            const configuredImageTemplate = configuredTemplateForStage(run, "keyframe", "image");
+            const decision = refContext.needCount > 0
+                ? decideKeyframeTemplate(refContext.needCount, refContext.urls.length, configuredImageTemplate)
+                : { ok: true, template: configuredImageTemplate, reason: "" };
             let blocked = null;
             if (refContext.needCount > 0 && !decision.ok) {
                 blocked = { reason: decision.reason, missing: refContext.report.blocked };
@@ -2621,19 +2722,19 @@ ${JSON.stringify(partials, null, 2)}
         }
         // 单镜（片段）时长跟**所选视频模型的档位**走，**不从项目参数取**（单集时长 ≠ 单镜时长，2026-10-04 产品口径）。
         // 条目自带 durationSec 时优先用它；否则用模型档位默认（durations.js 唯一事实源），再回落 config.videoSeconds。
-        const modelTierSeconds = durationsForTemplate(pipelineConfig.videoTemplate)?.[0] ?? null;
+        const videoTemplate = chosenTemplate || configuredTemplateForStage(run, "assembly", "video");
+        const modelTierSeconds = durationsForTemplate(videoTemplate)?.[0] ?? null;
         const videoDefaultSeconds = modelTierSeconds ?? (Number(pipelineConfig.videoSeconds) || 5);
         item.durationSec = Number(item.durationSec) > 0 ? Number(item.durationSec) : videoDefaultSeconds;
         if (!item.keyframeId) item.keyframeId = start?.id ?? null;
         const shot = shots.find((entry) => entry.id === item.shotId);
         // 片段尺寸从「该视频模型的官方规格登记表」取（画幅匹配优先，否则回落默认 + warning），不再实时按比例推导。
-        const videoDims = sizeForRatio(pipelineConfig.videoTemplate, style.ratio, { base: Math.min(Number(pipelineConfig.videoWidth) || 768, Number(pipelineConfig.videoHeight) || 1344) });
+        const videoDims = sizeForRatio(videoTemplate, style.ratio, { base: Math.min(Number(pipelineConfig.videoWidth) || 768, Number(pipelineConfig.videoHeight) || 1344) });
         // 片段侧同样在「发起生成请求」那一刻按所选模型编译提示词：把分镜的模型无关事实（动作/机位/台词/文字）
         // 交给编译器，而不是把「英文静态生图描述 + 中文动作流水句」硬拼后甩给模型。
         // 实际注入的槽位以模板声明的 token 为准：FL 模板走 FIRST_FRAME/LAST_FRAME，i2v 走 INPUT_IMAGE；
         // 素材编号由编译器按注入顺序生成（不写死在内容层）。
         const videoShotBinding = shotReferenceContext(run, item, shots).shotBinding;
-        const videoTemplate = pipelineConfig.videoTemplate;
         const videoTokens = Array.isArray(templateCatalog[videoTemplate]?.tokens) ? templateCatalog[videoTemplate].tokens : [];
         const endFrame = frames.find((frame) => frame.shotId === item.shotId && frame.role === "end");
         const slotImages = [];
@@ -2657,6 +2758,17 @@ ${JSON.stringify(partials, null, 2)}
         const shotCharacters = charactersForShot(run, videoShotBinding);
         // 全局角色表：说话人 (Sx) 跨镜稳定编号的事实源（H3 官方要求同一说话人跨镜同 ID）。
         const cast = castForRun(run);
+        let blocked = null;
+        if (videoTokens.includes("TTS_TEXT")) {
+            try {
+                if (audioModeOf(run) !== AUDIO_MODE.EMBEDDED) throw new Error("H3 Talk 使用驱动音频生成口型，请先将项目配音方式设为原声，避免再次替换对白导致音画错位");
+                const project = projectOf(run) || { script: { characters: cast } };
+                const { profiles } = projectVoiceProfiles({ project, characters: cast, design: run.stages?.design?.output, casting: run.stages?.casting?.output });
+                Object.assign(videoParams, buildH3TalkParams({ shot, characters: shotCharacters, cast, profiles }));
+            } catch (error) {
+                blocked = { reason: error.message, missing: [] };
+            }
+        }
         const compileInput = {
             template: videoTemplate,
             family: "video",
@@ -2664,6 +2776,7 @@ ${JSON.stringify(partials, null, 2)}
             scene: sceneForShot(run, shot),
             characters: shotCharacters,
             cast,
+            audioMode: audioModeOf(run),
             style,
             slots: { images: slotImages },
             overlays: shot?.textOverlays,
@@ -2686,6 +2799,7 @@ ${JSON.stringify(partials, null, 2)}
             ready: Boolean(start?.artifactUrl),
             params: { ...videoParams, ...extraParams },
             compileInput,
+            ...(blocked ? { blocked } : {}),
             ...(warningReason ? { warning: { reason: warningReason } } : {}),
         };
     }
@@ -2853,7 +2967,8 @@ ${JSON.stringify(partials, null, 2)}
         }
         const shots = run.stages?.storyboard?.output?.shots || [];
         const frames = def.id === "keyframe" ? items : run.stages?.keyframe?.output?.frames || [];
-        const plan = generativePlan(run, def, item, frames, shots);
+        const plan = generativePlan(run, def, item, frames, shots, def.id === "assembly" ? chosen : null);
+        if (plan.blocked) throw gateError(plan.blocked.reason, 409);
         if (!plan.ready) throw gateError(`条目「${item.id}」的前置产物还没就绪，不能重跑`);
         plan.template = chosen || plan.template;
         if (params && typeof params === "object") plan.params = { ...plan.params, ...params };
@@ -2878,7 +2993,8 @@ ${JSON.stringify(partials, null, 2)}
         if (plan.compileInput) {
             plan.compileInput = { ...plan.compileInput, template: plan.template };
             await compilePromptItem(run, def, item, plan, { force: true });
-            const refreshed = generativePlan(run, def, item, def.id === "keyframe" ? stage.output?.frames || [] : run.stages?.keyframe?.output?.frames || [], run.stages?.storyboard?.output?.shots || []);
+            const refreshed = generativePlan(run, def, item, def.id === "keyframe" ? stage.output?.frames || [] : run.stages?.keyframe?.output?.frames || [], run.stages?.storyboard?.output?.shots || [], def.id === "assembly" ? plan.template : null);
+            if (refreshed.blocked) throw gateError(refreshed.blocked.reason, 409);
             refreshed.template = plan.template;
             refreshed.compileInput = { ...(refreshed.compileInput || plan.compileInput), template: plan.template };
             if (plan.params && typeof plan.params === "object") refreshed.params = { ...refreshed.params, ...plan.params };
@@ -3029,7 +3145,7 @@ ${JSON.stringify(partials, null, 2)}
         const design = run.stages?.design?.output || null;
         const scriptCharacters = Array.isArray(project?.script?.characters) ? project.script.characters : [];
         const characters = scriptCharacters.length ? scriptCharacters : undefined;
-        const { profiles } = projectVoiceProfiles({ project, design, characters });
+        const { profiles } = projectVoiceProfiles({ project, design, characters, casting: run.stages?.casting?.output });
         const charList = Array.isArray(characters) ? characters : [];
         const profileById = new Map(profiles.map((profile) => [String(profile.id), profile]));
         const profileByCharacter = new Map(profiles.filter((profile) => profile.characterId).map((profile) => [String(profile.characterId), profile]));
@@ -3039,7 +3155,7 @@ ${JSON.stringify(partials, null, 2)}
             .filter((cue) => DIALOGUE_TYPES.has(cue.type) && String(cue.text ?? "").trim() !== "");
         const shotById = new Map(shots.map((shot) => [String(shot?.id ?? shot?.shotId), shot]));
         const prevItems = Array.isArray(prev?.audio) ? prev.audio : [];
-        const template = String(pipelineConfig.audioTemplate || "audio_qwen3_tts");
+        const template = configuredTemplateForStage(run, "audio", "audio") || "audio_qwen3_tts";
         const device = String(pipelineConfig.audioDevice || "cuda");
 
         const items = [];
@@ -3063,12 +3179,6 @@ ${JSON.stringify(partials, null, 2)}
                 jobId: null,
                 status: "queued",
             };
-            // 已有候选（resume / 重跑）→ 不重复入队，只同步派生字段。
-            if (item.candidates.length) {
-                syncItem(item);
-                items.push(item);
-                continue;
-            }
             const { profile, fallback } = resolveAudioProfile(cue, shotById.get(String(cue.shotId)), { profileById, profileByCharacter, characters: charList, profiles });
             if (fallback) appendWarning(item, `对白「${cue.text}」未能从分镜确定说话角色，已回落使用音色「${profile?.name || profile?.id}」`);
             if (!profile) {
@@ -3087,9 +3197,16 @@ ${JSON.stringify(partials, null, 2)}
                 INSTRUCT: instruct,
                 LANGUAGE: qwen3Language(profile.language),
                 DEVICE: device,
-                SEED: stableSeed(run.id, cue.shotId, profile.version),
+                SEED: stableSeed(project?.id || run.id, profile.characterId, profile.version),
                 OUTPUT_PREFIX: outputPrefixFor(run.id, cue.id),
             };
+            // 定妆音色或台词变化必须生成新候选，不能继续复用旧声音。
+            const matching = item.candidates.at(-1);
+            if (matching?.template === template && JSON.stringify(matching.params) === JSON.stringify(params)) {
+                syncItem(item);
+                items.push(item);
+                continue;
+            }
             enqueueAttempt(run, def, item, { kind: STAGE_KIND.audio, template, params, ready: true });
             if (item.candidates.length) syncItem(item);
             items.push(item);
@@ -3364,6 +3481,15 @@ ${JSON.stringify(partials, null, 2)}
         return { run: saved, character: card, readiness: castingReadiness(output) };
     }
 
+    /** 音频全部落地后以实测时长回写镜头内说话轮次。 */
+    function refreshAudioTiming(run, stage, items) {
+        if (!items.length || !items.every((entry) => entry.status === "done" && entry.actualDurationSec > 0)) return;
+        const timing = buildAudioTimeline({ clips: run.stages?.storyboard?.output?.shots || [], audio: items.map((entry) => ({ ...entry, cueId: entry.id })), durations: items.map((entry) => entry.actualDurationSec), sequential: true });
+        const byId = new Map(items.map((entry) => [entry.id, entry]));
+        for (const cue of timing.audio) Object.assign(byId.get(cue.id), { startSec: cue.startSec, endSec: cue.endSec, durationSec: cue.durationSec });
+        stage.output.timingIssues = timing.issues;
+    }
+
     /** Job 终态投影：按 meta 反查 run/stage/item，幂等回写候选与派生字段，并让前置刚就绪的下游条目入队。 */
     function projectJob(job) {
         if (!job || !TERMINAL_JOB.has(job.status)) return null;
@@ -3381,6 +3507,7 @@ ${JSON.stringify(partials, null, 2)}
         if (!def || !item) return null;
         upsertCandidate(item, job);
         syncItem(item);
+        if (def.id === "audio") refreshAudioTiming(run, stage, items);
         // 配音失败只降级记 warning（该对白不进成片音轨），绝不影响成片能否产出。
         if (def.id === "audio" && job.status === "error") appendWarning(item, `配音失败（${job.error || "TTS 任务失败"}），该对白不进成片音轨`);
         // 对口型失败/超时只降级记 warning（该镜成片**回落原片段**），绝不因此让成片失败。
@@ -3681,6 +3808,7 @@ ${JSON.stringify(partials, null, 2)}
         assembly.startedAt = nowIso();
         assembly.finishedAt = undefined;
         assembly.error = undefined;
+        assembly.quality = undefined;
         // 本次调用可覆盖拼接顺序/转场；未给则沿用规划值
         if (Array.isArray(options.order) && options.order.length) assembly.order = options.order;
         if (typeof options.transition === "string" && options.transition) assembly.transition = options.transition;
@@ -3703,7 +3831,7 @@ ${JSON.stringify(partials, null, 2)}
         const lipsyncItems = Array.isArray(run.stages?.lipsync?.output?.clips) ? run.stages.lipsync.output.clips : [];
         const lipSyncByShot = new Map();
         for (const item of lipsyncItems) {
-            if (item?.artifactUrl && item.shotId !== undefined && item.shotId !== null) lipSyncByShot.set(String(item.shotId), item);
+            if (item?.status === "done" && item.artifactUrl && item.shotId !== undefined && item.shotId !== null) lipSyncByShot.set(String(item.shotId), item);
         }
         const clipsForFilm = [];
         for (const clip of clips) {
@@ -3735,19 +3863,20 @@ ${JSON.stringify(partials, null, 2)}
         // ── 配音方式（项目级 Plan.audioMode）+ 逐句字幕（按台词时间轴）────────────────────────────
         const audioMode = audioModeOf(run);
         const separate = audioMode !== AUDIO_MODE.EMBEDDED;
+        assembly.audioMode = audioMode;
         // 独立配音：用现有 audio 阶段产物（TTS 音轨）；原声：不混独立音轨，片段原声即人声事实源。
         const assembleAudio = separate
             ? (Array.isArray(options.audio) && options.audio.length ? options.audio : audioForAssemble(run, config))
             : [];
-        // 独立配音且有 TTS 音轨 → 不保留片段原声（delivery 亦有硬规则兜底）；无音轨时交 delivery 自动判定，避免哑片。
-        const includeClipAudio = separate ? (assembleAudio.length ? false : undefined) : true;
+        // 独立配音缺失时也不切换为另一套人物声音；保留草稿，并明确标记缺台词。
+        const includeClipAudio = !separate;
         // 字幕与 TTS 产物解耦：从分镜台词的 Cue（shotId + startSec）逐句生成 SRT；无台词/无时间轴 → 空串（不产、不失败）。
         // 独立交付：SRT 作为**独立产物**落盘（供剪映精剪/下载），成片 mp4 **默认不烧字幕**（烧死了剪映改不了）；
         // 烧录能力保留 —— 仅当调用方显式 `options.burnSubtitles === true` 时才交 delivery 烧入。
         const burnSubtitles = options.burnSubtitles === true;
         const subtitleCues = subtitleCuesFor(run);
         const srt = buildCueSrt({
-            clips,
+            clips: clipsForFilm,
             order: assembly.order,
             transition: assembly.transition,
             transitionDurationSec: options.transitionDurationSec ?? assembly.transitionDurationSec,
@@ -3768,9 +3897,14 @@ ${JSON.stringify(partials, null, 2)}
                     quality: options.quality,
                     transitionDurationSec: options.transitionDurationSec,
                     audio: assembleAudio,
+                    scheduleDialogue: separate && !(Array.isArray(options.audio) && options.audio.length),
+                    subtitleCues,
+                    qualityIssues: separate && subtitleCues.some((cue) => !assembleAudio.some((item) => item.cueId === cue.id))
+                        ? [{ code: "dialogue_missing", message: "部分台词缺少独立配音，请补齐后重新合成" }]
+                        : [],
                     includeClipAudio,
                     subtitles: options.subtitles,
-                    subtitlesText: options.subtitlesText || srt || null,
+                    subtitlesText: options.subtitlesText || null,
                     burnSubtitles,
                     subtitleStyle: burnSubtitles && (options.subtitles || options.subtitlesText || srt) ? (options.subtitleStyle || DEFAULT_SUBTITLE_STYLE) : null,
                     cover: options.cover,
@@ -3806,6 +3940,8 @@ ${JSON.stringify(partials, null, 2)}
             assembly.coverUrl = result.coverUrl || null;
             assembly.bytes = result.bytes;
             assembly.info = result.info || null;
+            assembly.audioMode = audioMode;
+            assembly.quality = result.quality || { status: "needs_review", issues: [] };
             // 对口型落地情况：本片用了几条对口型片段（其余回落原片段）——可验证、可追溯。
             assembly.lipSync = {
                 used: clipsForFilm.filter((clip) => clip.lipSyncArtifactUrl).length,
@@ -3815,6 +3951,7 @@ ${JSON.stringify(partials, null, 2)}
             assembly.error = undefined;
         } catch (error) {
             assembly.status = "error";
+            assembly.quality = error.quality || { status: "blocked", issues: [{ code: "assembly_failed", message: error.message }] };
             assembly.error = `合成成片失败：${error.message}`;
             assembly.finishedAt = nowIso();
             // 保留 delivery 落盘的清单与日志（都在同一个交付目录下），失败也要能复现
@@ -3892,5 +4029,5 @@ ${JSON.stringify(partials, null, 2)}
         return fixed;
     }
 
-    return { stages, list, get, create, estimate: estimateFor, runStage, beginStage, executeStage, stageProgress, runLog, reconcileRunning, setStageInput, projectJob, bindJobs, cancelStage, beginAssemble, executeAssemble, assembleStage, beginRegenerate, executeRegenerate, retryFailedItems, groupFramesByReference, stageGate, stageGates, patchStageShot, durationPolicy, skeletonOf, castingReadinessOf, enforceCastingGate, confirmCasting };
+    return { stages, list, get, create, fork, estimate: estimateFor, runStage, beginStage, executeStage, stageProgress, runLog, qualityCheck, latestQualityCheck, reconcileRunning, setStageInput, projectJob, bindJobs, cancelStage, beginAssemble, executeAssemble, assembleStage, beginRegenerate, executeRegenerate, retryFailedItems, groupFramesByReference, stageGate, stageGates, patchStageShot, durationPolicy, skeletonOf, castingReadinessOf, enforceCastingGate, confirmCasting };
 }

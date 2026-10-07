@@ -45,6 +45,7 @@ export function CandidateStrip({
 
     const role = item.role || "";
     const label = role ? t(`pipeline.candidates.role.${role}`, { defaultValue: role }) : `#${index + 1}`;
+    const detail = String(item.prompt || "").trim();
     // 阶段整体在跑时后端会拒绝逐条重跑（409），这里直接禁用，避免无意义请求
     const blocked = busy || stageRunning;
 
@@ -61,7 +62,10 @@ export function CandidateStrip({
 
     return (
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 py-0.5">
-            <span className="shrink-0 text-[11px] text-stone-400 dark:text-stone-500">{label}</span>
+            <div className="w-44 shrink-0">
+                <div className="text-[11px] text-stone-500 dark:text-stone-400">{label}{item.shotId ? ` · ${item.shotId}` : ""}</div>
+                {detail ? <div className="mt-0.5 line-clamp-2 text-xs leading-4 text-stone-700 dark:text-stone-300" title={detail}>{detail}</div> : null}
+            </div>
             <div className="flex flex-wrap items-center gap-1">
                 {candidates.map((candidate) => (
                     <CandidateThumb key={candidate.jobId} candidate={candidate} kind={kind} />
