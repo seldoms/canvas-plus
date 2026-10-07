@@ -163,8 +163,9 @@ export function AssemblyPanel({ production }: { production: Production }) {
     const clips = assemblyOut.clips ?? [];
     const assembly = readRunAssembly(production.run);
     const shotIndexOf = new Map((board?.shots ?? []).map((s) => [s.id, s.index]));
-    const ordered = assembly?.order?.length
-        ? (assembly.order.map((id) => clips.find((c) => c.id === id)).filter(Boolean) as typeof clips)
+    const order = Array.isArray(assembly?.order) ? (assembly.order as string[]) : [];
+    const ordered = order.length
+        ? (order.map((id) => clips.find((c) => c.id === id)).filter(Boolean) as typeof clips)
         : clips;
     const finalUrl = production.artifactUrl(assembly?.url);
     const subtitleUrl = production.artifactUrl(assembly?.subtitles?.url);
