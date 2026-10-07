@@ -1,11 +1,11 @@
 {
-  "name": "infinite-canvas-local",
+  "name": "canvas-plus-local",
   "interface": {
-    "displayName": "Infinite Canvas"
+    "displayName": "Canvas Plus"
   },
   "plugins": [
     {
-      "name": "infinite-canvas",
+      "name": "canvas-plus",
       "source": {
         "source": "local",
         "path": "./plugins/infinite-canvas"

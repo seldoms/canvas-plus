@@ -1,20 +1,20 @@
 {
-  "name": "infinite-canvas",
-  "version": "0.1.0",
-  "description": "Use ZCode to read and operate Infinite Canvas through the local Canvas Agent MCP server.",
+  "name": "canvas-plus",
+  "version": "0.2.0",
+  "description": "Use ZCode to drive the Canvas Plus project canvas and the film production pipeline through the local Canvas Agent MCP server.",
   "author": {
-    "name": "basketikun",
-    "url": "https://canvas.best/"
+    "name": "sobey",
+    "url": "https://canvas.wbsyb.cloud/"
   },
-  "homepage": "https://canvas.best/",
-  "repository": "https://github.com/basketikun/infinite-canvas",
+  "homepage": "https://canvas.wbsyb.cloud/",
+  "repository": "https://github.com/sobey/canvas-plus",
   "license": "MIT",
-  "keywords": ["infinite-canvas", "canvas", "mcp", "agent"],
+  "keywords": ["canvas-plus", "canvas", "mcp", "agent", "pipeline"],
   "skills": "skills",
   "mcpServers": {
-    "infinite-canvas": {
+    "canvas-plus": {
       "command": "npx",
-      "args": ["-y", "@basketikun/canvas-agent@latest", "mcp"]
+      "args": ["-y", "@sobey/canvas-agent@latest", "mcp"]
     }
   }
 }

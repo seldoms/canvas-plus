@@ -1,12 +1,12 @@
 {
-  "name": "infinite-canvas-local",
+  "name": "canvas-plus-local",
   "version": 1,
-  "description": "Local marketplace for the Infinite Canvas ZCode plugin.",
+  "description": "Local marketplace for the Canvas Plus ZCode plugin.",
   "plugins": [
     {
-      "name": "infinite-canvas",
-      "version": "0.1.0",
-      "description": "Use ZCode to read and operate Infinite Canvas through the local Canvas Agent MCP server.",
+      "name": "canvas-plus",
+      "version": "0.2.0",
+      "description": "Drive the project canvas and the seven-stage film pipeline from ZCode via the local Canvas Agent MCP server.",
       "source": "."
     }
   ]

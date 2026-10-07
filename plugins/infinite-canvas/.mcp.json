@@ -1,8 +1,8 @@
 {
   "mcpServers": {
-    "infinite-canvas": {
+    "canvas-plus": {
       "command": "npx",
-      "args": ["-y", "@basketikun/canvas-agent@latest", "mcp"],
+      "args": ["-y", "@sobey/canvas-agent@latest", "mcp"],
       "startup_timeout_sec": 20,
       "tool_timeout_sec": 90
     }

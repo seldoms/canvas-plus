@@ -6,8 +6,23 @@ import { useTranslation } from "react-i18next";
 
 import { canvasThemes } from "@/lib/canvas-theme";
 
-const AGENT_PLUGIN_REMOVE_COMMAND = "codex plugin remove infinite-canvas";
-const AGENT_MCP_REMOVE_COMMAND = "codex mcp remove infinite-canvas";
+/**
+ * Agent 安装引导里的命令与仓库地址。
+ *
+ * **发布前提醒**：这些值原先写死上游官方包（`@basketikun/canvas-agent`），工友照着装到的是
+ * 没有 project_* 工具、没有 pipeline 技能的旧版。GitHub 发布完成后，只需把
+ * `CANVAS_PLUS_REPO` 改成实际仓库地址、`AGENT_PACKAGE` 改成发布后的包名，全站引导即生效
+ * （所有出现处都引用这两个常量，不要再散落硬编码）。
+ *
+ * 站点侧边栏的 Agent 由服务端托管，51 个工具天然生效——不想折腾本地 Codex 的工友
+ * 直接用侧边栏即可，无需任何安装动作。
+ */
+const CANVAS_PLUS_REPO = "https://github.com/sobey/canvas-plus";
+const AGENT_PACKAGE = "@sobey/canvas-agent";
+const AGENT_RUN_COMMAND = `npx -y ${AGENT_PACKAGE}@latest`;
+const AGENT_MARKETPLACE_COMMAND = `codex plugin marketplace add ${CANVAS_PLUS_REPO}`;
+const AGENT_PLUGIN_REMOVE_COMMAND = "codex plugin remove canvas-plus";
+const AGENT_MCP_REMOVE_COMMAND = "codex mcp remove canvas-plus";
 
 export function AgentConnectView({
     theme,
@@ -34,7 +49,11 @@ export function AgentConnectView({
 }) {
     const { t } = useTranslation();
     const { message } = App.useApp();
-    const steps = [{ title: t("agent.connect.pluginTitle"), text: t("agent.connect.pluginText") }, { title: t("agent.connect.directTitle"), text: t("agent.connect.directText"), command: "npx -y @basketikun/canvas-agent@latest" }];
+    const steps = [
+        { title: t("agent.connect.builtinTitle"), text: t("agent.connect.builtinText") },
+        { title: t("agent.connect.pluginTitle"), text: t("agent.connect.pluginText"), command: AGENT_MARKETPLACE_COMMAND },
+        { title: t("agent.connect.directTitle"), text: t("agent.connect.directText"), command: AGENT_RUN_COMMAND },
+    ];
     const statusText = connectError ? t("agent.status.failed") : connected ? activity : enabled ? t("agent.status.connecting") : t("agent.status.disconnected");
     const statusColor = connectError ? "#dc2626" : connected ? "#16a34a" : enabled ? "#d97706" : theme.node.muted;
     const copyCommand = (command: string) => {
