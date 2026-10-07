@@ -34,6 +34,7 @@ const PromptsPage = lazy(() => import("@/pages/prompts"));
 const CanvasPage = lazy(() => import("@/pages/canvas"));
 const CanvasProjectPage = lazy(() => import("@/pages/canvas/project"));
 const PipelinePage = lazy(() => import("@/pages/pipeline"));
+const PipelineDemoPage = lazy(() => import("@/pages/pipeline-demo"));
 const ConfigPage = lazy(() => import("@/pages/config"));
 
 /** 路由切换/懒加载期间的占位：纯 CSS 转圈，不依赖任何库，避免 fallback 自己再触发加载。 */
@@ -74,6 +75,7 @@ export const router = createBrowserRouter([
             { path: "/canvas", element: <CanvasPage /> },
             { path: "/canvas/:id", element: <CanvasProjectPage /> },
             { path: "/pipeline", element: <PipelinePage /> },
+            { path: "/pipeline-demo", element: <PipelineDemoPage /> },
             { path: "/config", element: <ConfigPage /> },
         ],
     },
