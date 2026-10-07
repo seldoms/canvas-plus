@@ -223,7 +223,7 @@ export function StoryboardPanel({ status }: { status: StageStatus }) {
         <StageShell index={1} title="分镜" status={status} modelSlot={<DemoModelPicker domain="text" />}>
             <div className="grid gap-4 lg:grid-cols-[180px_1fr]">
                 {/* 左列：集导航（与项目分镜工作区同一语言） */}
-                <aside className="max-h-[68vh] space-y-1 overflow-y-auto lg:border-r lg:border-stone-200/60 lg:pr-3 dark:lg:border-stone-800/60">
+                <aside className="max-h-[68vh] space-y-1 self-start overflow-y-auto lg:sticky lg:top-0 lg:border-r lg:border-stone-200/60 lg:pr-3 dark:lg:border-stone-800/60">
                     {EPISODES.map((ep) => (
                         <button
                             key={ep.id}

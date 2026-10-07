@@ -59,6 +59,7 @@ export function ContextBar({
                     }))}
                 />
                 <div className="ml-auto flex items-center gap-2">
+                    <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] text-amber-700 dark:bg-amber-950 dark:text-amber-300">Demo</span>
                     <Tooltip title="结构、引用、对白时序检查已通过；声纹与嘴型需人工复核（不做越界承诺）">
                         <Tag icon={<ShieldCheck className="size-3.5" />} color="success" className="mr-0 inline-flex items-center gap-1">
                             QC 通过
