@@ -17,7 +17,7 @@ import urllib.parse
 import uuid
 import os
 
-BASE = "http://192.168.123.147:8188"
+BASE = "http://192.0.2.147:8188"
 CLIENT_ID = "h3-continuation-poc"
 
 

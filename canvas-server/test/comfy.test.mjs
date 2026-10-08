@@ -344,6 +344,16 @@ test("disableEmptyLoras 在真实模板上摘除空 LoRA", () => {
 
 test("集成：真实 ComfyUI 的 probe / 队列计数 / 节点信息", async (t) => {
     const config = loadConfig();
+    // 真机联调用这条。CI / 干净 clone 里没有 config.json，baseUrl 会回落到
+    // 127.0.0.1:8188 这个默认值 —— 如果开发机恰好有 ComfyUI 跑在 8188，
+    // probe 会「成功」，然后拿别人机器的实例状态去断言 checkpoint，必然红。
+    // 所以这里判的是「配的是不是一台真实可达的 ComfyUI」，而���只是「能不能连上」。
+    const baseUrl = String(config?.comfy?.baseUrl || "");
+    const isDefaultLoopback = /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])([:/]|$)/i.test(baseUrl);
+    if (!baseUrl || isDefaultLoopback) {
+        t.skip(`未配置真实 ComfyUI（baseUrl=${baseUrl || "<空>"}，多为本机默认回环）；本条仅用于真机联调`);
+        return;
+    }
     const probe = await probeComfy(config);
     if (!probe.ok) {
         t.skip(`ComfyUI 不可达（${probe.baseUrl}）：${probe.error}`);

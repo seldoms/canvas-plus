@@ -15,3 +15,7 @@ web/public/plugins
 plugins/canvas/*/dist
 plugins/canvas/*/node_modules
 web/public/plugins__pycache__/
+
+# 本机配置备份（含内网模型地址与可能的凭据），绝不入库
+config.json.bak*
+*.bak

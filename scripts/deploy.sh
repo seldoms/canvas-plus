@@ -16,7 +16,7 @@ BRANCH="${BRANCH:-main}"
 echo "==> 本地检查"
 if ! git remote get-url canvas-plus >/dev/null 2>&1; then
     echo "缺少远程 canvas-plus。请先执行："
-    echo "  git remote add canvas-plus ssh://root@route.wbsyb.cloud:12550/root/repos/canvas-plus.git"
+    echo "  git remote add canvas-plus ssh://root@<gateway-host>:12550/root/repos/canvas-plus.git"
     exit 1
 fi
 
