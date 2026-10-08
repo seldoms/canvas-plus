@@ -460,7 +460,7 @@ warning 级问题 → 写进 `stage.warnings`（可选增强字段缺失、未�
 
 同步会排除 `node_modules`、`dist`、`data`、`config.json`，因此远程的依赖、构建产物、生成记录与配置不会被本地覆盖。
 
-远程特有的配置项（`canvas-server/config.json`，不入库）已按环境写死为：LLM 指向本机 `127.0.0.1:11434`，ComfyUI 指向 GPU 主机 `192.168.123.147:8188`。**ComfyUI 与 LLM 分属两台机器**，互不争抢显存。
+远程特有的配置项（`canvas-server/config.json`，不入库）已按环境写死为：LLM 指向本机 `127.0.0.1:11434`，ComfyUI 指向 GPU 主机 `192.0.2.147:8188`。**ComfyUI 与 LLM 分属两台机器**，互不争抢显存。
 
 从本机浏览器访问远程网关：
 

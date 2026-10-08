@@ -5,7 +5,7 @@ set -euo pipefail
 
 REMOTE_DIR="${REMOTE_DIR:-/root/canvas-plus}"
 BRANCH="${BRANCH:-main}"
-COMFY_URL="${COMFY_URL:-http://192.168.123.147:8188}"
+COMFY_URL="${COMFY_URL:-http://192.0.2.147:8188}"
 LLM_URL="${LLM_URL:-http://127.0.0.1:11434}"
 PORT="${PORT:-8788}"
 

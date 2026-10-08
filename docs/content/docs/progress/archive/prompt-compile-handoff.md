@@ -70,7 +70,7 @@ M web/src/pages/image/index.tsx
 
 ## 5. 真实 UI 与生产服务复核
 
-- 受控重载前确认 `GET 192.168.123.147:8188/queue` 为 `running=[] / pending=[]`；随后 `systemctl restart canvas-server`，`/api/health` 返回 `ok:true`，LLM/ComfyUI 均可用。
+- 受控重载前确认 `GET 192.0.2.147:8188/queue` 为 `running=[] / pending=[]`；随后 `systemctl restart canvas-server`，`/api/health` 返回 `ok:true`，LLM/ComfyUI 均可用。
 - CDP 在真实项目页点击「运行「关键帧」」：点击前该 run 有 **177** 个历史 job，点击后增至 **282**（新增 **105** 个 job），页面从「运行「关键帧」」切换为「取消运行」，随后通过同一按钮取消本轮，ComfyUI 队列回到 `running=[] / pending=[]`；阶段终态为 `partial`，旧成功候选仍保留。
 - 新入队 Qwen job：`run-murvf1vq-aqyqm-sh17-start-musdrodb-14d74`，模板 `img_qwen21_edit`，`params.PROMPT` **2785 字符**。完整正文已保存于本交接单附录（见下方）；正文为单一英文长提示词，未出现 `[untranslated]`、旧版 `overexposure…tack-sharp` 尾巴、重复风格锚点或中英混写。
 - 真实降级分支也被同一轮观测到：`sh17-end` 的 job meta 留有 warning，发给模型的 `PROMPT` 为 **470 字结构化中文**，不含 `[untranslated]` 标记；这验证了 warning 可观测且标记不会污染模型输入。
@@ -95,7 +95,7 @@ The image is a horizontal realistic cinematic medium close-up, held entirely in 
 ## 7. 环境事实（接手者需要）
 
 - 服务：`canvas-server` systemd，`127.0.0.1:8788`；**重启后 bindJobs 重放约 2 分钟才 listen**，期间 curl 会 refused 但 `is-active` 是 active，别误判崩溃
-- ComfyUI：`192.168.123.147:8188`（16GB）+ Qwen-Image 2.1 独立实例 **8190**
+- ComfyUI：`192.0.2.147:8188`（16GB）+ Qwen-Image 2.1 独立实例 **8190**
 - 日志：`/var/log/canvas-server.log`（无时间戳；判断重启后是否刷屏要用「已启动」行之后的内容过滤）
 - 测试基线：`cd canvas-server && node --test test/*.test.mjs` → **673/673**
 - **模型清单只读注册表**：`/v1/models` 等四处读 `textModelIds()`（渠道声明的 `models[]` → `渠道名::模型名`）；本机 Ollama 模型不再自动出现（产品负责人已接受）

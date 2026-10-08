@@ -1,7 +1,7 @@
 {
   "_readme": "来源 = research/win147-comfyui/registry.json（win147 ComfyUI 模型能力与提示词规范调研，2026-10-03）。本表是该调研的逐模型提示词规则在后端的运行时副本：13 个模型全部提升，不抽样、不改写语义。以调研为准 —— 修改任一字段前必须先同步修订 research/win147-comfyui/registry.json 及其 sources/*.md，再由 test/model-rules.test.mjs 的对账用例校验一致，禁止只改本文件。H3 的两种提示词口径（本地字段口径 / 云端中文三段式）见顶层 h3_prompt_protocols，其中 local_fields 为本地默认（依据 sources/video-models.md:149-165）。",
   "machine": {
-    "host": "192.168.123.147",
+    "host": "192.0.2.147",
     "gpu": "RTX 5060 Ti 16G",
     "vram_gib": 15.93,
     "ram_gb": 32,

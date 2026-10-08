@@ -8,7 +8,7 @@
  *   **绝不硬编码**。
  *
  * 权威数据源（**只读探测，不改 147**）：
- *   `GET http://192.168.123.147:8188/object_info/TDQwen3TTSCustomVoice`
+ *   `GET http://192.0.2.147:8188/object_info/TDQwen3TTSCustomVoice`
  *   → input.required.speaker  = ["Aiden","Dylan","Eric","Ono_anna","Ryan","Serena","Sohee","Uncle_fu","Vivian"]
  *   → input.required.language = ["Auto","Chinese","English","Japanese","Korean","German","French","Russian","Portuguese","Spanish","Italian"]
  *   → input.optional.instruct = STRING（音色描述，落到工作流的 {{INSTRUCT}}）
@@ -22,7 +22,7 @@
  */
 
 /** 音色库数据源（只读探测地址）。 */
-export const VOICE_LIBRARY_SOURCE = "http://192.168.123.147:8188/object_info/TDQwen3TTSCustomVoice";
+export const VOICE_LIBRARY_SOURCE = "http://192.0.2.147:8188/object_info/TDQwen3TTSCustomVoice";
 
 /** 当前唯一登记的 TTS 模板（工作流节点 TDQwen3TTSCustomVoice）。 */
 export const QWEN3_TTS_TEMPLATE = "audio_qwen3_tts";

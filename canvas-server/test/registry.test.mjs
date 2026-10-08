@@ -21,7 +21,7 @@ function baseRegistry() {
         kind: "comfy",
         label: "本地 ComfyUI",
         resourceClasses: [RESOURCE_CLASS.GPU_IMAGE, RESOURCE_CLASS.GPU_VIDEO],
-        baseUrl: "http://192.168.123.147:8188",
+        baseUrl: "http://192.0.2.147:8188",
         deviceId: "gpu-5060",
     });
     registry.registerProvider({

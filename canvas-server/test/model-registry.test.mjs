@@ -125,8 +125,15 @@ test("分类映射四类：audio_* → audio，video → video，img/edit/upscal
 test("runtime 判定：本地地址/ollama → local，云端渠道 → cloud", () => {
     assert.equal(runtimeForProvider({ name: "deepseek", baseUrl: "https://api.deepseek.com" }), "cloud");
     assert.equal(runtimeForProvider({ name: "本地 ollama", baseUrl: "http://127.0.0.1:11434" }), "local");
-    assert.equal(runtimeForProvider({ name: "lan", baseUrl: "http://192.168.123.147:11434" }), "local");
+    // 下面两条刻意用**中性私网地址**：runtime 判定的契约是「RFC1918 私网段 → local」
+    // （见 src/model-registry.js 的 PRIVATE_HOST_RE）。请勿把它们"脱敏"成
+    // 192.0.2.x / 198.51.100.x 之类的文档保留网段 —— 那是公网可路由地址，
+    // 判定成 cloud 才是对的，改了会把这条例外分支的测试改红。
+    // 真实部署的内网地址只出现在 config.json（已 gitignore）与 config.example.json（已脱敏）。
+    assert.equal(runtimeForProvider({ name: "lan", baseUrl: "http://192.168.1.50:11434" }), "local");
     assert.equal(runtimeForProvider({ name: "priv", baseUrl: "http://10.0.0.5:8000" }), "local");
+    // 反向锁定：公网可路由地址必须判 cloud，防止判定逻辑被"优化"成一律 local。
+    assert.equal(runtimeForProvider({ name: "pub", baseUrl: "http://192.0.2.147:11434" }), "cloud");
     assert.equal(runtimeForProvider({ name: "内部 ollama", baseUrl: "" }), "local");
     // 模板源恒为 local
     const items = computeAvailable(SOURCES);

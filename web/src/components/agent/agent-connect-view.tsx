@@ -19,14 +19,15 @@ import { canvasThemes } from "@/lib/canvas-theme";
  */
 
 /**
- * 仓库地址。**发布前必须替换成真实地址** —— 下面这个占位符不是可用的地址。
+ * 仓库地址。发布时已填成真实地址；下面的占位符判断保留为一道回归防线——
+ * 一旦有人把这里改回占位符，界面立刻显示「未配置」，而不是给工友一条敲不通的命令。
  *
  * 为什么不给一个「看起来能用」的默认地址：填一个并不存在的 GitHub 地址，
  * 工友会照着敲、`marketplace add` 静默失败或报 404，然后卡在「到底装没装上」。
  * 一个显眼的占位符至少能让人立刻知道「这里还没配」。
  * 替换时只改这一处，全站引导（插件安装 / 移除命令）都引用它。
  */
-const CANVAS_PLUS_REPO = "REPO_URL_PLACEHOLDER";
+const CANVAS_PLUS_REPO = "https://github.com/seldoms/canvas-plus";
 const AGENT_PACKAGE = "@sobey/canvas-agent";
 const AGENT_RUN_COMMAND = `npx -y ${AGENT_PACKAGE}@latest`;
 const AGENT_MARKETPLACE_COMMAND = `codex plugin marketplace add ${CANVAS_PLUS_REPO}`;

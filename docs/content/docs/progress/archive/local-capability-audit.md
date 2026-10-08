@@ -42,7 +42,7 @@
 | ComfyUI | 0.33.3（frontend 1.49.6，python 3.12.10，torch 2.10.0+cu130） | 【实测】`GET /system_stats` |
 | GPU | NVIDIA GeForce RTX 5060 Ti，`vram_total` 17.1 GB；空闲时 `vram_free` 15.7 GB，本轮跑视频时读到 9.3 GB | 【实测】`GET /system_stats` |
 | 主机内存 | 34.1 GB 总量；本轮观察到 `ram_free` 在 2.0~8.1 GB 之间波动（跑视频时最低 2.0 GB） | 【实测】同上（WSL 内存偏紧，冷启动慢与此相关） |
-| 访问方式 | 本机 Mac 无法直连 `192.168.123.147`，走 SSH 隧道 `127.0.0.1:18188` | 【实测】 |
+| 访问方式 | 本机 Mac 无法直连 `192.0.2.147`，走 SSH 隧道 `127.0.0.1:18188` | 【实测】 |
 | 网关 | `canvas-server`，本次用 `CANVAS_SERVER_PORT=8899 node src/index.js` 另起实例，避免抢 8788 | 【实测】 |
 | 模型根目录 | 5060 `.../ComfyUI/models`（`loras` 95 GB、`diffusion_models` 308 GB、`text_encoders` 105 GB、`checkpoints` 91 GB） | 【实测】`du -sh` |
 

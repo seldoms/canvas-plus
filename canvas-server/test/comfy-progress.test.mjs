@@ -173,7 +173,7 @@ test("订阅：不抛、支持无 WebSocket 环境、close 幂等（不能把 No
 });
 
 test("WebSocket 地址：同源同端口换协议挂到 /ws", () => {
-    assert.equal(comfyWebSocketUrl("http://192.168.123.147:8188", "cid"), "ws://192.168.123.147:8188/ws?clientId=cid");
+    assert.equal(comfyWebSocketUrl("http://192.0.2.147:8188", "cid"), "ws://192.0.2.147:8188/ws?clientId=cid");
     assert.equal(comfyWebSocketUrl("https://h:8188/", "a b"), "wss://h:8188/ws?clientId=a%20b");
     assert.equal(comfyWebSocketUrl("", "c"), "ws://127.0.0.1:8188/ws?clientId=c");
 });

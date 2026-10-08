@@ -83,7 +83,7 @@ description: |
 - `GET /api/tts/voices` → `{ voices: string[], languages: string[], defaultSpeaker, defaultLanguage, source, ... }`
 - 也随 `GET /api/providers` 的 `comfy.templates[].voices` 下发（与时长、规格同源）。
 
-数据源（**只读探测，不改 147**）：`GET http://192.168.123.147:8188/object_info/TDQwen3TTSCustomVoice`
+数据源（**只读探测，不改 147**）：`GET http://192.0.2.147:8188/object_info/TDQwen3TTSCustomVoice`
 
 | 枚举 | 取值 |
 | --- | --- |

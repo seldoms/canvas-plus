@@ -692,7 +692,7 @@ ReviewNote { id, scope: project|episode|scene|shot, targetId?, stage,
 
 1. **本轮提示词策略与门禁修复仍在工作区待统一提交**。本轮复核：后端 **667/667 pass**、前端 `tsc 0` 错、`npm run build` 通过；生产服务已在确认 GPU 队列空闲后受控重载，并完成真实 CDP 关键帧点击（run job **177→282**）与 Qwen `params.PROMPT` 全文取证。
 2. **出片复跑已结束，但成片没出来**。`run-murpt28o-46f5q` 落 assembly `partial`（16 镜 10 成 / 6 镜 OOM）。要先出片，顺序是：解决 147 显存（#25，建议先降 480×864 出草稿）→ **逐镜重试 `sh11`–`sh16`**（已有 `regenerate` 能力，不必重跑整条）→ 调 `assemble`。
-3. **服务已重启（在确认无在跑 job 后）**：`canvas-server` active @ `127.0.0.1:8788`，`/api/health` ok，当时模板 16 个（2026-10-05 复核：**19 个**）；`/v1/models` 现 **10 个**（8 本地 + `deepseek::deepseek-flash` + `deepseek::deepseek-v4-pro`），那个压了很久的门禁修复顺带生效；外部渠道表已恢复到 `deepseek`（**但前端一保存/一键接入就会再被冲掉**，见 #26）。远端 ComfyUI `192.168.123.147:8188`（0.38.2，活着）。
+3. **服务已重启（在确认无在跑 job 后）**：`canvas-server` active @ `127.0.0.1:8788`，`/api/health` ok，当时模板 16 个（2026-10-05 复核：**19 个**）；`/v1/models` 现 **10 个**（8 本地 + `deepseek::deepseek-flash` + `deepseek::deepseek-v4-pro`），那个压了很久的门禁修复顺带生效；外部渠道表已恢复到 `deepseek`（**但前端一保存/一键接入就会再被冲掉**，见 #26）。远端 ComfyUI `192.0.2.147:8188`（0.38.2，活着）。
 4. **⚠️ 证据效力提醒（接手者必读）**：`run-murpt28o-46f5q` 是**跨代码版本**的产物 —— 它的 script 段跑的是三段式**之前**的旧代码（`stage.steps` 字段缺失可证）。因此**只能拿它证明**两件事：① P0-b 回写断链已通（keyframe 29 / assembly 10 产物）；② 147 显存 OOM（#25）。**不能**用它评判集数对齐、时长、三段式、styleAnchor 等修复的效果 —— 要评判必须**新建 run 重跑**。本轮新增的 DeepSeek 与 CDP 证据来自 `run-murnwa81-k27eq`，其片段任务在验收后已通过 UI 取消，未保留 GPU 运行任务。
 
 ### 11.4 第二轮复跑结论（run `run-murpt28o-46f5q`，2026-10-03）

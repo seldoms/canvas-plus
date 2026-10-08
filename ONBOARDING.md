@@ -87,8 +87,16 @@ codex mcp add canvas-plus -- npx -y @sobey/canvas-agent@latest mcp
 ## 六、仓库地址（发布时填）
 
 ```
-REPO_URL_PLACEHOLDER
+https://github.com/seldoms/canvas-plus
 ```
 
-**发布前必须确认**：仓库里含内网地址与端口（`192.168.123.147` 等）。如果公开发布，
-要么改成占位符，要么接受「内网拓扑公开」。这一条需要决策者拍板，不由开发决定。
+**已脱敏**：本仓库原先含 27 处内网 IP 与 2 处 SSH 网关地址，公开发布前已全部替换为
+RFC 5737 文档保留地址（`192.0.2.x` / `198.51.100.x`）与 `<gateway-host>` 占位符，
+涉及生产代码、配置、测试与文档。仓库无硬密钥泄漏。
+
+注意：`canvas-server/config.json` 是你的**本机配置**，已被 `.gitignore` 排除、不入库；
+仓库里只有 `config.example.json` 模板。第一次部署请复制一份并填自己的模型地址：
+
+```bash
+cp canvas-server/config.example.json canvas-server/config.json
+```

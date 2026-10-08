@@ -6,7 +6,7 @@
  *   node scripts/smoke.mjs                    # 健康检查 + 真实生图 + 流水线剧本阶段
  *   node scripts/smoke.mjs --video            # 额外跑一段视频（约 5~15 分钟）
  *   node scripts/smoke.mjs --llm gemma3:4b    # 指定流水线用的模型
- *   node scripts/smoke.mjs --url http://192.168.123.139:8788
+ *   node scripts/smoke.mjs --url http://192.0.2.139:8788
  *
  * 这是人工自检工具，不进 node --test，因为它依赖真实后端与真实 GPU 时间。
  */

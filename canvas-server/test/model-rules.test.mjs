@@ -62,7 +62,7 @@ test("loadModelRules: 默认规则表可加载且含全部 13 个模型（不抽
     assert.deepEqual(Object.keys(rules.models).sort(), [...EXPECTED_MODEL_KEYS].sort());
     assert.equal(Object.keys(rules.models).length, 13);
     // 顶层还有 machine / not_recommended / rewriter_assets（H3 双口径另测）。
-    assert.equal(rules.machine.host, "192.168.123.147");
+    assert.equal(rules.machine.host, "192.0.2.147");
     assert.equal(rules.machine.gpu, "RTX 5060 Ti 16G");
     assert.ok(Array.isArray(rules.not_recommended) && rules.not_recommended.length > 0);
     assert.ok(Array.isArray(rules.rewriter_assets) && rules.rewriter_assets.length > 0);

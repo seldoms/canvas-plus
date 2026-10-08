@@ -877,7 +877,7 @@ H3 走 I2VA **只是忠实保留关键帧**，它是无辜的。
   ⚠️ 但**前端没有任何音色界面** —— 用户看不到/改不了/**听不到**；`referenceArtifactId` 缺失只 warning。
 
 **平台音色库（147 实测，唯一合法取值域）**：
-`GET 192.168.123.147:8188/object_info/TDQwen3TTSCustomVoice` →
+`GET 192.0.2.147:8188/object_info/TDQwen3TTSCustomVoice` →
 `speaker = ["Aiden","Dylan","Eric","Ono_anna","Ryan","Serena","Sohee","Uncle_fu","Vivian"]`；
 `language = ["Auto","Chinese","English","Japanese","Korean","German","French","Russian","Portuguese","Spanish","Italian"]`。
 

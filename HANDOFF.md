@@ -349,7 +349,7 @@ M3.5 部署后跑了一条真实 2 段链（`prj_01M3ZZ2MJVQ2TJBRY1K3B0HBXF` / `
 **远程（ubuntu，ThinkPad P15，Quadro RTX 5000 16G）**
 
 ```bash
-ssh ubuntu                                   # route.wbsyb.cloud:12550, user root
+ssh ubuntu                                   # <gateway-host>:12550, user root
 cd /sobey/canvas-plus                        # 工程目录（systemd 服务从这里的 canvas-server 启动）
 systemctl status canvas-server               # 服务状态
 systemctl restart canvas-server              # 重启
@@ -359,16 +359,16 @@ curl -s http://127.0.0.1:8788/api/backends   # 生成后端清单
 ```
 
 - 网关端口 **8788**；`web/dist` 存在时同一端口也托管画布页面
-- 远程配置 `canvas-server/config.json`（**不入库**，rsync 时被排除）：LLM `127.0.0.1:11434`，ComfyUI `192.168.123.147:8188`
+- 远程配置 `canvas-server/config.json`（**不入库**，rsync 时被排除）：LLM `127.0.0.1:11434`，ComfyUI `192.0.2.147:8188`
 - 裸仓库 `/root/repos/canvas-plus.git`；本地分支 `canvas-plus`（产品线独立根提交），上游历史保留在本地 `main`
 - 旧的 `/root/canvas-plus` 是上一轮部署位置，已不再被 systemd 使用，可清理
 
 **GPU 主机（OMEN / 5060，RTX 5060 Ti 16GB）**
 
 ```bash
-ssh 5060                                     # route.wbsyb.cloud:3580, WSL2 mirrored 网络
+ssh 5060                                     # <gateway-host>:3580, WSL2 mirrored 网络
 # ComfyUI 已在跑，Windows 原生实例，监听 0.0.0.0:8188
-curl -s http://192.168.123.147:8188/system_stats
+curl -s http://192.0.2.147:8188/system_stats
 ```
 
 - ComfyUI 版本 **0.38.2**（2026-10-02 由用户用自有工具从 v0.33.3 升级，commit `daeb5e53`，`deploy_environment: local-git`）；关键依赖 `comfy-aimdo` **0.5.5**、`comfy-kitchen` 0.2.36、`comfyui-frontend-package` 1.53.6、`comfyui-workflow-templates` 0.11.74，pytorch 2.10.0+cu130 未变；节点类 4485 个，自定义节点 94 个全部加载正常（我们 15 个模板的 67 个 `class_type` 全部存在）；H3 主力管线已在 aimdo 0.5.5 下复测通过。工作流模板库 `/mnt/d/Comfyui-WF-2026.8.8/pipelines/workflows_api/`，ComfyUI **官方**模板库 `/mnt/d/Comfyui-WF-2026.8.8/python/Lib/site-packages/comfyui_workflow_templates_json/templates/`（606 个，接新模型前先来这儿找官方接线）
@@ -379,7 +379,7 @@ curl -s http://192.168.123.147:8188/system_stats
 ```bash
 ssh -f -N -L 8788:127.0.0.1:8788 ubuntu                      # 访问远程网关 http://127.0.0.1:8788
 ssh -f -N -L 11434:127.0.0.1:11434 ubuntu                    # 本地开发用：内网 LLM
-ssh -f -N -L 18188:192.168.123.147:8188 5060                 # 本地开发用：ComfyUI
+ssh -f -N -L 18188:192.0.2.147:8188 5060                 # 本地开发用：ComfyUI
 ```
 
 - Mac 在 `192.168.2.x/24`，**无法直连** `192.168.123.x/24`，所有实时验证都要走隧道，或带 `CANVAS_SERVER_COMFY_URL=http://127.0.0.1:18188` 跑
