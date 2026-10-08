@@ -27,7 +27,7 @@
 ⚠️ **不是 `infinite-canvas`。** 那是上游开源项目的名字，照旧名装会报「找不到插件」。
 
 ```bash
-git clone <canvas-plus 仓库地址>
+git clone https://github.com/seldoms/canvas-plus
 cd canvas-plus
 codex plugin marketplace add "$(pwd)"
 codex plugin add canvas-plus@canvas-plus-local
@@ -84,7 +84,41 @@ codex mcp add canvas-plus -- npx -y @sobey/canvas-agent@latest mcp
 
 ---
 
-## 六、仓库地址（发布时填）
+## 六、自己部署一份（只有部署的人需要）
+
+日常使用直接开站点就够了。**只有要自己跑一套网关**的人才需要这一步。
+
+前置：Node.js 22+（用到原生 WebSocket 订阅 ComfyUI 进度）、ffmpeg（成片拼接与响度归一）。
+
+```bash
+git clone https://github.com/seldoms/canvas-plus
+cd canvas-plus
+
+# 1) 装依赖并构建前端与 Agent（前端是独立产物，不 build 等于没改）
+npm --prefix canvas-server install
+npm --prefix canvas-agent install && npm --prefix canvas-agent run build
+npm --prefix web install && npm --prefix web run build
+
+# 2) 生成你自己的本机配置（仓库里没有，也不该有）
+cp canvas-server/config.example.json canvas-server/config.json
+#   编辑 config.json：把 comfy.baseUrl 填成你自己的 ComfyUI 地址，
+#   渠道表里填你的大模型地址。本机 Ollama 就填 http://127.0.0.1:11434。
+
+# 3) 起网关
+npm --prefix canvas-server start      # 等价 node src/index.js，默认监听 8788
+
+# 4) 自检：健康检查过了再开浏览器
+curl -s http://127.0.0.1:8788/api/health
+```
+
+`/api/health` 返回 `ok:true` 就算起来了。不通的话按本文件第五节那张表排查。
+
+⚠️ **生图生视频默认走本地 ComfyUI**。没配 ComfyUI 也能开页面，但生图生视频会失败 ——
+这不是 bug，是配置缺失。想接云端渠道见 `canvas-server/README.md`。
+
+---
+
+## 七、仓库地址
 
 ```
 https://github.com/seldoms/canvas-plus
